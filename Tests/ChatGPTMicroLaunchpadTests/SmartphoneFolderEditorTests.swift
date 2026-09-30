@@ -39,4 +39,18 @@ final class SmartphoneFolderEditorTests: XCTestCase {
         XCTAssertTrue(slots[0].isParent)
         XCTAssertEqual(slots[16].shortcut?.id, "shortcut-15")
     }
+
+    func testFolderShortcut_customPNGDataRoundTripsThroughPersistence() throws {
+        let iconData = Data([0x89, 0x50, 0x4E, 0x47])
+        let shortcut = SmartphoneFolderShortcut(
+            id: "shortcut-1",
+            title: "이미지 버튼",
+            customIconData: iconData
+        )
+
+        let encoded = try JSONEncoder().encode(shortcut)
+        let decoded = try JSONDecoder().decode(SmartphoneFolderShortcut.self, from: encoded)
+
+        XCTAssertEqual(decoded.customIconData, iconData)
+    }
 }

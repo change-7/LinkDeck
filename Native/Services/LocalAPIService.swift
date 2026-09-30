@@ -63,10 +63,6 @@ struct LocalAPINetworkPolicy: Equatable, Sendable {
         selectBinding(from: Self.discoverBindings())
     }
 
-    func isCurrent(binding: LocalAPINetworkBinding) -> Bool {
-        resolveBinding() == binding
-    }
-
     static func discoverBindings() -> [LocalAPINetworkBinding] {
         var firstAddress: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&firstAddress) == 0, let firstAddress else { return [] }

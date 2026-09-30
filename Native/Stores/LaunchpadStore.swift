@@ -9,6 +9,7 @@ final class LaunchpadStore {
     private let codexMotionStorageKey = "chatgpt-micro-launchpad.codex-motion-bindings"
     private let codexMotionPresentationStorageKey = "chatgpt-micro-launchpad.codex-motion-presentations"
     private let codexMotionDisplaySettingsStorageKey = "chatgpt-micro-launchpad.codex-motion-display-settings"
+    private let codexPhoneThemeStorageKey = "linkdeck.codex-phone-theme"
     private let sideButtonDefaultsMigrationKey = "chatgpt-micro-launchpad.side-button-defaults-v2"
     private let sideButtonCategoryOrderMigrationKey = "chatgpt-micro-launchpad.side-button-category-order-v3"
     private let sortedSideButtonDefaultsMigrationKey = "chatgpt-micro-launchpad.sorted-side-button-defaults-v4"
@@ -18,11 +19,14 @@ final class LaunchpadStore {
     var codexMotionPresetIDs: [String: UUID]
     var codexMotionPresentations: [String: CodexMotionPresentation]
     var codexMotionDisplaySettings: CodexMotionDisplaySettings
+    var codexPhoneTheme: CodexPhoneTheme
+    let codexCompletionSounds: CodexCompletionSoundLibrary
     var selectedPage = 0
     var selectedPadID = "grid_0_0"
     var statusMessage = "패드를 선택해 설정하세요."
 
     init() {
+        codexCompletionSounds = CodexCompletionSoundLibrary(preferences: preferences)
         let needsSideButtonMigration = !preferences.bool(forKey: sideButtonDefaultsMigrationKey)
         let needsSideButtonCategoryOrdering = !preferences.bool(forKey: sideButtonCategoryOrderMigrationKey)
         let needsSortedSideButtonDefaults = !preferences.bool(forKey: sortedSideButtonDefaultsMigrationKey)
@@ -66,6 +70,7 @@ final class LaunchpadStore {
             legacyPresentations: loadedPresentations
         )
         codexMotionDisplaySettings = restoredDisplaySettings.settings
+        codexPhoneTheme = CodexPhoneTheme(rawValue: preferences.string(forKey: codexPhoneThemeStorageKey) ?? "") ?? .classic
         if needsSideButtonMigration
             || needsSideButtonCategoryOrdering
             || needsSortedSideButtonDefaults
@@ -135,6 +140,7 @@ final class LaunchpadStore {
         var button = smartphonePages[pageIndex].buttons[buttonIndex]
         button.title = ""
         button.symbol = ""
+        button.customIconData = nil
         button.action = PadAction()
         button.folderShortcuts = []
         smartphonePages[pageIndex].buttons[buttonIndex] = button
@@ -320,11 +326,6 @@ final class LaunchpadStore {
         saveCodexMotionPresentations()
     }
 
-    func setCodexMotionDisplayScope(_: CodexMotionDisplayScope) {
-        codexMotionDisplaySettings.scope = .specificPage
-        saveCodexMotionDisplaySettings()
-    }
-
     func setCodexMotionDisplayPageID(_ pageID: UUID) {
         codexMotionDisplaySettings.pageID = pageID
         codexMotionDisplaySettings.scope = .specificPage
@@ -388,11 +389,6 @@ final class LaunchpadStore {
         saveCodexMotionDisplaySettings()
     }
 
-    func setWeeklyUsageDisplayScope(_: CodexMotionDisplayScope) {
-        codexMotionDisplaySettings.weeklyUsageDisplay.scope = .specificPage
-        saveCodexMotionDisplaySettings()
-    }
-
     func setWeeklyUsageDisplayPageID(_ pageID: UUID) {
         codexMotionDisplaySettings.weeklyUsageDisplay.pageID = pageID
         codexMotionDisplaySettings.weeklyUsageDisplay.scope = .specificPage
@@ -402,6 +398,12 @@ final class LaunchpadStore {
     func setWeeklyUsageDisplayStyle(_ style: CodexWeeklyUsageDisplayStyle) {
         codexMotionDisplaySettings.weeklyUsageDisplay.style = style
         saveCodexMotionDisplaySettings()
+    }
+
+    func setCodexPhoneTheme(_ theme: CodexPhoneTheme) {
+        guard codexPhoneTheme != theme else { return }
+        codexPhoneTheme = theme
+        preferences.set(theme.rawValue, forKey: codexPhoneThemeStorageKey)
     }
 
     var idleScreensaverPreset: MotionPreset? {

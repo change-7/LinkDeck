@@ -25,7 +25,7 @@ final class CodexStatusBarIndicator {
 
     func attach(to button: NSStatusBarButton?) {
         statusButton = button
-        button?.setAccessibilityLabel("마이크로 런치패드")
+        button?.setAccessibilityLabel("LinkDeck")
         updateAnimationTimer()
         render()
     }
@@ -95,7 +95,7 @@ final class CodexStatusBarIndicator {
     private static func staticImage() -> NSImage? {
         let image = NSImage(
             systemSymbolName: "square.grid.3x3.fill",
-            accessibilityDescription: "마이크로 런치패드"
+            accessibilityDescription: "LinkDeck"
         )
         image?.isTemplate = true
         return image

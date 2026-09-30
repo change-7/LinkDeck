@@ -14,9 +14,10 @@ enum SmartphoneIconAssetProvider {
             }
 
             for shortcut in button.folderShortcuts {
-                guard !shortcut.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      !shortcut.symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      let asset = symbolAsset(for: shortcut.symbol) else { continue }
+                guard !shortcut.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                let asset = shortcut.customIconData.flatMap { customAsset(for: shortcut.id, data: $0) }
+                    ?? symbolAsset(for: shortcut.symbol)
+                guard let asset else { continue }
                 assets[shortcut.id] = asset
             }
         }
@@ -24,6 +25,11 @@ enum SmartphoneIconAssetProvider {
     }
 
     private static func asset(for button: SmartphoneButton) -> SmartphoneIconAsset? {
+        if let customIconData = button.customIconData,
+           let customAsset = customAsset(for: button.id, data: customIconData) {
+            return customAsset
+        }
+
         guard !button.symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
         if let bundleIdentifier = targetBundleIdentifier(for: button),
@@ -32,6 +38,16 @@ enum SmartphoneIconAssetProvider {
             return appAsset
         }
         return symbolAsset(for: button.symbol)
+    }
+
+    private static func customAsset(for buttonID: String, data: Data) -> SmartphoneIconAsset? {
+        guard let pngData = SmartphoneIconData.normalizedPNGData(from: data) else { return nil }
+        let encodedData = pngData.base64EncodedString()
+        let cacheKey = "custom:\(buttonID):\(encodedData)"
+        if let cached = cache[cacheKey] { return cached }
+        let asset = SmartphoneIconAsset(kind: "custom", data: encodedData)
+        cache[cacheKey] = asset
+        return asset
     }
 
     private static func targetBundleIdentifier(for button: SmartphoneButton) -> String? {

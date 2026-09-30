@@ -227,7 +227,6 @@
   function appStatusLabel(app) {
     if (app.running === true) return "Running";
     if (app.running === false) return "Not running";
-    return "Status unavailable";
   }
 
   function renderApps() {
@@ -243,7 +242,7 @@
       empty.append(title);
 
       const message = document.createElement("p");
-      message.textContent = "Register an app in Micro Launchpad on your Mac, then refresh this page.";
+      message.textContent = "Register an app in LinkDeck on your Mac, then refresh this page.";
       empty.append(message);
 
       const action = document.createElement("button");

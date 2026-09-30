@@ -59,7 +59,7 @@ struct ContentView: View {
             Color(red: 0.035, green: 0.035, blue: 0.045).ignoresSafeArea()
             launchpadContent
         }
-        .frame(minWidth: 1100, minHeight: 820)
+        .frame(minWidth: 1100, minHeight: 640)
         .onAppear {
             midi.onPagePressed = { index in
                 recordLaunchpadOrCodexActivity()
@@ -70,6 +70,13 @@ struct ContentView: View {
                 selectPage(index)
             }
             codex.setRemoteSmartphonePagesProvider { SmartphoneDefaults.persistedPages() }
+            codex.setRemoteCodexPhoneThemeProvider { store.codexPhoneTheme }
+            codex.setRemoteCompletionSoundProvider { store.codexCompletionSounds.remoteSelection }
+            codex.onRemoteCompletionSoundTarget = { target in
+                store.codexCompletionSounds.setOutputTarget(target)
+                codex.publishRemoteState()
+            }
+            codex.setLocalCompletionSoundHandler { store.codexCompletionSounds.playSelectedSoundOnMac() }
             synchronizeSelection()
             midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
             synchronizeWeeklyUsageDisplay()
@@ -85,12 +92,19 @@ struct ContentView: View {
             synchronizeWeeklyUsageDisplay()
             resumeCodexMotionForCurrentPageIfNeeded()
         }
+        .onChange(of: midi.isConnected) { _, isConnected in
+            guard !isConnected, selectedMainScreen == .launchpadMini else { return }
+            selectedMainScreen = .smartphoneButtons
+        }
         .onChange(of: store.pages) { _, _ in
             midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
             virtualMotion.updateUnderlyingPage(store.currentPage)
             synchronizeWeeklyUsageDisplay()
         }
         .onChange(of: store.smartphonePages) { _, _ in
+            codex.publishRemoteState()
+        }
+        .onChange(of: store.codexPhoneTheme) { _, _ in
             codex.publishRemoteState()
         }
         .onChange(of: store.codexMotionDisplaySettings) { _, _ in
@@ -139,18 +153,18 @@ struct ContentView: View {
     }
 
     private var launchpadContent: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 10) {
             launchpadToolbar
             switch selectedMainScreen {
             case .launchpadMini:
                 launchpadMiniContent
             case .smartphoneButtons:
                 SmartphoneSettingsView(store: store, runner: runner)
-                    .frame(minWidth: 900, minHeight: 680)
+                    .frame(minWidth: 900, minHeight: 520)
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.bottom, 18)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
     }
 
     private var launchpadMiniContent: some View {
@@ -254,7 +268,11 @@ struct ContentView: View {
         title: String,
         systemImage: String
     ) -> some View {
-        Button { selectedMainScreen = screen } label: {
+        let isAvailable = screen != .launchpadMini || midi.isConnected
+        return Button {
+            guard isAvailable else { return }
+            selectedMainScreen = screen
+        } label: {
             HStack(spacing: 6) {
                 Image(systemName: systemImage)
                 Text(title)
@@ -269,10 +287,13 @@ struct ContentView: View {
             )
         }
         .buttonStyle(.plain)
+        .disabled(!isAvailable)
+        .opacity(isAvailable ? 1 : 0.38)
         .focusable(false)
         .focusEffectDisabled()
         .accessibilityLabel(title)
-        .help(title)
+        .accessibilityHint(isAvailable ? "" : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
+        .help(isAvailable ? title : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
     }
 
     private var footer: some View {

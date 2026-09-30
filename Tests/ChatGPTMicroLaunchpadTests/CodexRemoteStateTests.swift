@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import ChatGPTMicroLaunchpad
 
@@ -34,6 +35,7 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertEqual(state.remainingPercent, 67)
         XCTAssertEqual(state.fiveHourUsedPercent, 16)
         XCTAssertEqual(state.fiveHourRemainingPercent, 84)
+        XCTAssertEqual(state.completionSoundVolumePercent, 100)
     }
 
     func testRemoteState_whenSmartphoneButtonUsesClipboardText_omitsTextFromPhonePayload() throws {
@@ -72,6 +74,7 @@ final class CodexRemoteStateTests: XCTestCase {
                 id: "\(parentID)_folder_1",
                 title: "비밀",
                 symbol: "doc.on.clipboard",
+                customIconData: Data([0x89, 0x50, 0x4E, 0x47]),
                 action: PadAction(kind: .clipboardText, value: "비밀 단축키")
             )
         ]
@@ -94,6 +97,7 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertEqual(decoded.smartphonePages[0].buttons[0].folderShortcuts.count, 2)
         XCTAssertEqual(decoded.smartphonePages[0].buttons[0].folderShortcuts[0].action.value, "cmd+n")
         XCTAssertEqual(decoded.smartphonePages[0].buttons[0].folderShortcuts[1].action.value, "")
+        XCTAssertNil(decoded.smartphonePages[0].buttons[0].folderShortcuts[1].customIconData)
     }
 
     func testRemoteState_whenUsageIsMissing_doesNotInventPhoneUsage() {
@@ -256,9 +260,11 @@ final class CodexRemoteStateTests: XCTestCase {
             try JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any]
         )
         object.removeValue(forKey: "smartphoneIconAssets")
+        object.removeValue(forKey: "codexPhoneTheme")
         let decoded = try JSONDecoder().decode(CodexRemoteState.self, from: JSONSerialization.data(withJSONObject: object))
 
         XCTAssertNil(decoded.smartphoneIconAssets)
+        XCTAssertNil(decoded.codexPhoneTheme)
         XCTAssertEqual(decoded.smartphonePages.count, 3)
     }
 
@@ -332,6 +338,45 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertEqual(assets["smartphone_page_0_button_0_folder_0"]?.kind, "sf-symbol")
     }
 
+    @MainActor
+    func testSmartphoneIconAssetProvider_buildsCustomPNGAssetsForFolderShortcuts() throws {
+        let tiffData = try XCTUnwrap(
+            NSImage(systemSymbolName: "star.fill", accessibilityDescription: nil)?.tiffRepresentation
+        )
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(data: tiffData))
+        let pngData = try XCTUnwrap(
+            bitmap.representation(using: .png, properties: [:])
+        )
+        let shortcutID = "smartphone_page_0_button_0_folder_0"
+        let symbolShortcutID = "smartphone_page_0_button_0_folder_1"
+        var pages = SmartphoneDefaults.pages()
+        pages[0].buttons[0].folderShortcuts = [
+            SmartphoneFolderShortcut(
+                id: shortcutID,
+                title: "이미지 버튼",
+                symbol: "",
+                customIconData: pngData
+            ),
+            SmartphoneFolderShortcut(
+                id: symbolShortcutID,
+                title: "PNG 우선 버튼",
+                symbol: "heart.fill",
+                customIconData: pngData
+            )
+        ]
+
+        let assets = SmartphoneIconAssetProvider.assets(for: pages)
+        let asset = try XCTUnwrap(assets[shortcutID])
+        let symbolAsset = try XCTUnwrap(assets[symbolShortcutID])
+
+        XCTAssertEqual(asset.kind, "custom")
+        XCTAssertEqual(symbolAsset.kind, "custom")
+        XCTAssertEqual(
+            Data(base64Encoded: asset.data),
+            SmartphoneIconData.normalizedPNGData(from: pngData)
+        )
+    }
+
     func testRemoteState_transmitsPendingApprovalPrompt() throws {
         let approval = CodexRemoteApproval(
             requestID: 42,
@@ -394,6 +439,52 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertEqual(decoded.activeSessionCount, 2)
     }
 
+    func testRemoteState_roundTripsSelectedPhoneTheme() throws {
+        let state = CodexRemoteState(
+            macConnected: true,
+            codexConnected: true,
+            activity: .running,
+            message: "Codex 작업 중",
+            weeklyUsage: nil,
+            fiveHourUsage: nil,
+            codexPhoneTheme: .pixelSpace
+        )
+
+        let decoded = try JSONDecoder().decode(CodexRemoteState.self, from: JSONEncoder().encode(state))
+
+        XCTAssertEqual(decoded.codexPhoneTheme, .pixelSpace)
+
+        let dotMatrixState = CodexRemoteState(
+            macConnected: true,
+            codexConnected: true,
+            activity: .completed,
+            message: "Codex 작업 완료",
+            weeklyUsage: nil,
+            fiveHourUsage: nil,
+            codexPhoneTheme: .dotMatrix
+        )
+        let dotMatrixDecoded = try JSONDecoder().decode(
+            CodexRemoteState.self,
+            from: JSONEncoder().encode(dotMatrixState)
+        )
+        XCTAssertEqual(dotMatrixDecoded.codexPhoneTheme, .dotMatrix)
+
+        let pixelQuestState = CodexRemoteState(
+            macConnected: true,
+            codexConnected: true,
+            activity: .running,
+            message: "Codex 퀘스트 진행 중",
+            weeklyUsage: nil,
+            fiveHourUsage: nil,
+            codexPhoneTheme: .pixelQuest
+        )
+        let pixelQuestData = try JSONEncoder().encode(pixelQuestState)
+        let pixelQuestDecoded = try JSONDecoder().decode(CodexRemoteState.self, from: pixelQuestData)
+
+        XCTAssertEqual(pixelQuestDecoded.codexPhoneTheme?.rawValue, "pixelQuest")
+        XCTAssertEqual(pixelQuestDecoded.codexPhoneTheme, .pixelQuest)
+    }
+
     func testRemoteCommand_roundTripsSmartphoneActionPayload() throws {
         let command = CodexRemoteCommand(
             type: "command",
@@ -439,7 +530,7 @@ final class CodexRemoteStateTests: XCTestCase {
 
         XCTAssertEqual(
             plist["NSAppleEventsUsageDescription"] as? String,
-            "마이크로 런치패드가 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다."
+            "LinkDeck이 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다."
         )
     }
 

@@ -4,6 +4,6 @@ import XCTest
 @MainActor
 final class CodexConnectionViewTests: XCTestCase {
     func testSettingsSurface_hasDisplayAndMotionPresetTabs() {
-        XCTAssertEqual(CodexConnectionView.availableTabTitles, ["표시 설정", "상태별 모션", "모션 프리셋"])
+        XCTAssertEqual(CodexConnectionView.availableTabTitles, ["표시 설정", "상태별 모션", "모션 프리셋", "휴대폰 스킨", "완료 사운드"])
     }
 }

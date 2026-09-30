@@ -5,16 +5,20 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.Handler
 import android.os.Looper
+import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.SocketTimeoutException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.UUID
 import java.util.concurrent.Executors
 
@@ -78,23 +82,30 @@ internal data class RemoteApproval(
 class RemoteBridgeClient(context: Context) {
     companion object {
         private const val SERVICE_TYPE = "_micro-launchpad._tcp."
+        private const val BRIDGE_PORT = 43_123
         private const val CONNECT_TIMEOUT_MS = 2_000
         private const val READ_TIMEOUT_MS = 5_000
         private const val RETRY_DELAY_MS = 3_000L
+        private const val MAX_COMPLETION_SOUND_BYTES = 10 * 1024 * 1024
     }
 
     private val appContext = context.applicationContext
+    private val bridgePreferences = RemoteBridgePreferences(appContext)
+    private val completionSoundFile = File(appContext.filesDir, "codex_completion_sound")
+    @Volatile private var hasCustomCompletionSound = completionSoundFile.isFile
     private val nsdManager = appContext.getSystemService(NsdManager::class.java)
     private val executor = Executors.newSingleThreadExecutor()
     private val commandExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resetScheduler = CodexResetScheduler(appContext)
     private var discoveryListener: NsdManager.DiscoveryListener? = null
-    private var socket: Socket? = null
+    @Volatile private var socket: Socket? = null
     private var writer: OutputStreamWriter? = null
     private var started = false
     @Volatile private var lastActivity: String? = null
     @Volatile private var lastCompletionEventId: Int? = null
+    @Volatile private var completionSoundOutputTarget = "phone"
+    @Volatile private var completionSoundVolume = 1f
     @Volatile private var hasReceivedRemoteState = false
     /** Set when a reconnect may replay the same active state without a transition. */
     @Volatile private var forceCodexRevealAfterReconnect = false
@@ -110,8 +121,13 @@ class RemoteBridgeClient(context: Context) {
     private var smartphoneIconAssets = JSONObject()
     private var lastStateObject: JSONObject? = null
 
+    internal val selectedCompletionSoundFile: File?
+        get() = completionSoundFile.takeIf { hasCustomCompletionSound && it.isFile }
+    internal val selectedCompletionSoundVolume: Float
+        get() = completionSoundVolume
+
     /** Called on the main thread when a Codex task completion is observed. */
-    var onCodexCompletion: (() -> Unit)? = null
+    var onCodexCompletion: ((playSound: Boolean) -> Unit)? = null
     /** Called on the main thread when Codex enters running state. */
     var onCodexRunning: (() -> Unit)? = null
     /** Called on the main thread when a new approval request is received. */
@@ -126,6 +142,10 @@ class RemoteBridgeClient(context: Context) {
     var codexConnected by mutableStateOf(false)
         private set
     var activity by mutableStateOf("idle")
+        private set
+    var codexPhoneTheme by mutableStateOf(bridgePreferences.codexPhoneTheme)
+        private set
+    var completionSoundTarget by mutableStateOf("phone")
         private set
     var message by mutableStateOf("Mac을 찾는 중…")
         private set
@@ -162,7 +182,7 @@ class RemoteBridgeClient(context: Context) {
             runCatching { nsdManager.stopServiceDiscovery(listener) }
         }
         discoveryListener = null
-        executor.execute { socket?.close() }
+        runCatching { socket?.close() }
         socket = null
         writer = null
         clearRemoteState("Mac 연결 해제됨")
@@ -172,17 +192,29 @@ class RemoteBridgeClient(context: Context) {
     private fun discover() {
         if (!started) return
         setConnection(RemoteConnectionState.Searching)
+        val configuredHost = bridgePreferences.macBridgeHost
+        if (configuredHost.isNotEmpty()) {
+            connect(configuredHost, BRIDGE_PORT)
+            return
+        }
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) = Unit
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                 nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                     override fun onServiceResolved(resolved: NsdServiceInfo) {
-                        if (started && connectionState != RemoteConnectionState.Connected) {
+                        if (started && bridgePreferences.macBridgeHost.isEmpty() &&
+                            connectionState != RemoteConnectionState.Connected
+                        ) {
                             discoveryListener?.let { listener ->
                                 runCatching { nsdManager.stopServiceDiscovery(listener) }
                             }
-                            connect(resolved)
+                            val hostAddress = resolved.host.hostAddress
+                            if (hostAddress == null) {
+                                retryDiscovery()
+                                return
+                            }
+                            connect(hostAddress, resolved.port)
                         }
                     }
 
@@ -209,12 +241,12 @@ class RemoteBridgeClient(context: Context) {
         }
     }
 
-    private fun connect(serviceInfo: NsdServiceInfo) {
+    private fun connect(host: String, port: Int) {
         setConnection(RemoteConnectionState.Connecting)
         executor.execute {
             try {
                 val target = Socket()
-                target.connect(InetSocketAddress(serviceInfo.host, serviceInfo.port), CONNECT_TIMEOUT_MS)
+                target.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
                 target.soTimeout = READ_TIMEOUT_MS
                 socket = target
                 writer = OutputStreamWriter(target.getOutputStream(), Charsets.UTF_8)
@@ -272,6 +304,10 @@ class RemoteBridgeClient(context: Context) {
     private fun parseState(line: String) {
         runCatching {
             val state = JSONObject(line)
+            if (state.optString("type") == "codexCompletionSound") {
+                receiveCompletionSound(state)
+                return
+            }
             if (state.optString("type") == "commandResult") {
                 val succeeded = state.optBoolean("success", false)
                 val resultMessage = state.optString("message", "Mac 명령 처리 완료")
@@ -292,6 +328,9 @@ class RemoteBridgeClient(context: Context) {
             }
             if (state.optString("type") != "state") return
             hasReceivedRemoteState = true
+            completionSoundVolume = normalizeCompletionSoundVolumePercent(
+                state.optInt("completionSoundVolumePercent", 100)
+            )
             val nextUsed = mergeRemoteUsageInt(state, "usedPercent", cachedUsedPercent)
             val nextRemaining = mergeRemoteUsageInt(state, "remainingPercent", cachedRemainingPercent)
             val nextFiveHourRemaining = mergeRemoteUsageInt(state, "fiveHourRemainingPercent", cachedFiveHourRemainingPercent)
@@ -313,6 +352,9 @@ class RemoteBridgeClient(context: Context) {
             lastApproval = nextApproval
             val nextCompletionEventId = state.optInt("completionEventID", 0)
             val nextActiveSessionCount = state.optInt("activeSessionCount", 0).coerceAtLeast(0)
+            val nextCodexPhoneTheme = normalizeCodexPhoneTheme(
+                state.optString("codexPhoneTheme", codexPhoneTheme)
+            )
             val reconnectReveal = shouldRevealCodexAfterReconnect(
                 forceReveal = forceCodexRevealAfterReconnect,
                 currentActivity = nextActivity
@@ -331,6 +373,13 @@ class RemoteBridgeClient(context: Context) {
                 currentActivity = nextActivity,
                 previousCompletionEventId = lastCompletionEventId,
                 currentCompletionEventId = nextCompletionEventId
+            )
+            val playCompletionSound = shouldPlayCodexCompletionSound(
+                previousActivity = lastActivity,
+                currentActivity = nextActivity,
+                previousCompletionEventId = lastCompletionEventId,
+                currentCompletionEventId = nextCompletionEventId,
+                outputTarget = completionSoundOutputTarget
             )
             val revealReason = when {
                 completionEvent || nextActivity == "completed" && revealEvent -> CodexRevealReason.Completion
@@ -363,8 +412,13 @@ class RemoteBridgeClient(context: Context) {
                 fiveHourRemainingPercent = nextFiveHourRemaining
                 resetsAt = nextResetsAt
                 fiveHourResetsAt = nextFiveHourReset
+                UsageWidgetUpdater.onUsageChanged(appContext, nextRemaining, nextFiveHourRemaining)
                 pendingApproval = nextApproval
                 activeSessionCount = nextActiveSessionCount
+                if (codexPhoneTheme != nextCodexPhoneTheme) {
+                    codexPhoneTheme = nextCodexPhoneTheme
+                    bridgePreferences.codexPhoneTheme = nextCodexPhoneTheme
+                }
                 if (revealEvent) {
                     codexRevealReason = revealReason
                     codexRevealEventId += 1
@@ -376,14 +430,49 @@ class RemoteBridgeClient(context: Context) {
                     onCodexApproval?.invoke()
                 }
                 if (completionEvent) {
-                    onCodexCompletion?.invoke()
+                    onCodexCompletion?.invoke(playCompletionSound)
                 }
             }
         }
     }
 
+    private fun receiveCompletionSound(payload: JSONObject) {
+        completionSoundOutputTarget = payload.optString("outputTarget", "phone")
+        mainHandler.post { completionSoundTarget = completionSoundOutputTarget }
+        completionSoundVolume = normalizeCompletionSoundVolumePercent(payload.optInt("volumePercent", 100))
+        if (payload.optBoolean("useBuiltIn", false)) {
+            completionSoundFile.delete()
+            hasCustomCompletionSound = false
+            return
+        }
+
+        val encodedData = payload.optString("data")
+        val maximumEncodedLength = ((MAX_COMPLETION_SOUND_BYTES + 2) / 3) * 4
+        if (encodedData.isEmpty() || encodedData.length > maximumEncodedLength) return
+        if (payload.optString("mimeType") !in setOf("audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg")) return
+        val audioData = try {
+            Base64.decode(encodedData, Base64.DEFAULT)
+        } catch (_: IllegalArgumentException) {
+            return
+        }
+        if (audioData.isEmpty() || audioData.size > MAX_COMPLETION_SOUND_BYTES) return
+
+        val temporaryFile = File(appContext.filesDir, "codex_completion_sound.tmp")
+        try {
+            temporaryFile.writeBytes(audioData)
+            Files.move(temporaryFile.toPath(), completionSoundFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            hasCustomCompletionSound = true
+        } catch (_: Exception) {
+            temporaryFile.delete()
+        }
+    }
+
     fun sendCommand(command: String) {
         sendCommand(command, null)
+    }
+
+    fun requestCompletionSoundTarget(target: String) {
+        sendCommand(if (target == "mac") "completionSoundOnMac" else "completionSoundOnPhone")
     }
 
     internal fun sendSmartphoneButton(buttonID: String) {

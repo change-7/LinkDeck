@@ -477,10 +477,6 @@ h2 {
   color: var(--status-green);
 }
 
-.app-state[data-state="unknown"] {
-  color: var(--status-warning);
-}
-
 .app-actions {
   display: flex;
   flex-wrap: wrap;

@@ -1,7 +1,5 @@
 package com.pdg.galaxymicrolaunchpad
 
-import android.media.RingtoneManager
-
 internal const val CodexCompletionWakeDurationMillis = 5_000L
 
 internal fun shouldWakeForCodex(isInteractive: Boolean): Boolean = !isInteractive
@@ -17,5 +15,3 @@ internal fun shouldWakeForCodexRunningTransition(
 
 /** Kept as a compatibility wrapper for the completion-specific tests/callers. */
 internal fun shouldWakeForCodexCompletion(isInteractive: Boolean): Boolean = shouldWakeForCodex(isInteractive)
-
-internal fun completionNotificationSoundType(): Int = RingtoneManager.TYPE_NOTIFICATION

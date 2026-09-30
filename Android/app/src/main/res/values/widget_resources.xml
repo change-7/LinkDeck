@@ -1,0 +1,16 @@
+<resources>
+    <color name="widget_background">#050505</color>
+    <color name="widget_outline">#303030</color>
+    <color name="widget_gauge_track">#303030</color>
+    <color name="widget_text_primary">#F2F2F2</color>
+    <color name="widget_weekly">#3B82F6</color>
+    <color name="widget_five_hour">#22C7A8</color>
+
+    <string name="usage_widget_title">Codex 사용량</string>
+    <string name="usage_widget_description">주간 및 5시간 사용량 잔량을 표시합니다.</string>
+    <string name="usage_widget_weekly">주간</string>
+    <string name="usage_widget_five_hour">5시간</string>
+    <string name="usage_widget_unknown">—</string>
+    <string name="usage_widget_percent">%1$d%%</string>
+    <string name="usage_widget_content_description">%1$s %2$s, %3$s %4$s</string>
+</resources>

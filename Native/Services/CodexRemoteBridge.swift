@@ -7,11 +7,13 @@ private func smartphonePagesForRemote(_ pages: [SmartphonePage]) -> [SmartphoneP
         var sanitizedPage = page
         sanitizedPage.buttons = page.buttons.map { button in
             var sanitizedButton = button
+            sanitizedButton.customIconData = nil
             if sanitizedButton.action.kind == .clipboardText {
                 sanitizedButton.action.value = ""
             }
             sanitizedButton.folderShortcuts = button.folderShortcuts.map { shortcut in
                 var sanitizedShortcut = shortcut
+                sanitizedShortcut.customIconData = nil
                 if sanitizedShortcut.action.kind == .clipboardText {
                     sanitizedShortcut.action.value = ""
                 }
@@ -42,6 +44,9 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
     let approval: CodexRemoteApproval?
     let completionEventID: Int
     let activeSessionCount: Int
+    let completionSoundVolumePercent: Int?
+    /// Optional so older cached/recorded bridge states remain decodable.
+    let codexPhoneTheme: CodexPhoneTheme?
 
     init(
         macConnected: Bool,
@@ -54,7 +59,9 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
         smartphoneIconAssets: [String: SmartphoneIconAsset] = [:],
         approval: CodexRemoteApproval? = nil,
         completionEventID: Int = 0,
-        activeSessionCount: Int = 0
+        activeSessionCount: Int = 0,
+        completionSoundVolumePercent: Int = 100,
+        codexPhoneTheme: CodexPhoneTheme = .classic
     ) {
         let used = weeklyUsage.map { min(max($0.usedPercent, 0), 100) }
         let fiveHourUsed = fiveHourUsage.map { min(max($0.usedPercent, 0), 100) }
@@ -75,6 +82,8 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
         self.approval = approval
         self.completionEventID = completionEventID
         self.activeSessionCount = activeSessionCount
+        self.completionSoundVolumePercent = min(max(completionSoundVolumePercent, 0), 100)
+        self.codexPhoneTheme = codexPhoneTheme
     }
 }
 
@@ -102,6 +111,39 @@ struct CodexRemoteIconAssets: Codable, Equatable, Sendable {
         self.protocolVersion = 1
         self.assets = assets
     }
+}
+
+struct CodexRemoteCompletionSound: Codable, Equatable, Sendable {
+    let type: String
+    let protocolVersion: Int
+    let id: String
+    let fileName: String?
+    let mimeType: String?
+    let data: String?
+    let useBuiltIn: Bool
+    let outputTarget: CodexCompletionSoundOutputTarget
+    let volumePercent: Int
+
+    init(
+        id: String,
+        fileName: String? = nil,
+        mimeType: String? = nil,
+        data: String? = nil,
+        outputTarget: CodexCompletionSoundOutputTarget = .phone,
+        volumePercent: Int = 100
+    ) {
+        self.type = "codexCompletionSound"
+        self.protocolVersion = 1
+        self.id = id
+        self.fileName = fileName
+        self.mimeType = mimeType
+        self.data = data
+        self.useBuiltIn = data == nil
+        self.outputTarget = outputTarget
+        self.volumePercent = min(max(volumePercent, 0), 100)
+    }
+
+    static let builtIn = CodexRemoteCompletionSound(id: "built-in")
 }
 
 struct CodexRemoteApproval: Codable, Equatable, Sendable {
@@ -169,13 +211,16 @@ final class CodexRemoteBridge {
     private var receiveBuffers: [UUID: Data] = [:]
     private var lastState: CodexRemoteState?
     private var lastIconAssets: [String: SmartphoneIconAsset]?
+    private var lastCompletionSoundID: String?
+    private var lastCompletionSoundOutputTarget: CodexCompletionSoundOutputTarget?
+    private var lastCompletionSound: CodexRemoteCompletionSound?
     private let queue = DispatchQueue(label: "MicroLaunchpad.remote-bridge", qos: .userInitiated)
 
     func start() {
         guard listener == nil else { return }
         do {
             let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: Self.port)!)
-            listener.service = NWListener.Service(name: "Micro Launchpad", type: Self.serviceType)
+            listener.service = NWListener.Service(name: "LinkDeck", type: Self.serviceType)
             listener.stateUpdateHandler = { [weak self] state in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -205,14 +250,25 @@ final class CodexRemoteBridge {
         connections.removeAll()
         receiveBuffers.removeAll()
         lastIconAssets = nil
+        lastCompletionSoundID = nil
+        lastCompletionSoundOutputTarget = nil
+        lastCompletionSound = nil
         clientCount = 0
         isRunning = false
     }
 
-    func publish(_ state: CodexRemoteState) {
+    func publish(_ state: CodexRemoteState, completionSound: CodexRemoteCompletionSound) {
         let iconAssetsChanged = state.smartphoneIconAssets != lastIconAssets
+        let completionSoundChanged = completionSound.id != lastCompletionSoundID
+            || completionSound.outputTarget != lastCompletionSoundOutputTarget
         lastState = state
         lastIconAssets = state.smartphoneIconAssets
+        lastCompletionSoundID = completionSound.id
+        lastCompletionSoundOutputTarget = completionSound.outputTarget
+        lastCompletionSound = completionSound
+        if completionSoundChanged {
+            send(completionSound, to: connections.values)
+        }
         guard let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
         for connection in connections.values {
             connection.send(content: data, completion: .contentProcessed { _ in })
@@ -274,6 +330,9 @@ final class CodexRemoteBridge {
 
     private func sendCurrentState(to connection: NWConnection) {
         guard let state = lastState, let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
+        if let completionSound = lastCompletionSound {
+            send(completionSound, to: [connection])
+        }
         connection.send(content: data, completion: .contentProcessed { _ in })
         if let assets = state.smartphoneIconAssets {
             send(CodexRemoteIconAssets(assets: assets), to: [connection])

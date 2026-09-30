@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_EXECUTABLE="$ROOT_DIR/마이크로 런치패드.app/Contents/MacOS/ChatGPTMicroLaunchpad"
+APP_EXECUTABLE="$ROOT_DIR/LinkDeck.app/Contents/MacOS/ChatGPTMicroLaunchpad"
 USER_HOME="$(/usr/bin/dscl . -read "/Users/$USER" NFSHomeDirectory | /usr/bin/awk '{print $2}')"
 LAUNCH_AGENTS_DIR="$USER_HOME/Library/LaunchAgents"
 LABEL="com.pdg.chatgpt-micro-launchpad.bridge"

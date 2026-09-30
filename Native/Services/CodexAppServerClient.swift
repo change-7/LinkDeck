@@ -38,8 +38,13 @@ final class CodexAppServerClient {
     private var remoteActiveSessionCount = 0
     private var usageRefreshTask: Task<Void, Never>?
     private var remoteStateRefreshTask: Task<Void, Never>?
+    private var reconnectTask: Task<Void, Never>?
+    private var automaticReconnectCount = 0
     private var lastUsageRefreshAt: Date?
     private var remoteSmartphonePagesProvider: () -> [SmartphonePage] = SmartphoneDefaults.persistedPages
+    private var remoteCodexPhoneThemeProvider: () -> CodexPhoneTheme = { .classic }
+    private var remoteCompletionSoundProvider: () -> CodexRemoteCompletionSound = { .builtIn }
+    private var localCompletionSoundHandler: () -> Void = {}
 
     private struct PendingRemoteApproval {
         let requestID: Int
@@ -69,6 +74,26 @@ final class CodexAppServerClient {
         publishRemoteState()
     }
 
+    func setRemoteCodexPhoneThemeProvider(_ provider: @escaping () -> CodexPhoneTheme) {
+        remoteCodexPhoneThemeProvider = provider
+        publishRemoteState()
+    }
+
+    func setRemoteCompletionSoundProvider(_ provider: @escaping () -> CodexRemoteCompletionSound) {
+        remoteCompletionSoundProvider = provider
+        publishRemoteState()
+    }
+
+    var onRemoteCompletionSoundTarget: ((CodexCompletionSoundOutputTarget) -> Void)?
+
+    func setRemoteCompletionSoundTarget(_ target: CodexCompletionSoundOutputTarget) {
+        onRemoteCompletionSoundTarget?(target)
+    }
+
+    func setLocalCompletionSoundHandler(_ handler: @escaping () -> Void) {
+        localCompletionSoundHandler = handler
+    }
+
     func stopRemoteBridge() {
         remoteStateRefreshTask?.cancel()
         remoteStateRefreshTask = nil
@@ -93,6 +118,7 @@ final class CodexAppServerClient {
 
     func publishRemoteCompletion(taskID: DesktopCodexTaskID) {
         remoteCompletionEventID += 1
+        localCompletionSoundHandler()
         publishRemoteState()
     }
 
@@ -121,7 +147,10 @@ final class CodexAppServerClient {
         launchedProcess.standardError = errorPipe
         launchedProcess.terminationHandler = { [weak self] process in
             Task { @MainActor in
-                self?.handleTermination(status: process.terminationStatus)
+                self?.handleTermination(
+                    status: process.terminationStatus,
+                    reason: process.terminationReason
+                )
             }
         }
 
@@ -149,7 +178,7 @@ final class CodexAppServerClient {
             sendRequest(
                 method: "initialize",
                 params: [
-                    "clientInfo": ["name": "Micro Launchpad", "version": "1.0"],
+                    "clientInfo": ["name": "LinkDeck", "version": "1.0"],
                     "capabilities": [:]
                 ],
                 kind: .initialize
@@ -162,6 +191,9 @@ final class CodexAppServerClient {
     }
 
     func disconnect() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        automaticReconnectCount = 0
         guard process != nil else { return }
         message = "Codex 연결을 종료했습니다."
         cleanUpProcess()
@@ -271,6 +303,9 @@ final class CodexAppServerClient {
     private func handleProtocolObject(_ object: [String: Any]) {
         if let method = object["method"] as? String {
             if method == "initialize" {
+                reconnectTask?.cancel()
+                reconnectTask = nil
+                automaticReconnectCount = 0
                 sendNotification(method: "initialized", params: [:])
                 isConnected = true
                 activity = .idle
@@ -414,14 +449,36 @@ final class CodexAppServerClient {
             || normalizedDiagnostic.contains("exec: codex: not found")
     }
 
-    private func handleTermination(status: Int32) {
+    private func handleTermination(status: Int32, reason: Process.TerminationReason) {
         guard process != nil else { return }
         isConnected = false
+        let shouldReconnect = Self.shouldAutomaticallyReconnect(
+            status: status,
+            reason: reason,
+            retryCount: automaticReconnectCount
+        )
         if activity != .failed {
             activity = .failed
             message = "Codex App Server가 종료되었습니다. (종료 코드 \(status))"
         }
         cleanUpProcess()
+        guard shouldReconnect else { return }
+        automaticReconnectCount += 1
+        message = "Codex App Server가 종료되어 자동으로 다시 연결하는 중…"
+        reconnectTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, let self else { return }
+            self.reconnectTask = nil
+            self.connect()
+        }
+    }
+
+    static func shouldAutomaticallyReconnect(
+        status: Int32,
+        reason: Process.TerminationReason,
+        retryCount: Int
+    ) -> Bool {
+        reason == .uncaughtSignal && status == SIGTERM && retryCount < 3
     }
 
     private func cleanUpProcess() {
@@ -478,6 +535,7 @@ final class CodexAppServerClient {
 
     func publishRemoteState() {
         let smartphonePages = remoteSmartphonePagesProvider()
+        let completionSound = remoteCompletionSoundProvider()
         let remoteActivity = Self.remoteActivity(
             desktopActivity: desktopActivity,
             appServerActivity: activity,
@@ -501,9 +559,11 @@ final class CodexAppServerClient {
                 CodexRemoteApproval(requestID: $0.requestID, title: $0.title, detail: $0.detail)
             },
             completionEventID: remoteCompletionEventID,
-            activeSessionCount: remoteActiveSessionCount
+            activeSessionCount: remoteActiveSessionCount,
+            completionSoundVolumePercent: completionSound.volumePercent,
+            codexPhoneTheme: remoteCodexPhoneThemeProvider()
         )
-        remoteBridge.publish(state)
+        remoteBridge.publish(state, completionSound: completionSound)
     }
 
     static func remoteActivity(
@@ -617,6 +677,7 @@ final class CodexAppServerClient {
         let supportDirectory = NSHomeDirectory() + "/Library/Application Support/마이크로 런치패드/codex-runtime/node_modules"
         let executablePaths = [
             supportDirectory + "/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex",
+            "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex",
             "/Applications/ChatGPT.app/Contents/Resources/codex"
         ]
         if let executablePath = executablePaths.first(where: isExecutable) {

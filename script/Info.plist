@@ -3,8 +3,8 @@
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>ChatGPTMicroLaunchpad</string>
 <key>CFBundleIdentifier</key><string>com.pdg.chatgpt-micro-launchpad</string>
-<key>CFBundleName</key><string>마이크로 런치패드</string>
-<key>CFBundleDisplayName</key><string>마이크로 런치패드</string>
+<key>CFBundleName</key><string>LinkDeck</string>
+<key>CFBundleDisplayName</key><string>LinkDeck</string>
 <key>CFBundleIconFile</key><string>MicroLaunchpad.icns</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -12,6 +12,6 @@
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSMultipleInstancesProhibited</key><true/>
 <key>NSHighResolutionCapable</key><true/>
-<key>NSAppleEventsUsageDescription</key><string>마이크로 런치패드가 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다.</string>
+<key>NSAppleEventsUsageDescription</key><string>LinkDeck이 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다.</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SmartphoneFolderEditorSlot: Identifiable, Hashable {
     let id: String
@@ -37,6 +38,17 @@ struct SmartphoneFolderEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var selectedShortcutID: String?
     @State private var registrationError = ""
+    @State private var isShortcutSymbolPickerPresented = false
+    @State private var isCustomIconDropTargeted = false
+    @State private var customIconError = ""
+
+    private let shortcutSymbolChoices = [
+        "", "app.fill", "folder.fill", "command", "play.fill", "terminal.fill",
+        "globe", "star.fill", "gearshape.fill", "message.fill", "photo",
+        "bolt.fill", "house.fill", "checkmark", "heart.fill", "music.note",
+        "link", "doc.text", "magnifyingglass", "camera.fill", "bookmark.fill",
+        "calendar", "clock.fill", "person.fill", "paperplane.fill", "sparkles"
+    ]
 
     private var folderButton: SmartphoneButton? {
         store.smartphonePages[safe: pageIndex]?.buttons.first { $0.id == folderButtonID }
@@ -165,8 +177,7 @@ struct SmartphoneFolderEditorView: View {
         } else if let shortcut = slot.shortcut {
             Button { selectedShortcutID = shortcut.id } label: {
                 VStack(spacing: 6) {
-                    Image(systemName: shortcut.symbol.isEmpty ? "command" : shortcut.symbol)
-                        .font(.system(size: 20, weight: .medium))
+                    shortcutIcon(shortcut, size: 24)
                     Text(shortcut.title.isEmpty ? "이름 없음" : shortcut.title)
                         .font(.system(size: 11, weight: .medium))
                         .lineLimit(1)
@@ -214,11 +225,26 @@ struct SmartphoneFolderEditorView: View {
                     .buttonStyle(.plain)
                 }
             }
-            if selectedShortcut != nil {
+            if let selectedShortcut {
                 TextField("버튼 라벨", text: shortcutTitleBinding)
                     .textFieldStyle(.roundedBorder)
-                TextField("SF Symbol", text: shortcutSymbolBinding)
-                    .textFieldStyle(.roundedBorder)
+                HStack(spacing: 6) {
+                    TextField("SF Symbol", text: shortcutSymbolBinding)
+                        .textFieldStyle(.roundedBorder)
+                    Button {
+                        isShortcutSymbolPickerPresented.toggle()
+                    } label: {
+                        Label("아이콘 선택", systemImage: "square.grid.3x3")
+                            .labelStyle(.iconOnly)
+                            .frame(width: 28, height: 24)
+                    }
+                    .buttonStyle(.bordered)
+                    .help("SF Symbol 아이콘 선택")
+                    .popover(isPresented: $isShortcutSymbolPickerPresented, arrowEdge: .trailing) {
+                        shortcutSymbolPicker(for: selectedShortcut)
+                    }
+                }
+                shortcutPNGEditor(for: selectedShortcut)
                 ShortcutComposerView(
                     value: shortcutValueBinding,
                     targetAppBundleIdentifier: shortcutTargetBinding,
@@ -298,11 +324,205 @@ struct SmartphoneFolderEditorView: View {
     }
 
     private func updateSelectedShortcut(_ change: (inout SmartphoneFolderShortcut) -> Void) {
-        guard let selectedShortcutID,
-              var button = folderButton,
-              let index = button.folderShortcuts.firstIndex(where: { $0.id == selectedShortcutID }) else { return }
+        guard let selectedShortcutID else { return }
+        updateShortcut(id: selectedShortcutID, change)
+    }
+
+    private func updateShortcut(
+        id shortcutID: String,
+        _ change: (inout SmartphoneFolderShortcut) -> Void
+    ) {
+        guard var button = folderButton,
+              let index = button.folderShortcuts.firstIndex(where: { $0.id == shortcutID }) else { return }
         change(&button.folderShortcuts[index])
         store.updateSmartphoneButton(button, at: pageIndex)
+    }
+
+    @ViewBuilder
+    private func shortcutSymbolPicker(for shortcut: SmartphoneFolderShortcut) -> some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 5), spacing: 5) {
+            ForEach(shortcutSymbolChoices, id: \.self) { symbol in
+                Button {
+                    updateShortcut(id: shortcut.id) { $0.symbol = symbol }
+                    isShortcutSymbolPickerPresented = false
+                } label: {
+                    Image(systemName: symbol.isEmpty ? "circle.slash" : symbol)
+                        .font(.system(size: 16, weight: .medium))
+                        .frame(width: 34, height: 34)
+                        .foregroundStyle(shortcut.symbol == symbol ? .orange : .primary)
+                        .background(
+                            shortcut.symbol == symbol ? Color.orange.opacity(0.14) : Color.primary.opacity(0.06),
+                            in: RoundedRectangle(cornerRadius: 6)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help(symbol.isEmpty ? "아이콘 없음" : symbol)
+            }
+        }
+        .padding(10)
+        .frame(width: 205)
+    }
+
+    @ViewBuilder
+    private func shortcutIcon(_ shortcut: SmartphoneFolderShortcut, size: CGFloat) -> some View {
+        if let data = shortcut.customIconData, let image = NSImage(data: data) {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: size, height: size)
+        } else {
+            Image(systemName: shortcut.symbol.isEmpty ? "command" : shortcut.symbol)
+                .font(.system(size: size, weight: .medium))
+                .frame(width: size, height: size)
+        }
+    }
+
+    private func shortcutPNGEditor(for shortcut: SmartphoneFolderShortcut) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("사용자 PNG 이미지")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+            HStack(spacing: 7) {
+                Group {
+                    if let data = shortcut.customIconData, let image = NSImage(data: data) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .scaledToFit()
+                            .padding(3)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 34, height: 34)
+                .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(shortcut.customIconData == nil ? "PNG 없음" : "PNG 적용됨")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("파일 선택·붙여넣기·드래그")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Button("선택") { chooseShortcutPNG(for: shortcut.id) }
+                    .font(.system(size: 10, weight: .semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.orange)
+                Button("붙여넣기") { pasteShortcutPNG(for: shortcut.id) }
+                    .font(.system(size: 10, weight: .semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.orange)
+                if shortcut.customIconData != nil {
+                    Button {
+                        clearShortcutPNG(for: shortcut.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red.opacity(0.9))
+                    .help("사용자 PNG 제거")
+                }
+            }
+            .padding(7)
+            .background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(isCustomIconDropTargeted ? .orange : .white.opacity(0.12), lineWidth: isCustomIconDropTargeted ? 1.5 : 1)
+            )
+            .onDrop(
+                of: [UTType.fileURL.identifier, UTType.png.identifier],
+                isTargeted: $isCustomIconDropTargeted
+            ) { providers in
+                importShortcutPNG(from: providers, shortcutID: shortcut.id)
+            }
+            .onPasteCommand(of: [UTType.png, UTType.fileURL]) { _ in
+                pasteShortcutPNG(for: shortcut.id)
+            }
+            if !customIconError.isEmpty {
+                Text(customIconError)
+                    .font(.system(size: 9))
+                    .foregroundStyle(.red.opacity(0.9))
+            }
+        }
+    }
+
+    private func chooseShortcutPNG(for shortcutID: String) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let data = try Data(contentsOf: url)
+                Task { @MainActor in applyShortcutPNG(data, to: shortcutID) }
+            } catch {
+                Task { @MainActor in customIconError = "PNG 파일을 읽지 못했습니다." }
+            }
+        }
+    }
+
+    private func pasteShortcutPNG(for shortcutID: String) {
+        guard let data = SmartphoneIconData.dataFromPasteboard() else {
+            customIconError = "클립보드에서 이미지를 찾지 못했습니다."
+            return
+        }
+        applyShortcutPNG(data, to: shortcutID)
+    }
+
+    private func importShortcutPNG(from providers: [NSItemProvider], shortcutID: String) -> Bool {
+        guard let provider = providers.first else { return false }
+        customIconError = ""
+
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let url: URL?
+                if let item = item as? URL {
+                    url = item
+                } else if let item = item as? NSURL {
+                    url = item as URL
+                } else if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    url = nil
+                }
+                guard let url, let data = try? Data(contentsOf: url) else {
+                    Task { @MainActor in customIconError = "PNG 파일을 읽지 못했습니다." }
+                    return
+                }
+                Task { @MainActor in applyShortcutPNG(data, to: shortcutID) }
+            }
+            return true
+        }
+
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.png.identifier) { data, _ in
+            guard let data else {
+                Task { @MainActor in customIconError = "PNG 이미지를 읽지 못했습니다." }
+                return
+            }
+            Task { @MainActor in applyShortcutPNG(data, to: shortcutID) }
+        }
+        return true
+    }
+
+    private func applyShortcutPNG(_ data: Data, to shortcutID: String) {
+        guard let normalizedData = SmartphoneIconData.normalizedPNGData(from: data) else {
+            customIconError = "유효한 PNG 이미지만 추가할 수 있습니다."
+            return
+        }
+        updateShortcut(id: shortcutID) { $0.customIconData = normalizedData }
+        customIconError = ""
+    }
+
+    private func clearShortcutPNG(for shortcutID: String) {
+        updateShortcut(id: shortcutID) { $0.customIconData = nil }
+        customIconError = ""
     }
 
     private func addShortcut() {

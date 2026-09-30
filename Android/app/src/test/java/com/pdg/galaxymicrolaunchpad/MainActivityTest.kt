@@ -1,7 +1,7 @@
 package com.pdg.galaxymicrolaunchpad
 
 import android.app.Service
-import android.media.RingtoneManager
+import java.time.LocalTime
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -29,6 +29,14 @@ class MainActivityTest {
     fun remoteUsageField_updatesWhenPresentAndClearsOnlyWhenExplicitlyNull() {
         assertEquals(54, mergeRemoteUsageInt(fieldPresent = true, fieldIsNull = false, fieldValue = 54, current = 67))
         assertEquals(null, mergeRemoteUsageInt(fieldPresent = true, fieldIsNull = true, fieldValue = null, current = 67))
+    }
+
+    @Test
+    fun codexPhoneTheme_acceptsSupportedThemesAndFallsBackForUnknownValues() {
+        assertEquals(PixelSpaceCodexPhoneTheme, normalizeCodexPhoneTheme(PixelSpaceCodexPhoneTheme))
+        assertEquals(DotMatrixCodexPhoneTheme, normalizeCodexPhoneTheme(DotMatrixCodexPhoneTheme))
+        assertEquals(PixelQuestCodexPhoneTheme, normalizeCodexPhoneTheme(PixelQuestCodexPhoneTheme))
+        assertEquals(DefaultCodexPhoneTheme, normalizeCodexPhoneTheme("unknown"))
     }
 
     @Test
@@ -177,6 +185,24 @@ class MainActivityTest {
     }
 
     @Test
+    fun blackoutClockSize_isClampedToTheSupportedRange() {
+        assertEquals(MinBlackoutClockSizePercent, clampBlackoutClockSizePercent(0))
+        assertEquals(70, clampBlackoutClockSizePercent(70))
+        assertEquals(MaxBlackoutClockSizePercent, clampBlackoutClockSizePercent(150))
+    }
+
+    @Test
+    fun blackoutClockTime_usesSystemHourModeAndPeriod() {
+        assertEquals("0", blackoutClockHour(LocalTime.of(0, 5), is24Hour = true))
+        assertEquals("12", blackoutClockHour(LocalTime.of(0, 5), is24Hour = false))
+        assertEquals("12", blackoutClockHour(LocalTime.of(12, 5), is24Hour = false))
+        assertEquals("23", blackoutClockHour(LocalTime.of(23, 5), is24Hour = true))
+        assertEquals("AM", blackoutClockMeridiem(LocalTime.of(0, 5), is24Hour = false))
+        assertEquals("PM", blackoutClockMeridiem(LocalTime.of(12, 5), is24Hour = false))
+        assertEquals(null, blackoutClockMeridiem(LocalTime.of(12, 5), is24Hour = true))
+    }
+
+    @Test
     fun activeStateAfterReconnect_revealsCodexEvenWhenActivityDidNotChange() {
         assertTrue(shouldRevealCodexAfterReconnect(forceReveal = true, currentActivity = "running"))
         assertTrue(shouldRevealCodexAfterReconnect(forceReveal = true, currentActivity = "waitingForApproval"))
@@ -272,8 +298,55 @@ class MainActivityTest {
     }
 
     @Test
-    fun codexCompletionSound_usesTheSystemNotificationStream() {
-        assertEquals(RingtoneManager.TYPE_NOTIFICATION, completionNotificationSoundType())
+    fun codexCompletionSound_playsOnlyForNewCompletionEvents() {
+        assertFalse(
+            shouldPlayCodexCompletionSound(
+                previousActivity = null,
+                currentActivity = "completed",
+                previousCompletionEventId = null,
+                currentCompletionEventId = 4
+            )
+        )
+        assertTrue(
+            shouldPlayCodexCompletionSound(
+                previousActivity = "running",
+                currentActivity = "completed",
+                previousCompletionEventId = 3,
+                currentCompletionEventId = 3
+            )
+        )
+        assertTrue(
+            shouldPlayCodexCompletionSound(
+                previousActivity = "running",
+                currentActivity = "running",
+                previousCompletionEventId = 3,
+                currentCompletionEventId = 4
+            )
+        )
+        assertFalse(
+            shouldPlayCodexCompletionSound(
+                previousActivity = "completed",
+                currentActivity = "completed",
+                previousCompletionEventId = 4,
+                currentCompletionEventId = 4
+            )
+        )
+        assertFalse(
+            shouldPlayCodexCompletionSound(
+                previousActivity = "running",
+                currentActivity = "completed",
+                previousCompletionEventId = 4,
+                currentCompletionEventId = 5,
+                outputTarget = "mac"
+            )
+        )
+    }
+
+    @Test
+    fun completionSoundVolume_isClampedToSupportedRange() {
+        assertEquals(0f, normalizeCompletionSoundVolumePercent(-1), 0.001f)
+        assertEquals(0.42f, normalizeCompletionSoundVolumePercent(42), 0.001f)
+        assertEquals(1f, normalizeCompletionSoundVolumePercent(101), 0.001f)
     }
 
     @Test
@@ -319,6 +392,27 @@ class MainActivityTest {
     fun horizontalSwipeCommitDistance_scalesFromDpToPixels() {
         assertEquals(32f, horizontalSwipeCommitDistancePx(density = 1f), 0.001f)
         assertEquals(96f, horizontalSwipeCommitDistancePx(density = 3f), 0.001f)
+    }
+
+    @Test
+    fun verticalSwipe_changesSmartphonePagesAndWrapsInBothDirections() {
+        assertEquals(1, verticalSwipeTarget(currentIndex = 0, pageCount = 3, dragDistance = -120f))
+        assertEquals(2, verticalSwipeTarget(currentIndex = 0, pageCount = 3, dragDistance = 120f))
+        assertEquals(0, verticalSwipeTarget(currentIndex = 2, pageCount = 3, dragDistance = -120f))
+        assertEquals(1, verticalSwipeTarget(currentIndex = 2, pageCount = 3, dragDistance = 120f))
+        assertEquals(1, verticalSwipeTarget(currentIndex = 1, pageCount = 3, dragDistance = 24f))
+        assertEquals(1, verticalSwipeTarget(currentIndex = 1, pageCount = 3, dragDistance = -80f))
+        assertEquals(0, verticalSwipeTarget(currentIndex = 9, pageCount = 0, dragDistance = -120f))
+    }
+
+    @Test
+    fun smartphonePageContentTransitionKey_changesWhenLeavingAFolderForAnotherPage() {
+        val folderContent = smartphonePageContentTransitionKey(pageIndex = 0, folderID = "folder-0")
+        val sameFolderContent = smartphonePageContentTransitionKey(pageIndex = 0, folderID = "folder-0")
+        val targetPageContent = smartphonePageContentTransitionKey(pageIndex = 1, folderID = null)
+
+        assertEquals(folderContent, sameFolderContent)
+        assertFalse(folderContent == targetPageContent)
     }
 
     @Test

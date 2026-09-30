@@ -39,6 +39,9 @@ internal fun mergeRemoteUsageDouble(state: JSONObject, key: String, current: Dou
     return state.optDouble(key)
 }
 
+internal fun normalizeCompletionSoundVolumePercent(value: Int): Float =
+    value.coerceIn(0, 100) / 100f
+
 internal fun parseRemoteApproval(state: JSONObject): RemoteApproval? {
     val approval = state.optJSONObject("approval") ?: return null
     return RemoteApproval(
@@ -81,6 +84,11 @@ internal fun parseSmartphonePages(
                             )
                             val shortcutSymbol = shortcutObject.optString("symbol", "command")
                             val shortcutAction = shortcutObject.optJSONObject("action")
+                            val iconBitmap = if (isSmartphoneButtonPlaceholder(shortcutTitle)) {
+                                null
+                            } else {
+                                parseSmartphoneIconAsset(state, shortcutID, iconBitmapCache, iconAssets)
+                            }
                             add(
                                 ControlAction(
                                     label = shortcutTitle,
@@ -92,13 +100,9 @@ internal fun parseSmartphonePages(
                                     actionValue = shortcutAction?.optString("value", "") ?: "",
                                     targetAppBundleIdentifier = shortcutAction?.optString("targetAppBundleIdentifier", "") ?: "",
                                     launchTargetAppIfNeeded = shortcutAction?.optBoolean("launchTargetAppIfNeeded", true) ?: true,
-                                    iconBitmap = if (isSmartphoneButtonPlaceholder(shortcutTitle)) {
-                                        null
-                                    } else {
-                                        parseSmartphoneIconAsset(state, shortcutID, iconBitmapCache, iconAssets)
-                                    },
+                                    iconBitmap = iconBitmap,
                                     isPlaceholder = isSmartphoneButtonPlaceholder(shortcutTitle),
-                                    isIconless = isIconlessSymbol(shortcutSymbol)
+                                    isIconless = isIconlessSymbol(shortcutSymbol) && iconBitmap == null
                                 )
                             )
                         }
@@ -237,6 +241,22 @@ internal fun isCodexCompletionEvent(
         && currentCompletionEventId != null
         && currentCompletionEventId > previousCompletionEventId
     return enteredCompleted || completionCounterAdvanced
+}
+
+internal fun shouldPlayCodexCompletionSound(
+    previousActivity: String?,
+    currentActivity: String,
+    previousCompletionEventId: Int?,
+    currentCompletionEventId: Int?,
+    outputTarget: String = "phone"
+): Boolean {
+    if (previousActivity == null || outputTarget != "phone") return false
+    return isCodexCompletionEvent(
+        previousActivity = normalizeRemoteActivity(previousActivity),
+        currentActivity = normalizeRemoteActivity(currentActivity),
+        previousCompletionEventId = previousCompletionEventId,
+        currentCompletionEventId = currentCompletionEventId
+    )
 }
 
 internal fun codexHeaderPulseAlpha(activity: String, progress: Float): Float {

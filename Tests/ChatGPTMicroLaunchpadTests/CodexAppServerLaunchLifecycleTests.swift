@@ -3,6 +3,31 @@ import XCTest
 
 @MainActor
 final class CodexAppServerLaunchLifecycleTests: XCTestCase {
+    func testAutomaticReconnect_whenAppServerReceivesSIGTERM_retriesOnlyUnexpectedSignalTermination() {
+        // Given / When / Then
+        XCTAssertTrue(
+            CodexAppServerClient.shouldAutomaticallyReconnect(
+                status: SIGTERM,
+                reason: .uncaughtSignal,
+                retryCount: 0
+            )
+        )
+        XCTAssertFalse(
+            CodexAppServerClient.shouldAutomaticallyReconnect(
+                status: SIGTERM,
+                reason: .exit,
+                retryCount: 0
+            )
+        )
+        XCTAssertFalse(
+            CodexAppServerClient.shouldAutomaticallyReconnect(
+                status: SIGTERM,
+                reason: .uncaughtSignal,
+                retryCount: 3
+            )
+        )
+    }
+
     func testRemoteActivity_whenNewTurnArrives_clearsPreviousDesktopCompletion() {
         XCTAssertTrue(
             CodexAppServerClient.shouldResetDesktopActivity(
@@ -213,6 +238,15 @@ final class CodexAppServerLaunchLifecycleTests: XCTestCase {
 
         // Then
         XCTAssertEqual(command.executableURL.path, vendorRuntimePath)
+        XCTAssertEqual(command.arguments, ["app-server"])
+    }
+
+    func testLaunchCommand_whenChatGPTBundledCodexCLIIsExecutable_usesItsCurrentBundlePath() {
+        let bundledCodexCLI = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+
+        let command = CodexAppServerClient.launchCommand(isExecutable: { $0 == bundledCodexCLI })
+
+        XCTAssertEqual(command.executableURL.path, bundledCodexCLI)
         XCTAssertEqual(command.arguments, ["app-server"])
     }
 

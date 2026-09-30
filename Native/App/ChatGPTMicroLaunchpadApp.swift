@@ -20,13 +20,13 @@ struct ChatGPTMicroLaunchpadApp: App {
                 launchpadLEDBubble: appDelegate.launchpadLEDBubble
             )
                 .preferredColorScheme(.dark)
-                .frame(width: 1120, height: 860)
+                .frame(width: 1120, height: 740)
         }
-        .defaultSize(width: 1120, height: 860)
+        .defaultSize(width: 1120, height: 740)
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
         .commands {
-            CommandMenu("런치패드") {
+            CommandMenu("LinkDeck") {
                 Button("설정 창 열기") { appDelegate.showMainWindow() }
                     .keyboardShortcut(",", modifiers: [.command])
                 Button("단축키 권한 요청") { runner.requestAccessibilityPermission() }
@@ -380,6 +380,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             let message: String
             switch command.command {
+            case "completionSoundOnPhone", "completionSoundOnMac":
+                let target: CodexCompletionSoundOutputTarget = command.command == "completionSoundOnPhone" ? .phone : .mac
+                codex.setRemoteCompletionSoundTarget(target)
+                message = "작업 완료음 재생 기기를 \(target.title)(으)로 변경했습니다."
             case "smartphoneButton":
                 guard let buttonID = command.buttonID,
                       let action = SmartphoneDefaults.action(id: buttonID, in: SmartphoneDefaults.persistedPages()) else {
@@ -441,7 +445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = NSImage(
             systemSymbolName: "square.grid.3x3.fill",
-            accessibilityDescription: "마이크로 런치패드"
+            accessibilityDescription: "LinkDeck"
         )
         let menu = NSMenu()
         menu.addItem(withTitle: "설정 창 열기", action: #selector(openMainWindowFromMenu), keyEquivalent: "")

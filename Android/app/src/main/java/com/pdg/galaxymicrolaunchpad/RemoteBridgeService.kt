@@ -38,6 +38,10 @@ class RemoteBridgeService : Service() {
                 Intent.ACTION_SCREEN_OFF -> scheduleScreenOffDisconnect()
                 Intent.ACTION_SCREEN_ON -> resumeConnection()
                 ACTION_TIMEOUT_CHANGED -> applyCurrentScreenState()
+                ACTION_CONNECTION_CHANGED -> {
+                    RemoteBridgeRuntime.client(this@RemoteBridgeService).stop()
+                    applyCurrentScreenState()
+                }
             }
         }
     }
@@ -76,6 +80,7 @@ class RemoteBridgeService : Service() {
             addAction(Intent.ACTION_SCREEN_OFF)
             addAction(Intent.ACTION_SCREEN_ON)
             addAction(ACTION_TIMEOUT_CHANGED)
+            addAction(ACTION_CONNECTION_CHANGED)
         }
         ContextCompat.registerReceiver(this, screenReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         screenReceiverRegistered = true
@@ -180,7 +185,7 @@ class RemoteBridgeService : Service() {
             "Mac bridge connection",
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Keeps the Micro Launchpad connection available while the screen is off."
+            description = "Keeps the LinkDeck connection available while the screen is off."
             setShowBadge(false)
         }
         notificationManager.createNotificationChannel(channel)
@@ -202,7 +207,7 @@ class RemoteBridgeService : Service() {
     private fun buildNotification(message: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_micro)
-            .setContentTitle("Micro Launchpad")
+            .setContentTitle("LinkDeck")
             .setContentText(message)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
@@ -213,6 +218,7 @@ class RemoteBridgeService : Service() {
     companion object {
         const val ACTION_START = "com.pdg.galaxymicrolaunchpad.START_REMOTE_BRIDGE"
         const val ACTION_TIMEOUT_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_TIMEOUT_CHANGED"
+        const val ACTION_CONNECTION_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_CONNECTION_CHANGED"
         private const val CHANNEL_ID = "mac_bridge_connection"
         private const val NOTIFICATION_ID = 43123
     }

@@ -82,7 +82,7 @@ final class LaunchpadMIDIManager: @unchecked Sendable {
             return
         }
 
-        guard MIDIClientCreateWithBlock("마이크로 런치패드" as CFString, &client, { [weak self] _ in
+        guard MIDIClientCreateWithBlock("LinkDeck" as CFString, &client, { [weak self] _ in
             DispatchQueue.main.async { self?.refreshConnection() }
         }) == noErr else { return }
 

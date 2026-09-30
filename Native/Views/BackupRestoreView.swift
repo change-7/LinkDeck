@@ -96,7 +96,7 @@ struct BackupRestoreView: View {
             let panel = NSSavePanel()
             panel.allowedContentTypes = [.json]
             panel.canCreateDirectories = true
-            panel.nameFieldStringValue = "micro-launchpad-backup.json"
+            panel.nameFieldStringValue = "linkdeck-backup.json"
             guard panel.runModal() == .OK, let url = panel.url else { return }
             try store.makeBackupData().write(to: url, options: .atomic)
             statusMessage = "백업을 저장했습니다."

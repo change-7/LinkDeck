@@ -21,6 +21,21 @@ internal const val DefaultDisplayKeepAwakeMinutes = 30
 internal const val MinCompletionBlinkDurationSeconds = 1
 internal const val MaxCompletionBlinkDurationSeconds = 10
 internal const val DefaultCompletionBlinkDurationSeconds = 2
+internal const val MinBlackoutClockSizePercent = 50
+internal const val MaxBlackoutClockSizePercent = 100
+internal const val BlackoutClockSizeStepPercent = 10
+internal const val DefaultBlackoutClockSizePercent = 100
+internal const val DefaultCodexPhoneTheme = "classic"
+internal const val PixelSpaceCodexPhoneTheme = "pixelSpace"
+internal const val DotMatrixCodexPhoneTheme = "dotMatrix"
+internal const val PixelQuestCodexPhoneTheme = "pixelQuest"
+
+internal fun normalizeCodexPhoneTheme(theme: String): String = when (theme) {
+    PixelSpaceCodexPhoneTheme -> PixelSpaceCodexPhoneTheme
+    DotMatrixCodexPhoneTheme -> DotMatrixCodexPhoneTheme
+    PixelQuestCodexPhoneTheme -> PixelQuestCodexPhoneTheme
+    else -> DefaultCodexPhoneTheme
+}
 
 internal val screenOffConnectionOptions =
     (MinScreenOffTimeoutMinutes..MaxScreenOffTimeoutMinutes step ScreenOffTimeoutStepMinutes)
@@ -44,6 +59,10 @@ internal fun completionBlinkDurationMillis(seconds: Int): Long {
     return clampCompletionBlinkDurationSeconds(seconds) * 1_000L
 }
 
+internal fun clampBlackoutClockSizePercent(percent: Int): Int {
+    return percent.coerceIn(MinBlackoutClockSizePercent, MaxBlackoutClockSizePercent)
+}
+
 internal class RemoteBridgePreferences(context: Context) {
     private val preferences = context.applicationContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
 
@@ -55,6 +74,20 @@ internal class RemoteBridgePreferences(context: Context) {
             if (isValidScreenOffOptionKey(value)) {
                 preferences.edit().putString(KEY_SCREEN_OFF_OPTION, value).apply()
             }
+        }
+
+    var codexPhoneTheme: String
+        get() = normalizeCodexPhoneTheme(
+            preferences.getString(KEY_CODEX_PHONE_THEME, DefaultCodexPhoneTheme) ?: DefaultCodexPhoneTheme
+        )
+        set(value) {
+            preferences.edit().putString(KEY_CODEX_PHONE_THEME, normalizeCodexPhoneTheme(value)).apply()
+        }
+
+    var macBridgeHost: String
+        get() = preferences.getString(KEY_MAC_BRIDGE_HOST, "")?.trim().orEmpty()
+        set(value) {
+            preferences.edit().putString(KEY_MAC_BRIDGE_HOST, value.trim()).apply()
         }
 
     val screenOffTimeoutMillis: Long
@@ -88,6 +121,16 @@ internal class RemoteBridgePreferences(context: Context) {
                 .apply()
         }
 
+    var blackoutClockSizePercent: Int
+        get() = clampBlackoutClockSizePercent(
+            preferences.getInt(KEY_BLACKOUT_CLOCK_SIZE_PERCENT, DefaultBlackoutClockSizePercent)
+        )
+        set(value) {
+            preferences.edit()
+                .putInt(KEY_BLACKOUT_CLOCK_SIZE_PERCENT, clampBlackoutClockSizePercent(value))
+                .apply()
+        }
+
     var sleepWindowStartMinutes: Int
         get() = preferences.getInt(KEY_SLEEP_WINDOW_START, 23 * 60)
         set(value) { preferences.edit().putInt(KEY_SLEEP_WINDOW_START, value.coerceIn(0, 23 * 60 + 59)).apply() }
@@ -114,10 +157,13 @@ internal class RemoteBridgePreferences(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "remote_bridge_preferences"
         private const val KEY_SCREEN_OFF_OPTION = "screen_off_option"
+        private const val KEY_CODEX_PHONE_THEME = "codex_phone_theme"
+        private const val KEY_MAC_BRIDGE_HOST = "mac_bridge_host"
         private const val KEY_SLEEP_WINDOW_ENABLED = "sleep_window_enabled"
         private const val KEY_IDLE_BLACKOUT_ENABLED = "idle_blackout_enabled"
         private const val KEY_DISPLAY_KEEP_AWAKE_MINUTES = "display_keep_awake_minutes"
         private const val KEY_COMPLETION_BLINK_DURATION_SECONDS = "completion_blink_duration_seconds"
+        private const val KEY_BLACKOUT_CLOCK_SIZE_PERCENT = "blackout_clock_size_percent"
         private const val KEY_SLEEP_WINDOW_START = "sleep_window_start"
         private const val KEY_SLEEP_WINDOW_END = "sleep_window_end"
         private const val KEY_SCREEN_OFF_STARTED_AT = "screen_off_started_at"

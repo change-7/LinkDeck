@@ -1,6 +1,7 @@
 .build/
 /.omo/
 /마이크로 런치패드.app/
+/LinkDeck.app/
 Android/.gradle/
 Android/.gradle-home/
 Android/.kotlin/

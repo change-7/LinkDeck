@@ -1,5 +1,32 @@
 import Foundation
 
+enum CodexPhoneTheme: String, CaseIterable, Codable, Identifiable, Sendable {
+    case classic
+    case pixelSpace
+    case dotMatrix
+    case pixelQuest
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .classic: "기본"
+        case .pixelSpace: "오비탈 픽셀"
+        case .dotMatrix: "도트 매트릭스"
+        case .pixelQuest: "픽셀 퀘스트"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .classic: "현재의 깔끔한 Codex 화면"
+        case .pixelSpace: "우주 정거장과 픽셀 에너지 모션"
+        case .dotMatrix: "도트 그리드와 픽셀 체크 모션"
+        case .pixelQuest: "스테이지 HUD와 아케이드 퀘스트"
+        }
+    }
+}
+
 enum CodexActivity: String, CaseIterable, Codable, Identifiable, Sendable {
     case idle
     case connecting

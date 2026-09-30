@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SmartphoneSettingsView: View {
     @Bindable var store: LaunchpadStore
@@ -9,6 +10,10 @@ struct SmartphoneSettingsView: View {
     @State private var dropTargetButtonID: String?
     @State private var registrationError = ""
     @State private var folderButtonID: String?
+    @State private var isCustomIconDropTargeted = false
+    @State private var customIconError = ""
+    @State private var isSymbolPickerPresented = false
+    @State private var symbolSearchText = ""
 
     private let symbolChoices = [
         // 아이콘 없음
@@ -67,15 +72,14 @@ struct SmartphoneSettingsView: View {
     private var selectedButton: SmartphoneButton { page.buttons[buttonIndex] }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-            HStack(alignment: .top, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 pageList
                 buttonGrid
                 editor
             }
         }
-        .padding(22)
+        .padding(14)
         .foregroundStyle(.white)
         .background(Color(red: 0.035, green: 0.035, blue: 0.045))
         .onChange(of: pageIndex) { _, _ in buttonIndex = 0 }
@@ -102,22 +106,6 @@ struct SmartphoneSettingsView: View {
                 .zIndex(100)
             }
         }
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Image(systemName: "iphone").foregroundStyle(.orange)
-            Text("스마트폰 버튼 설정").font(.system(size: 20, weight: .bold))
-            Text("휴대폰 앱으로 전송되는 3페이지 × 16버튼 구성")
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("Mac 64 GRID와 별도 저장")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.green)
-        }
-        .padding(.bottom, 4)
-        .overlay(alignment: .bottom) { Divider().overlay(.white.opacity(0.16)) }
     }
 
     private var pageList: some View {
@@ -176,45 +164,54 @@ struct SmartphoneSettingsView: View {
     }
 
     private func buttonCell(index: Int, button: SmartphoneButton) -> some View {
-        Button {
-            buttonIndex = index
-            if button.action.kind == .appFolder {
-                folderButtonID = button.id
-            }
-        } label: {
-            VStack(spacing: 6) {
-                buttonIcon(for: button, isSelected: index == buttonIndex)
-                if !button.title.isEmpty {
-                    Text(button.title)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
+        ZStack(alignment: .topTrailing) {
+            Button {
+                buttonIndex = index
+                if button.action.kind == .appFolder {
+                    folderButtonID = button.id
                 }
-                if button.action.kind != .none {
-                    Text(button.action.kind.title)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
+            } label: {
+                VStack(spacing: 6) {
+                    buttonIcon(for: button, isSelected: index == buttonIndex)
+                    if !button.title.isEmpty {
+                        Text(button.title)
+                            .font(.system(size: 11, weight: .medium))
+                            .lineLimit(1)
+                    }
+                    if button.action.kind != .none {
+                        Text(button.action.kind.title)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 78)
+                .padding(7)
+                .background(index == buttonIndex ? Color.orange.opacity(0.15) : Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(index == buttonIndex ? .orange : .white.opacity(0.12), lineWidth: index == buttonIndex ? 1.5 : 1))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(.orange, lineWidth: 2)
+                        .opacity(dropTargetButtonID == button.id ? 1 : 0)
                 }
             }
-            .frame(maxWidth: .infinity, minHeight: 78)
-            .padding(7)
-            .background(index == buttonIndex ? Color.orange.opacity(0.15) : Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(index == buttonIndex ? .orange : .white.opacity(0.12), lineWidth: index == buttonIndex ? 1.5 : 1))
-            .overlay(alignment: .topTrailing) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.38))
-                    .padding(7)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 9)
-                    .stroke(.orange, lineWidth: 2)
-                    .opacity(dropTargetButtonID == button.id ? 1 : 0)
-            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(button.title.isEmpty ? "비어 있는 스마트폰 버튼 슬롯" : button.title)
+            .accessibilityHint("선택하여 버튼을 편집합니다.")
+
+            Image(systemName: "line.3.horizontal")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white.opacity(0.55))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+                .draggable(button.id) {
+                    Label(button.title.isEmpty ? "빈 버튼" : button.title, systemImage: button.symbol.isEmpty ? "square" : button.symbol)
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }
+                .accessibilityLabel("\(button.title.isEmpty ? "빈 버튼" : button.title) 이동")
+                .accessibilityHint("다른 버튼 위로 드래그해 위치를 교환합니다.")
+                .help("이 손잡이를 드래그하여 버튼 위치를 교환합니다.")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(button.title.isEmpty ? "비어 있는 스마트폰 버튼 슬롯" : button.title)
-        .accessibilityHint("드래그하여 버튼 위치를 바꿀 수 있습니다.")
-        .draggable(button.id)
         .dropDestination(for: String.self) { items, _ in
             guard let sourceID = items.first else { return false }
             dropTargetButtonID = nil
@@ -250,6 +247,7 @@ struct SmartphoneSettingsView: View {
             }
             field("버튼 라벨") { DarkTextField(text: buttonTextBinding) }
             field("아이콘 선택") { symbolPicker }
+            field("사용자 PNG 아이콘") { customIconPicker }
             Divider().overlay(.white.opacity(0.16))
             field("실행 동작") {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
@@ -280,53 +278,173 @@ struct SmartphoneSettingsView: View {
     }
 
     private var symbolPicker: some View {
-        let choices = symbolChoices.contains(selectedButton.symbol)
-            ? symbolChoices
-            : [selectedButton.symbol] + symbolChoices
-        return VStack(alignment: .leading, spacing: 7) {
+        Button {
+            symbolSearchText = ""
+            isSymbolPickerPresented.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                symbolGlyph(selectedButton.symbol, size: 15)
+                    .frame(width: 22, height: 22)
+                Text(selectedButton.symbol.isEmpty ? "아이콘 없음" : selectedButton.symbol)
+                    .font(.system(size: 10, design: .monospaced))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: isSymbolPickerPresented ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 9)
+            .frame(maxWidth: .infinity, minHeight: 32)
+            .foregroundStyle(.white.opacity(0.86))
+            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("아이콘 선택: \(selectedButton.symbol.isEmpty ? "아이콘 없음" : selectedButton.symbol)")
+        .overlay(alignment: .topLeading) {
+            if isSymbolPickerPresented {
+                symbolPopover
+                    .offset(y: 39)
+                    .zIndex(100)
+            }
+        }
+        .zIndex(isSymbolPickerPresented ? 100 : 0)
+    }
+
+    private var symbolPopover: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                DarkTextField(text: $symbolSearchText, placeholder: "아이콘 검색")
+            }
             ScrollView(.vertical) {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 5), spacing: 6) {
-                    ForEach(choices, id: \.self) { symbol in
-                        Button {
-                            var button = selectedButton
-                            button.symbol = symbol
-                            update(button)
-                        } label: {
-                            Group {
-                                if symbol.isEmpty {
-                                    RoundedRectangle(cornerRadius: 4)
-                                        .stroke(
-                                            selectedButton.symbol == symbol ? Color.orange.opacity(0.72) : .white.opacity(0.24),
-                                            style: StrokeStyle(lineWidth: 1, dash: [3, 2])
-                                        )
-                                        .padding(7)
-                                } else {
-                                    Image(systemName: symbol)
-                                        .font(.system(size: 17, weight: .medium))
-                                }
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 31)
-                            .foregroundStyle(selectedButton.symbol == symbol ? .black : .white.opacity(0.78))
-                            .background(
-                                selectedButton.symbol == symbol ? Color.orange : Color.black.opacity(0.28),
-                                in: RoundedRectangle(cornerRadius: 6)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(selectedButton.symbol == symbol ? .orange : .white.opacity(0.12))
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(symbol.isEmpty ? "아이콘 없음" : symbol)
-                        .help(symbol.isEmpty ? "아이콘 없음" : symbol)
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 6) {
+                    ForEach(filteredSymbolChoices, id: \.self) { symbol in
+                        symbolChoiceButton(symbol)
                     }
                 }
             }
-            .frame(maxHeight: 230)
-            Text(selectedButton.symbol.isEmpty ? "아이콘 없음" : selectedButton.symbol)
+            .frame(height: 220)
+            Text("\(filteredSymbolChoices.count)개 아이콘")
                 .font(.system(size: 9, design: .monospaced))
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+        }
+        .padding(11)
+        .frame(width: 250)
+        .foregroundStyle(.white)
+        .background(Color(red: 0.075, green: 0.075, blue: 0.09), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.16)))
+        .shadow(color: .black.opacity(0.48), radius: 16, y: 8)
+    }
+
+    private var filteredSymbolChoices: [String] {
+        let choices = symbolChoices.contains(selectedButton.symbol)
+            ? symbolChoices
+            : [selectedButton.symbol] + symbolChoices
+        let query = symbolSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return choices }
+        return choices.filter { symbol in
+            let title = symbol.isEmpty ? "아이콘 없음" : symbol
+            return title.localizedCaseInsensitiveContains(query)
+        }
+    }
+
+    private func symbolChoiceButton(_ symbol: String) -> some View {
+        Button {
+            var button = selectedButton
+            button.symbol = symbol
+            update(button)
+            isSymbolPickerPresented = false
+        } label: {
+            symbolGlyph(symbol, size: 17)
+                .frame(maxWidth: .infinity, minHeight: 34)
+                .foregroundStyle(selectedButton.symbol == symbol ? .black : .white.opacity(0.78))
+                .background(
+                    selectedButton.symbol == symbol ? Color.orange : Color.black.opacity(0.28),
+                    in: RoundedRectangle(cornerRadius: 6)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(selectedButton.symbol == symbol ? .orange : .white.opacity(0.12))
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(symbol.isEmpty ? "아이콘 없음" : symbol)
+        .help(symbol.isEmpty ? "아이콘 없음" : symbol)
+    }
+
+    @ViewBuilder
+    private func symbolGlyph(_ symbol: String, size: CGFloat) -> some View {
+        if symbol.isEmpty {
+            RoundedRectangle(cornerRadius: 4)
+                .stroke(.white.opacity(0.36), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                .padding(7)
+        } else {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .medium))
+        }
+    }
+
+    @ViewBuilder
+    private var customIconPicker: some View {
+        HStack(spacing: 8) {
+            Group {
+                if let customIconData = selectedButton.customIconData,
+                   let image = NSImage(data: customIconData) {
+                    Image(nsImage: image)
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .padding(4)
+                } else {
+                    Image(systemName: "photo")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 38, height: 38)
+            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(isCustomIconDropTargeted ? .orange : .white.opacity(0.12), lineWidth: isCustomIconDropTargeted ? 1.5 : 1)
+            )
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(selectedButton.customIconData == nil ? "PNG 없음" : "사용자 PNG 적용")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("복사 후 붙여넣기 또는 드래그")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 2)
+            Button("붙여넣기") { pasteCustomIcon() }
+                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(.orange)
+            if selectedButton.customIconData != nil {
+                Button("제거") { clearCustomIcon() }
+                    .font(.system(size: 10, weight: .semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red.opacity(0.9))
+            }
+        }
+        .padding(7)
+        .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.12)))
+        .onDrop(
+            of: [UTType.fileURL.identifier, UTType.png.identifier],
+            isTargeted: $isCustomIconDropTargeted,
+            perform: importDroppedIcon
+        )
+        .onPasteCommand(of: [UTType.png, UTType.fileURL]) { _ in
+            pasteCustomIcon()
+        }
+        if !customIconError.isEmpty {
+            Text(customIconError)
+                .font(.system(size: 9))
+                .foregroundStyle(.red.opacity(0.9))
         }
     }
 
@@ -417,7 +535,15 @@ struct SmartphoneSettingsView: View {
         case .terminalCommand, .url, .clipboardText, .none: nil
         }
 
-        if button.symbol.isEmpty {
+        if let customIconData = button.customIconData,
+           let customIcon = NSImage(data: customIconData) {
+            Image(nsImage: customIcon)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: 24, height: 24)
+                .opacity(isSelected ? 1 : 0.82)
+        } else if button.symbol.isEmpty {
             Color.clear
                 .frame(width: 24, height: 24)
         } else if let appBundleIdentifier,
@@ -441,6 +567,7 @@ struct SmartphoneSettingsView: View {
             Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.72))
             content()
         }
+        .zIndex(title == "아이콘 선택" && isSymbolPickerPresented ? 100 : 0)
     }
 
     private func actionButton(_ kind: ActionKind) -> some View {
@@ -531,6 +658,67 @@ struct SmartphoneSettingsView: View {
     }
 
     private func update(_ button: SmartphoneButton) { store.updateSmartphoneButton(button, at: pageIndex) }
+
+    private func pasteCustomIcon() {
+        if let data = SmartphoneIconData.dataFromPasteboard() {
+            applyCustomIcon(data)
+        } else {
+            customIconError = "클립보드에서 PNG 이미지를 찾지 못했습니다."
+        }
+    }
+
+    private func importDroppedIcon(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        customIconError = ""
+
+        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                let url: URL?
+                if let item = item as? URL {
+                    url = item
+                } else if let item = item as? NSURL {
+                    url = item as URL
+                } else if let data = item as? Data {
+                    url = URL(dataRepresentation: data, relativeTo: nil)
+                } else {
+                    url = nil
+                }
+                guard let url, let data = try? Data(contentsOf: url) else {
+                    Task { @MainActor in customIconError = "PNG 파일을 읽지 못했습니다." }
+                    return
+                }
+                Task { @MainActor in applyCustomIcon(data) }
+            }
+            return true
+        }
+
+        provider.loadDataRepresentation(forTypeIdentifier: UTType.png.identifier) { data, _ in
+            guard let data else {
+                Task { @MainActor in customIconError = "PNG 이미지를 읽지 못했습니다." }
+                return
+            }
+            Task { @MainActor in applyCustomIcon(data) }
+        }
+        return true
+    }
+
+    private func applyCustomIcon(_ data: Data) {
+        guard let normalized = SmartphoneIconData.normalizedPNGData(from: data) else {
+            customIconError = "유효한 PNG 이미지만 추가할 수 있습니다."
+            return
+        }
+        var button = selectedButton
+        button.customIconData = normalized
+        update(button)
+        customIconError = ""
+    }
+
+    private func clearCustomIcon() {
+        var button = selectedButton
+        button.customIconData = nil
+        update(button)
+        customIconError = ""
+    }
 
     private func addFolderShortcut() {
         var button = selectedButton

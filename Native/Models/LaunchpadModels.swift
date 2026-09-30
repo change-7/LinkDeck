@@ -80,22 +80,25 @@ struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
     let id: String
     var title = ""
     var symbol = "command"
+    var customIconData: Data?
     var action = PadAction(kind: .shortcut)
 
     init(
         id: String,
         title: String = "",
         symbol: String = "command",
+        customIconData: Data? = nil,
         action: PadAction = PadAction(kind: .shortcut)
     ) {
         self.id = id
         self.title = title
         self.symbol = symbol
+        self.customIconData = customIconData
         self.action = action
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, symbol, action
+        case id, title, symbol, customIconData, action
     }
 
     init(from decoder: Decoder) throws {
@@ -103,6 +106,7 @@ struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
         id = try container.decode(String.self, forKey: .id)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         symbol = try container.decodeIfPresent(String.self, forKey: .symbol) ?? "command"
+        customIconData = try container.decodeIfPresent(Data.self, forKey: .customIconData)
         action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction(kind: .shortcut)
     }
 }
@@ -131,6 +135,7 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
     let id: String
     var title = ""
     var symbol = "square.grid.2x2"
+    var customIconData: Data?
     var action = PadAction()
     var folderShortcuts: [SmartphoneFolderShortcut] = []
 
@@ -138,18 +143,20 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         id: String,
         title: String = "",
         symbol: String = "square.grid.2x2",
+        customIconData: Data? = nil,
         action: PadAction = PadAction(),
         folderShortcuts: [SmartphoneFolderShortcut] = []
     ) {
         self.id = id
         self.title = title
         self.symbol = symbol
+        self.customIconData = customIconData
         self.action = action
         self.folderShortcuts = folderShortcuts
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, symbol, action, folderShortcuts
+        case id, title, symbol, customIconData, action, folderShortcuts
     }
 
     init(from decoder: Decoder) throws {
@@ -157,12 +164,20 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         id = try container.decode(String.self, forKey: .id)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         symbol = try container.decodeIfPresent(String.self, forKey: .symbol) ?? "square.grid.2x2"
+        customIconData = try container.decodeIfPresent(Data.self, forKey: .customIconData)
         action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction()
         folderShortcuts = try container.decodeIfPresent([SmartphoneFolderShortcut].self, forKey: .folderShortcuts) ?? []
     }
 
     func configuration(at id: String) -> SmartphoneButton {
-        SmartphoneButton(id: id, title: title, symbol: symbol, action: action, folderShortcuts: folderShortcuts)
+        SmartphoneButton(
+            id: id,
+            title: title,
+            symbol: symbol,
+            customIconData: customIconData,
+            action: action,
+            folderShortcuts: folderShortcuts
+        )
     }
 }
 
