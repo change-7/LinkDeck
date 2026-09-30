@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>LinkDeck</string>
+	<key>CFBundleExecutable</key>
+	<string>ChatGPTMicroLaunchpad</string>
+	<key>CFBundleIconFile</key>
+	<string>MicroLaunchpad.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.pdg.chatgpt-micro-launchpad</string>
+	<key>CFBundleName</key>
+	<string>LinkDeck</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>20260930011324</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSMultipleInstancesProhibited</key>
+	<true/>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>LinkDeck이 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>
