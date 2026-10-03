@@ -51,11 +51,12 @@ enum SmartphoneIconAssetProvider {
     }
 
     private static func targetBundleIdentifier(for button: SmartphoneButton) -> String? {
-        switch button.action.kind {
+        let action = button.action.kind == .none ? button.longPressAction : button.action
+        switch action.kind {
         case .app, .appFolder:
-            return button.action.value
+            return action.value
         case .shortcut:
-            return button.action.targetAppBundleIdentifier
+            return action.targetAppBundleIdentifier
         case .terminalCommand, .url, .clipboardText, .none:
             return nil
         }

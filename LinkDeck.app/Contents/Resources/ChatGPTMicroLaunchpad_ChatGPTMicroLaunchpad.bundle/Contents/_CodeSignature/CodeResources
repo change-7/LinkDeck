@@ -4,13 +4,13 @@
 <dict>
 	<key>files</key>
 	<dict>
+		<key>Resources/ControlCabinetBackground.png</key>
+		<data>
+		VPaKwFyap/+3/8KZM+qsww9Hemg=
+		</data>
 		<key>Resources/PixelSpaceBackground.png</key>
 		<data>
 		87Q2voiH8vogo4LO6+664jIrFlo=
-		</data>
-		<key>Resources/app.js</key>
-		<data>
-		dFnZV6r7is1eaEgYalOg9OgqTbI=
 		</data>
 		<key>Resources/codex_completion_chime.mp3</key>
 		<data>
@@ -20,29 +20,21 @@
 		<data>
 		0p/wxgJ0fH7o9bz2kKBc+OXKGsE=
 		</data>
-		<key>Resources/index.html</key>
-		<data>
-		s7791m3awc7Mb1ZwQ05rG8P7Yrg=
-		</data>
-		<key>Resources/styles.css</key>
-		<data>
-		R7ThHq2X12i23m8MBNb0jWKGc+Y=
-		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
+		<key>Resources/ControlCabinetBackground.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ICTL2oKEFXaFoulFdZbtMYcS4YwoerFjKdYyy43VwnU=
+			</data>
+		</dict>
 		<key>Resources/PixelSpaceBackground.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			g195x7CiznDIlVAbD+E/bsyoNfbKfnWkVxz51P6DFTs=
-			</data>
-		</dict>
-		<key>Resources/app.js</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			SAybrYgTHEgxw2r05NuQy1nQ/V9WpzmGGdIwJIxBe58=
 			</data>
 		</dict>
 		<key>Resources/codex_completion_chime.mp3</key>
@@ -57,20 +49,6 @@
 			<key>hash2</key>
 			<data>
 			bnQZ/mXHVhCUn7lFjFjbq4Hvf14+znpZboHI6/mGrKc=
-			</data>
-		</dict>
-		<key>Resources/index.html</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			WQvxIEyhP5H69mUvtUWVKsTGLZq85Bp2ilhKGY+FdoE=
-			</data>
-		</dict>
-		<key>Resources/styles.css</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			tmtBltJYtJb2koPSP8/uORldLDBlqB6k+AFVIVo+rHU=
 			</data>
 		</dict>
 	</dict>

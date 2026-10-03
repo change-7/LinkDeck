@@ -257,6 +257,25 @@ final class CodexEventReducerTests: XCTestCase {
         XCTAssertEqual(page.buttons[1].action.kind, .shortcut)
     }
 
+    func testSmartphoneButtonSwapAcrossPages_keepsSlotIDsAndExchangesConfigurations() {
+        var sourcePage = SmartphonePage(id: "smartphone_page_0", name: "PAGE 01", buttons: [
+            SmartphoneButton(id: "smartphone_page_0_button_0", title: "실행", symbol: "play.fill", action: PadAction(kind: .shortcut, value: "cmd+r"))
+        ])
+        var destinationPage = SmartphonePage(id: "smartphone_page_1", name: "PAGE 02", buttons: [
+            SmartphoneButton(id: "smartphone_page_1_button_0", title: "브라우저", symbol: "globe", action: PadAction(kind: .url, value: "https://example.com"))
+        ])
+
+        XCTAssertTrue(sourcePage.swapButtonConfigurations(
+            from: "smartphone_page_0_button_0",
+            with: &destinationPage,
+            to: "smartphone_page_1_button_0"
+        ))
+        XCTAssertEqual(sourcePage.buttons[0].id, "smartphone_page_0_button_0")
+        XCTAssertEqual(sourcePage.buttons[0].title, "브라우저")
+        XCTAssertEqual(destinationPage.buttons[0].id, "smartphone_page_1_button_0")
+        XCTAssertEqual(destinationPage.buttons[0].title, "실행")
+    }
+
     func testMotionPresetRename_trimsAndPersistsTheNewName() {
         let store = LaunchpadStore()
         let preset = MotionPreset(name: "Old", loop: false, frameDurationMs: 100, frames: [MotionFrame(pixels: [])])

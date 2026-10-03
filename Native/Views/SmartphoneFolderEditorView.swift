@@ -35,12 +35,14 @@ struct SmartphoneFolderEditorView: View {
     @Bindable var store: LaunchpadStore
     let pageIndex: Int
     let folderButtonID: String
+    var folderUsesLongPress = false
     @Environment(\.dismiss) private var dismiss
     @State private var selectedShortcutID: String?
     @State private var registrationError = ""
     @State private var isShortcutSymbolPickerPresented = false
     @State private var isCustomIconDropTargeted = false
     @State private var customIconError = ""
+    @State private var editingLongPress = false
 
     private let shortcutSymbolChoices = [
         "", "app.fill", "folder.fill", "command", "play.fill", "terminal.fill",
@@ -56,6 +58,16 @@ struct SmartphoneFolderEditorView: View {
 
     private var selectedShortcut: SmartphoneFolderShortcut? {
         folderButton?.folderShortcuts.first { $0.id == selectedShortcutID }
+    }
+
+    private var folderAction: PadAction {
+        guard let folderButton else { return PadAction() }
+        return folderUsesLongPress ? folderButton.longPressAction : folderButton.action
+    }
+
+    private var selectedAction: PadAction {
+        guard let selectedShortcut else { return PadAction() }
+        return editingLongPress ? selectedShortcut.longPressAction : selectedShortcut.action
     }
 
     var body: some View {
@@ -115,8 +127,8 @@ struct SmartphoneFolderEditorView: View {
                     .frame(width: 160)
                 Button("앱 변경") { registerFolderApplication() }
                     .buttonStyle(.bordered)
-                if !folderButton.action.value.isEmpty {
-                    Text(AppRegistrationService.displayName(for: folderButton.action.value) ?? folderButton.action.value)
+                if !folderAction.value.isEmpty {
+                    Text(AppRegistrationService.displayName(for: folderAction.value) ?? folderAction.value)
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -152,7 +164,7 @@ struct SmartphoneFolderEditorView: View {
             }
             .frame(maxHeight: 410)
         }
-        .frame(minWidth: 580, maxWidth: .infinity, alignment: .leading)
+        .frame(minWidth: 530, maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
@@ -181,9 +193,20 @@ struct SmartphoneFolderEditorView: View {
                     Text(shortcut.title.isEmpty ? "이름 없음" : shortcut.title)
                         .font(.system(size: 11, weight: .medium))
                         .lineLimit(1)
-                    Text(shortcut.action.kind.title)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                    VStack(spacing: 2) {
+                        if shortcut.action.kind != .none {
+                            Text("짧게 · \(shortcut.action.kind.title)")
+                        }
+                        if shortcut.longPressAction.kind != .none {
+                            Text("길게 · \(shortcut.longPressAction.kind.title)")
+                        }
+                        if shortcut.action.kind == .none && shortcut.longPressAction.kind == .none {
+                            Text("동작 없음")
+                        }
+                    }
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
                 .foregroundStyle(selectedShortcutID == shortcut.id ? .orange : .white)
@@ -210,62 +233,119 @@ struct SmartphoneFolderEditorView: View {
     }
 
     private func shortcutEditor(_ folderButton: SmartphoneButton) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("버튼 편집")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                if selectedShortcut != nil {
-                    Button(role: .destructive) {
-                        removeSelectedShortcut()
-                    } label: {
-                        Image(systemName: "trash")
+        ScrollView(.vertical) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("버튼 편집")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    if selectedShortcut != nil {
+                        Button(role: .destructive) {
+                            removeSelectedShortcut()
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
-            }
-            if let selectedShortcut {
-                TextField("버튼 라벨", text: shortcutTitleBinding)
-                    .textFieldStyle(.roundedBorder)
-                HStack(spacing: 6) {
-                    TextField("SF Symbol", text: shortcutSymbolBinding)
+                if let selectedShortcut {
+                    TextField("버튼 라벨", text: shortcutTitleBinding)
                         .textFieldStyle(.roundedBorder)
-                    Button {
-                        isShortcutSymbolPickerPresented.toggle()
-                    } label: {
-                        Label("아이콘 선택", systemImage: "square.grid.3x3")
-                            .labelStyle(.iconOnly)
-                            .frame(width: 28, height: 24)
+                    HStack(spacing: 6) {
+                        TextField("SF Symbol", text: shortcutSymbolBinding)
+                            .textFieldStyle(.roundedBorder)
+                        Button {
+                            isShortcutSymbolPickerPresented.toggle()
+                        } label: {
+                            Label("아이콘 선택", systemImage: "square.grid.3x3")
+                                .labelStyle(.iconOnly)
+                                .frame(width: 28, height: 24)
+                        }
+                        .buttonStyle(.bordered)
+                        .help("SF Symbol 아이콘 선택")
+                        .popover(isPresented: $isShortcutSymbolPickerPresented, arrowEdge: .trailing) {
+                            shortcutSymbolPicker(for: selectedShortcut)
+                        }
                     }
-                    .buttonStyle(.bordered)
-                    .help("SF Symbol 아이콘 선택")
-                    .popover(isPresented: $isShortcutSymbolPickerPresented, arrowEdge: .trailing) {
-                        shortcutSymbolPicker(for: selectedShortcut)
+                    shortcutPNGEditor(for: selectedShortcut)
+                    Picker("누르기 동작", selection: $editingLongPress) {
+                        Text("짧게 누르기").tag(false)
+                        Text("길게 누르기").tag(true)
                     }
+                    .pickerStyle(.segmented)
+                    Picker("동작", selection: shortcutKindBinding) {
+                        ForEach([ActionKind.none, .shortcut, .app, .terminalCommand, .url, .clipboardText]) { kind in
+                            Text(kind.title).tag(kind)
+                        }
+                    }
+                    shortcutActionEditor
+                } else {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 28, weight: .medium))
+                        .foregroundStyle(.orange)
+                    Text("4×4 버튼에서 편집할 버튼을 선택하세요.")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("빈 칸은 ‘버튼 추가’로 등록할 수 있습니다.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
                 }
-                shortcutPNGEditor(for: selectedShortcut)
-                ShortcutComposerView(
-                    value: shortcutValueBinding,
-                    targetAppBundleIdentifier: shortcutTargetBinding,
-                    launchTargetAppIfNeeded: shortcutLaunchBinding
-                )
-            } else {
-                Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(.orange)
-                Text("4×4 버튼에서 편집할 버튼을 선택하세요.")
-                    .font(.system(size: 13, weight: .medium))
-                Text("빈 칸은 ‘버튼 추가’로 등록할 수 있습니다.")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Spacer()
             }
+            .padding(13)
         }
-        .padding(13)
         .frame(width: 285, alignment: .leading)
+        .frame(maxHeight: .infinity)
         .background(Color(red: 0.065, green: 0.065, blue: 0.08), in: RoundedRectangle(cornerRadius: 13))
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(.white.opacity(0.12)))
+    }
+
+    @ViewBuilder
+    private var shortcutActionEditor: some View {
+        switch selectedAction.kind {
+        case .shortcut:
+            ShortcutComposerView(
+                value: shortcutValueBinding,
+                targetAppBundleIdentifier: shortcutTargetBinding,
+                launchTargetAppIfNeeded: shortcutLaunchBinding
+            )
+            .id("\(selectedShortcutID ?? "")_\(editingLongPress)")
+        case .app:
+            Button(selectedAction.value.isEmpty ? "앱 등록" : "앱 변경") {
+                registerShortcutApplication()
+            }
+            .buttonStyle(.bordered)
+            if !selectedAction.value.isEmpty {
+                Text(AppRegistrationService.displayName(for: selectedAction.value) ?? selectedAction.value)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        case .terminalCommand:
+            TextField("예: open -a Safari", text: shortcutValueBinding)
+                .textFieldStyle(.roundedBorder)
+        case .url:
+            TextField("https://example.com", text: shortcutValueBinding)
+                .textFieldStyle(.roundedBorder)
+        case .clipboardText:
+            Text("현재 활성 앱에 붙여넣을 텍스트")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            TextEditor(text: shortcutValueBinding)
+                .font(.system(size: 12))
+                .scrollContentBackground(.hidden)
+                .padding(7)
+                .frame(height: 100)
+                .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+        case .none:
+            Text("\(editingLongPress ? "길게" : "짧게") 누르면 실행하지 않습니다.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        case .appFolder:
+            Text("폴더 내부에는 앱 폴더를 추가할 수 없습니다.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var folderTitleBinding: Binding<String> {
@@ -298,23 +378,49 @@ struct SmartphoneFolderEditorView: View {
 
     private var shortcutValueBinding: Binding<String> {
         Binding(
-            get: { selectedShortcut?.action.value ?? "" },
-            set: { newValue in updateSelectedShortcut { $0.action.value = newValue } }
+            get: { selectedAction.value },
+            set: { newValue in updateSelectedAction { $0.value = newValue } }
         )
     }
 
     private var shortcutTargetBinding: Binding<String> {
         Binding(
-            get: { selectedShortcut?.action.targetAppBundleIdentifier ?? "" },
-            set: { newValue in updateSelectedShortcut { $0.action.targetAppBundleIdentifier = newValue } }
+            get: { selectedAction.targetAppBundleIdentifier },
+            set: { newValue in updateSelectedAction { $0.targetAppBundleIdentifier = newValue } }
         )
     }
 
     private var shortcutLaunchBinding: Binding<Bool> {
         Binding(
-            get: { selectedShortcut?.action.launchTargetAppIfNeeded ?? true },
-            set: { newValue in updateSelectedShortcut { $0.action.launchTargetAppIfNeeded = newValue } }
+            get: { selectedAction.launchTargetAppIfNeeded },
+            set: { newValue in updateSelectedAction { $0.launchTargetAppIfNeeded = newValue } }
         )
+    }
+
+    private var shortcutKindBinding: Binding<ActionKind> {
+        Binding(
+            get: { selectedAction.kind },
+            set: { kind in
+                guard selectedAction.kind != kind else { return }
+                updateSelectedAction {
+                    $0 = PadAction(
+                        kind: kind,
+                        value: kind == .url ? "https://example.com" : "",
+                        targetAppBundleIdentifier: kind == .shortcut ? folderAction.value : ""
+                    )
+                }
+            }
+        )
+    }
+
+    private func updateSelectedAction(_ change: (inout PadAction) -> Void) {
+        updateSelectedShortcut { shortcut in
+            if editingLongPress {
+                change(&shortcut.longPressAction)
+            } else {
+                change(&shortcut.action)
+            }
+        }
     }
 
     private func updateFolderButton(_ change: (inout SmartphoneButton) -> Void) {
@@ -532,11 +638,12 @@ struct SmartphoneFolderEditorView: View {
             id: "\(button.id)_folder_\(UUID().uuidString)",
             title: "단축키 \(button.folderShortcuts.count + 1)",
             symbol: "command",
-            action: PadAction(kind: .shortcut, targetAppBundleIdentifier: button.action.value)
+            action: PadAction(kind: .shortcut, targetAppBundleIdentifier: folderAction.value)
         )
         button.folderShortcuts.append(shortcut)
         store.updateSmartphoneButton(button, at: pageIndex)
         selectedShortcutID = shortcut.id
+        editingLongPress = false
     }
 
     private func removeSelectedShortcut() {
@@ -549,15 +656,47 @@ struct SmartphoneFolderEditorView: View {
 
     private func registerFolderApplication() {
         registrationError = ""
+        let previousBundleIdentifier = folderAction.value
         AppRegistrationService.chooseApplication { result in
             switch result {
             case .success(let application):
                 updateFolderButton { button in
-                    button.action.value = application.bundleIdentifier
+                    if folderUsesLongPress {
+                        button.longPressAction.value = application.bundleIdentifier
+                    } else {
+                        button.action.value = application.bundleIdentifier
+                    }
                     button.folderShortcuts = button.folderShortcuts.map { shortcut in
                         var updated = shortcut
-                        updated.action.targetAppBundleIdentifier = application.bundleIdentifier
+                        if !previousBundleIdentifier.isEmpty {
+                            if updated.action.kind == .shortcut && updated.action.targetAppBundleIdentifier == previousBundleIdentifier {
+                                updated.action.targetAppBundleIdentifier = application.bundleIdentifier
+                            }
+                            if updated.longPressAction.kind == .shortcut && updated.longPressAction.targetAppBundleIdentifier == previousBundleIdentifier {
+                                updated.longPressAction.targetAppBundleIdentifier = application.bundleIdentifier
+                            }
+                        }
                         return updated
+                    }
+                }
+            case .failure(let error):
+                registrationError = error.localizedDescription
+            }
+        }
+    }
+
+    private func registerShortcutApplication() {
+        guard let selectedShortcutID else { return }
+        let usesLongPress = editingLongPress
+        registrationError = ""
+        AppRegistrationService.chooseApplication { result in
+            switch result {
+            case .success(let application):
+                updateShortcut(id: selectedShortcutID) { shortcut in
+                    if usesLongPress {
+                        shortcut.longPressAction.value = application.bundleIdentifier
+                    } else {
+                        shortcut.action.value = application.bundleIdentifier
                     }
                 }
             case .failure(let error):

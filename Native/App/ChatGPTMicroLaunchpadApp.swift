@@ -32,21 +32,12 @@ struct ChatGPTMicroLaunchpadApp: App {
                 Button("단축키 권한 요청") { runner.requestAccessibilityPermission() }
             }
 
-            CommandGroup(after: .appSettings) {
-                SettingsLink {
-                    Text("API 사용법")
-                }
-            }
-
             CommandGroup(replacing: .appTermination) {
                 Button("창 닫기") { appDelegate.hideMainWindow() }
                     .keyboardShortcut("q", modifiers: [.command])
             }
         }
 
-        Settings {
-            LocalAPISettingsView()
-        }
     }
 }
 
@@ -213,7 +204,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var statusItem: NSStatusItem?
     private weak var codexStatusMotionMenuItem: NSMenuItem?
     private weak var launchpadLEDBubbleMenuItem: NSMenuItem?
-    private var localAPIServer: LocalAPIServer?
     private var allowsTermination = false
     private var hasStartedCodexConnection = false
 
@@ -225,7 +215,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         super.init()
         configureLaunchpadLEDBubbleMenuUpdates()
         configureRemoteCommandHandling()
-        configureLocalAPIServer()
     }
 
     init(
@@ -239,7 +228,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         super.init()
         configureLaunchpadLEDBubbleMenuUpdates()
         configureRemoteCommandHandling()
-        configureLocalAPIServer()
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -259,12 +247,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         codexActivityController.onActiveSessionCountChange = { [weak codex] count in
             codex?.publishRemoteSessionCount(count)
         }
+        codex.onPhoneMicrophoneActivityChanged = { [weak self] active in
+            self?.codexStatusBarIndicator.update(phoneMicrophoneActive: active)
+        }
         codexActivityController.startDesktopMonitoring()
         codex.publishRemoteSessionCount(codexActivityController.activeSessionCount)
         codexStatusBarIndicator.update(activity: codexActivityController.activity)
         codex.publishRemoteActivity(codexActivityController.activity)
         codex.startRemoteBridge()
-        localAPIServer?.start()
         guard !hasStartedCodexConnection else { return }
         hasStartedCodexConnection = true
         connectionStarter.connect()
@@ -318,7 +308,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         launchpadLEDBubble.close()
         codexActivityController.stopDesktopMonitoring()
-        localAPIServer?.stop()
         codex.stopRemoteBridge()
     }
 
@@ -380,16 +369,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         do {
             let message: String
             switch command.command {
+            case "microphoneStart":
+                if let error = codex.startPhoneMicrophone() {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: error)
+                }
+                message = "휴대폰 마이크를 BlackHole 2ch로 연결했습니다."
+            case "microphoneStop":
+                codex.stopPhoneMicrophone()
+                message = "휴대폰 마이크 연결을 종료했습니다."
             case "completionSoundOnPhone", "completionSoundOnMac":
                 let target: CodexCompletionSoundOutputTarget = command.command == "completionSoundOnPhone" ? .phone : .mac
                 codex.setRemoteCompletionSoundTarget(target)
                 message = "작업 완료음 재생 기기를 \(target.title)(으)로 변경했습니다."
-            case "smartphoneButton":
+            case "smartphoneButton", "smartphoneButtonLongPress":
+                let longPress = command.command == "smartphoneButtonLongPress"
                 guard let buttonID = command.buttonID,
-                      let action = SmartphoneDefaults.action(id: buttonID, in: SmartphoneDefaults.persistedPages()) else {
+                      let action = SmartphoneDefaults.action(
+                        id: buttonID,
+                        in: SmartphoneDefaults.persistedPages(),
+                        longPress: longPress
+                      ) else {
                     return CodexRemoteCommandResult(id: command.id, success: false, message: "스마트폰 버튼 설정을 찾을 수 없습니다.")
                 }
-                message = try remoteActionRunner.execute(action, commandFileID: buttonID)
+                let commandFileID = longPress ? buttonID + "_long_press" : buttonID
+                message = try remoteActionRunner.execute(action, commandFileID: commandFileID)
             case "codexApproval":
                 guard let decision = command.decision else {
                     return CodexRemoteCommandResult(id: command.id, success: false, message: "Codex 승인 응답이 없습니다.")
@@ -465,12 +468,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         bubbleItem.state = .off
         bubbleItem.isEnabled = false
         launchpadLEDBubbleMenuItem = bubbleItem
-        let tokenItem = menu.addItem(
-            withTitle: "REST API 토큰 복사",
-            action: #selector(copyLocalAPITokenToPasteboard),
-            keyEquivalent: ""
-        )
-        tokenItem.isEnabled = localAPIServer != nil
         menu.addItem(.separator())
         menu.addItem(withTitle: "완전히 종료", action: #selector(quitFromMenu), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
@@ -495,17 +492,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func toggleCodexStatusMotionFromMenu() {
         codexStatusBarIndicator.setEnabled(!codexStatusBarIndicator.isEnabled)
         codexStatusMotionMenuItem?.state = codexStatusBarIndicator.isEnabled ? .on : .off
-    }
-
-    @objc private func copyLocalAPITokenToPasteboard() {
-        guard let localAPIToken = LocalAPITokenStore.loadExistingToken() else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(localAPIToken, forType: .string)
-    }
-
-    private func configureLocalAPIServer() {
-        guard let token = LocalAPITokenStore.loadOrCreateToken() else { return }
-        localAPIServer = LocalAPIServer(bearerTokenProvider: { token })
     }
 
     private func configureLaunchpadLEDBubbleMenuUpdates() {

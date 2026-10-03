@@ -23,6 +23,8 @@ final class CodexAppServerClient {
     }
 
     private let remoteBridge = CodexRemoteBridge()
+    private let phoneMicrophone = PhoneMicrophoneOutput()
+    @ObservationIgnored var onPhoneMicrophoneActivityChanged: ((Bool) -> Void)?
     private var process: Process?
     private var input: FileHandle?
     private var output: Pipe?
@@ -38,6 +40,7 @@ final class CodexAppServerClient {
     private var remoteActiveSessionCount = 0
     private var usageRefreshTask: Task<Void, Never>?
     private var remoteStateRefreshTask: Task<Void, Never>?
+    private var adbReverseTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var automaticReconnectCount = 0
     private var lastUsageRefreshAt: Date?
@@ -60,6 +63,19 @@ final class CodexAppServerClient {
     }
 
     func startRemoteBridge() {
+        if adbReverseTask == nil {
+            adbReverseTask = Task.detached(priority: .utility) {
+                while !Task.isCancelled {
+                    ADBBridgeReverse.configureConnectedPhones()
+                    try? await Task.sleep(for: .seconds(15))
+                }
+            }
+        }
+        remoteBridge.onMicrophoneAudio = { [weak self] data in self?.phoneMicrophone.enqueue(data) }
+        remoteBridge.onMicrophoneStop = { [weak self] in self?.phoneMicrophone.stop() }
+        remoteBridge.onPhoneMicrophoneActivityChanged = { [weak self] active in
+            self?.onPhoneMicrophoneActivityChanged?(active)
+        }
         remoteBridge.start()
         publishRemoteState()
         startRemoteStateRefreshLoop()
@@ -95,10 +111,17 @@ final class CodexAppServerClient {
     }
 
     func stopRemoteBridge() {
+        adbReverseTask?.cancel()
+        adbReverseTask = nil
+        phoneMicrophone.stop()
         remoteStateRefreshTask?.cancel()
         remoteStateRefreshTask = nil
         remoteBridge.stop()
     }
+
+    func startPhoneMicrophone() -> String? { phoneMicrophone.start() }
+
+    func stopPhoneMicrophone() { phoneMicrophone.stop() }
 
     private func startRemoteStateRefreshLoop() {
         guard remoteStateRefreshTask == nil else { return }

@@ -9,7 +9,7 @@ let package = Package(
         .executableTarget(
             name: "ChatGPTMicroLaunchpad",
             path: "Native",
-            resources: [.process("Web"), .process("Resources")]
+            resources: [.process("Resources")]
         ),
         .testTarget(
             name: "ChatGPTMicroLaunchpadTests",

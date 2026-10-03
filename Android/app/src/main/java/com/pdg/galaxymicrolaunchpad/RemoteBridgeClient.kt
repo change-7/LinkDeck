@@ -3,6 +3,9 @@ package com.pdg.galaxymicrolaunchpad
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
 import android.util.Base64
@@ -96,10 +99,15 @@ class RemoteBridgeClient(context: Context) {
     private val nsdManager = appContext.getSystemService(NsdManager::class.java)
     private val executor = Executors.newSingleThreadExecutor()
     private val commandExecutor = Executors.newSingleThreadExecutor()
+    private val microphoneExecutor = Executors.newSingleThreadExecutor()
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resetScheduler = CodexResetScheduler(appContext)
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     @Volatile private var socket: Socket? = null
+    @Volatile private var microphoneRecorder: AudioRecord? = null
+    @Volatile private var microphoneCaptureRequested = false
+    @Volatile private var microphoneGeneration = 0
+    private var microphoneStartCommandID: String? = null
     private var writer: OutputStreamWriter? = null
     private var started = false
     @Volatile private var lastActivity: String? = null
@@ -132,12 +140,17 @@ class RemoteBridgeClient(context: Context) {
     var onCodexRunning: (() -> Unit)? = null
     /** Called on the main thread when a new approval request is received. */
     var onCodexApproval: (() -> Unit)? = null
+    var onMicrophoneStopped: (() -> Unit)? = null
 
     var codexRevealEventId by mutableStateOf(0)
     internal var codexRevealReason by mutableStateOf(CodexRevealReason.Running)
         private set
 
     var connectionState by mutableStateOf(RemoteConnectionState.Disconnected)
+        private set
+    var microphoneActive by mutableStateOf(false)
+        private set
+    var microphoneStarting by mutableStateOf(false)
         private set
     var codexConnected by mutableStateOf(false)
         private set
@@ -175,6 +188,7 @@ class RemoteBridgeClient(context: Context) {
     }
 
     fun stop() {
+        stopMicrophone(sendCommand = false)
         hasReceivedRemoteState = false
         forceCodexRevealAfterReconnect = false
         started = false
@@ -192,6 +206,11 @@ class RemoteBridgeClient(context: Context) {
     private fun discover() {
         if (!started) return
         setConnection(RemoteConnectionState.Searching)
+        connect("127.0.0.1", BRIDGE_PORT, fallbackToWireless = true)
+    }
+
+    private fun discoverWireless() {
+        if (!started) return
         val configuredHost = bridgePreferences.macBridgeHost
         if (configuredHost.isNotEmpty()) {
             connect(configuredHost, BRIDGE_PORT)
@@ -241,7 +260,7 @@ class RemoteBridgeClient(context: Context) {
         }
     }
 
-    private fun connect(host: String, port: Int) {
+    private fun connect(host: String, port: Int, fallbackToWireless: Boolean = false) {
         setConnection(RemoteConnectionState.Connecting)
         executor.execute {
             try {
@@ -257,6 +276,7 @@ class RemoteBridgeClient(context: Context) {
             } catch (_: Exception) {
                 setConnection(RemoteConnectionState.Disconnected)
             } finally {
+                mainHandler.post { stopMicrophone(sendCommand = false) }
                 runCatching { socket?.close() }
                 socket = null
                 writer = null
@@ -275,7 +295,11 @@ class RemoteBridgeClient(context: Context) {
                 preserveActiveStateDuringReconnect()
                 if (started) {
                     setConnection(RemoteConnectionState.Disconnected)
-                    retryDiscovery()
+                    if (fallbackToWireless) {
+                        mainHandler.post { discoverWireless() }
+                    } else {
+                        retryDiscovery()
+                    }
                 }
             }
         }
@@ -311,7 +335,13 @@ class RemoteBridgeClient(context: Context) {
             if (state.optString("type") == "commandResult") {
                 val succeeded = state.optBoolean("success", false)
                 val resultMessage = state.optString("message", "Mac 명령 처리 완료")
+                val commandID = state.optString("id")
                 mainHandler.post {
+                    if (commandID == microphoneStartCommandID) {
+                        microphoneStartCommandID = null
+                        microphoneStarting = false
+                        if (succeeded) startMicrophoneCapture() else onMicrophoneStopped?.invoke()
+                    }
                     commandSucceeded = succeeded
                     message = resultMessage
                 }
@@ -471,29 +501,112 @@ class RemoteBridgeClient(context: Context) {
         sendCommand(command, null)
     }
 
+    fun requestMicrophoneStart() {
+        if (connectionState != RemoteConnectionState.Connected || microphoneStarting || microphoneActive) {
+            onMicrophoneStopped?.invoke()
+            return
+        }
+        microphoneStarting = true
+        microphoneStartCommandID = sendCommand("microphoneStart", buttonID = null)
+    }
+
+    fun stopMicrophone(sendCommand: Boolean = true) {
+        val wasStarted = microphoneStarting || microphoneActive || microphoneCaptureRequested
+        microphoneGeneration += 1
+        microphoneStartCommandID = null
+        microphoneStarting = false
+        microphoneCaptureRequested = false
+        microphoneActive = false
+        runCatching { microphoneRecorder?.stop() }
+        if (sendCommand && wasStarted && connectionState == RemoteConnectionState.Connected) {
+            sendCommand("microphoneStop")
+        }
+        onMicrophoneStopped?.invoke()
+    }
+
+    private fun startMicrophoneCapture() {
+        microphoneGeneration += 1
+        val generation = microphoneGeneration
+        microphoneCaptureRequested = true
+        microphoneExecutor.execute {
+            val minimumSize = AudioRecord.getMinBufferSize(
+                16_000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+            )
+            if (minimumSize <= 0) {
+                mainHandler.post { stopMicrophone() }
+                return@execute
+            }
+            val recorder = try {
+                AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    16_000,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minimumSize, 2_560)
+                )
+            } catch (_: Exception) {
+                mainHandler.post { stopMicrophone() }
+                return@execute
+            }
+            try {
+                if (recorder.state != AudioRecord.STATE_INITIALIZED || generation != microphoneGeneration) return@execute
+                microphoneRecorder = recorder
+                recorder.startRecording()
+                mainHandler.post { if (generation == microphoneGeneration) microphoneActive = true }
+                val frame = ByteArray(640)
+                while (generation == microphoneGeneration && microphoneCaptureRequested && socket?.isClosed == false) {
+                    var offset = 0
+                    while (offset < frame.size && generation == microphoneGeneration) {
+                        val count = recorder.read(frame, offset, frame.size - offset, AudioRecord.READ_BLOCKING)
+                        if (count <= 0) break
+                        offset += count
+                    }
+                    if (offset != frame.size) break
+                    val currentWriter = writer ?: break
+                    val payload = JSONObject()
+                        .put("type", "microphoneAudio")
+                        .put("data", Base64.encodeToString(frame, Base64.NO_WRAP))
+                    synchronized(currentWriter) {
+                        currentWriter.append(payload.toString()).append('\n')
+                        currentWriter.flush()
+                    }
+                }
+            } catch (_: Exception) {
+            } finally {
+                if (microphoneRecorder === recorder) microphoneRecorder = null
+                runCatching { recorder.stop() }
+                recorder.release()
+                mainHandler.post { if (generation == microphoneGeneration) stopMicrophone() }
+            }
+        }
+    }
+
     fun requestCompletionSoundTarget(target: String) {
         sendCommand(if (target == "mac") "completionSoundOnMac" else "completionSoundOnPhone")
     }
 
-    internal fun sendSmartphoneButton(buttonID: String) {
-        sendCommand("smartphoneButton", buttonID = buttonID)
+    internal fun sendSmartphoneButton(buttonID: String, longPress: Boolean = false) {
+        sendCommand(if (longPress) "smartphoneButtonLongPress" else "smartphoneButton", buttonID = buttonID)
     }
 
     internal fun sendCodexApproval(decision: String) {
         sendCommand("codexApproval", decision = decision)
     }
 
-    private fun sendCommand(command: String, buttonID: String? = null, decision: String? = null) {
+    private fun sendCommand(command: String, buttonID: String? = null, decision: String? = null): String? {
         if (connectionState != RemoteConnectionState.Connected) {
             mainHandler.post {
                 commandSucceeded = false
                 message = "Mac에 연결된 후 버튼을 눌러주세요."
             }
-            return
+            return null
         }
         val commandObject = buildRemoteCommandPayload(command, buttonID, decision)
         commandExecutor.execute {
-            val currentWriter = writer ?: return@execute
+            val currentWriter = writer ?: run {
+                mainHandler.post { if (commandObject.getString("id") == microphoneStartCommandID) stopMicrophone(sendCommand = false) }
+                return@execute
+            }
             runCatching {
                 synchronized(currentWriter) {
                     currentWriter.append(commandObject.toString()).append('\n')
@@ -501,11 +614,13 @@ class RemoteBridgeClient(context: Context) {
                 }
             }.onFailure {
                 mainHandler.post {
+                    if (commandObject.getString("id") == microphoneStartCommandID) stopMicrophone(sendCommand = false)
                     commandSucceeded = false
                     message = "Mac 명령을 전달하지 못했습니다."
                 }
             }
         }
+        return commandObject.getString("id")
     }
 
     fun requestCodexReveal() {

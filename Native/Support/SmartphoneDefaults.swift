@@ -65,12 +65,12 @@ enum SmartphoneDefaults {
         return pages.lazy.flatMap(\.buttons).first { $0.id == id }
     }
 
-    static func action(id: String, in pages: [SmartphonePage]) -> PadAction? {
+    static func action(id: String, in pages: [SmartphonePage], longPress: Bool = false) -> PadAction? {
         guard !id.isEmpty else { return nil }
         for button in pages.flatMap(\.buttons) {
-            if button.id == id { return button.action }
+            if button.id == id { return longPress ? button.longPressAction : button.action }
             if let shortcut = button.folderShortcuts.first(where: { $0.id == id }) {
-                return shortcut.action
+                return longPress ? shortcut.longPressAction : shortcut.action
             }
         }
         return nil
@@ -85,9 +85,11 @@ enum SmartphoneDefaults {
             }
             var repaired = button
             repaired.action = repaired.action.repairedForPersistence
+            repaired.longPressAction = repaired.longPressAction.repairedForPersistence
             repaired.folderShortcuts = repaired.folderShortcuts.map { shortcut in
                 var repairedShortcut = shortcut
                 repairedShortcut.action = repairedShortcut.action.repairedForPersistence
+                repairedShortcut.longPressAction = repairedShortcut.longPressAction.repairedForPersistence
                 return repairedShortcut
             }
             return repaired

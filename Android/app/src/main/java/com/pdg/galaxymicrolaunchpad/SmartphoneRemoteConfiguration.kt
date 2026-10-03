@@ -70,8 +70,6 @@ internal fun parseSmartphonePages(
                     val buttonObject = buttonArray.optJSONObject(buttonIndex) ?: continue
                     val title = buttonObject.optString("title", "")
                     val isPlaceholder = isSmartphoneButtonPlaceholder(title)
-                    val actionObject = buttonObject.optJSONObject("action")
-                    val kind = actionObject?.optString("kind", "none") ?: "none"
                     val buttonID = buttonObject.optString("id", "smartphone_page_${pageIndex}_button_${buttonIndex}")
                     val folderActions = buildList {
                         val shortcutArray = buttonObject.optJSONArray("folderShortcuts") ?: return@buildList
@@ -83,7 +81,6 @@ internal fun parseSmartphonePages(
                                 "${buttonID}_folder_$shortcutIndex"
                             )
                             val shortcutSymbol = shortcutObject.optString("symbol", "command")
-                            val shortcutAction = shortcutObject.optJSONObject("action")
                             val iconBitmap = if (isSmartphoneButtonPlaceholder(shortcutTitle)) {
                                 null
                             } else {
@@ -96,14 +93,10 @@ internal fun parseSmartphonePages(
                                     command = "smartphoneButton",
                                     accent = Color.White,
                                     id = shortcutID,
-                                    actionKind = shortcutAction?.optString("kind", "none") ?: "none",
-                                    actionValue = shortcutAction?.optString("value", "") ?: "",
-                                    targetAppBundleIdentifier = shortcutAction?.optString("targetAppBundleIdentifier", "") ?: "",
-                                    launchTargetAppIfNeeded = shortcutAction?.optBoolean("launchTargetAppIfNeeded", true) ?: true,
                                     iconBitmap = iconBitmap,
                                     isPlaceholder = isSmartphoneButtonPlaceholder(shortcutTitle),
                                     isIconless = isIconlessSymbol(shortcutSymbol) && iconBitmap == null
-                                )
+                                ).let { parseSmartphonePressActions(shortcutObject, it) }
                             )
                         }
                     }
@@ -114,15 +107,11 @@ internal fun parseSmartphonePages(
                             command = "smartphoneButton",
                             accent = Color.White,
                             id = buttonID,
-                            actionKind = kind,
-                            actionValue = actionObject?.optString("value", "") ?: "",
-                            targetAppBundleIdentifier = actionObject?.optString("targetAppBundleIdentifier", "") ?: "",
-                            launchTargetAppIfNeeded = actionObject?.optBoolean("launchTargetAppIfNeeded", true) ?: true,
                             folderActions = folderActions,
                             iconBitmap = if (isPlaceholder) null else parseSmartphoneIconAsset(state, buttonID, iconBitmapCache, iconAssets),
                             isPlaceholder = isPlaceholder,
                             isIconless = isIconlessSymbol(buttonObject.optString("symbol", ""))
-                        )
+                        ).let { parseSmartphonePressActions(buttonObject, it) }
                     )
                 }
             }
@@ -141,6 +130,23 @@ internal fun parseSmartphonePages(
 }
 
 internal fun isSmartphoneButtonPlaceholder(title: String): Boolean = title.isBlank()
+
+private fun parseSmartphonePressActions(button: JSONObject, base: ControlAction): ControlAction {
+    val legacyLongPress = !button.has("longPressAction") && button.optBoolean("requiresLongPress", false)
+    val shortAction = if (legacyLongPress) null else button.optJSONObject("action")
+    val longAction = if (legacyLongPress) button.optJSONObject("action") else button.optJSONObject("longPressAction")
+    fun configuredAction(action: JSONObject?, command: String): ControlAction = base.copy(
+        command = command,
+        actionKind = action?.optString("kind", "none") ?: "none",
+        actionValue = action?.optString("value", "") ?: "",
+        targetAppBundleIdentifier = action?.optString("targetAppBundleIdentifier", "") ?: "",
+        launchTargetAppIfNeeded = action?.optBoolean("launchTargetAppIfNeeded", true) ?: true
+    )
+    return configuredAction(shortAction, "smartphoneButton").copy(
+        longPressAction = longAction?.takeIf { it.optString("kind", "none") != "none" }
+            ?.let { configuredAction(it, "smartphoneButtonLongPress") }
+    )
+}
 
 private fun parseSmartphoneIconAsset(
     state: JSONObject,

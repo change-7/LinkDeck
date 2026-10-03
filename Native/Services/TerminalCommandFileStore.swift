@@ -38,10 +38,16 @@ enum TerminalCommandFileStore {
         }
 
         for page in smartphonePages {
-            for button in page.buttons where button.action.kind == .terminalCommand {
-                let command = button.action.value.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !command.isEmpty {
-                    commands[button.id] = command
+            for button in page.buttons {
+                let actions = [(button.id, button.action), (button.id + "_long_press", button.longPressAction)]
+                    + button.folderShortcuts.flatMap { shortcut in
+                        [(shortcut.id, shortcut.action), (shortcut.id + "_long_press", shortcut.longPressAction)]
+                    }
+                for (identifier, action) in actions where action.kind == .terminalCommand {
+                    let command = action.value.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !command.isEmpty {
+                        commands[identifier] = command
+                    }
                 }
             }
         }

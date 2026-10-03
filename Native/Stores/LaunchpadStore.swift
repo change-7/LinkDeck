@@ -128,6 +128,29 @@ final class LaunchpadStore {
         return true
     }
 
+    @discardableResult
+    func swapSmartphoneButtonConfigurations(fromPageIndex: Int, from sourceID: String, toPageIndex: Int, to destinationID: String) -> Bool {
+        guard smartphonePages.indices.contains(fromPageIndex),
+              smartphonePages.indices.contains(toPageIndex),
+              fromPageIndex != toPageIndex else {
+            return false
+        }
+
+        var sourcePage = smartphonePages[fromPageIndex]
+        var destinationPage = smartphonePages[toPageIndex]
+        guard sourcePage.swapButtonConfigurations(
+            from: sourceID,
+            with: &destinationPage,
+            to: destinationID
+        ) else { return false }
+
+        smartphonePages[fromPageIndex] = sourcePage
+        smartphonePages[toPageIndex] = destinationPage
+
+        saveSmartphonePages()
+        return true
+    }
+
     func updateSmartphonePageName(_ name: String, at pageIndex: Int) {
         guard smartphonePages.indices.contains(pageIndex) else { return }
         smartphonePages[pageIndex].name = name
@@ -143,6 +166,7 @@ final class LaunchpadStore {
         button.customIconData = nil
         button.action = PadAction()
         button.folderShortcuts = []
+        button.longPressAction = PadAction()
         smartphonePages[pageIndex].buttons[buttonIndex] = button
         saveSmartphonePages()
     }

@@ -5,6 +5,7 @@ enum CodexPhoneTheme: String, CaseIterable, Codable, Identifiable, Sendable {
     case pixelSpace
     case dotMatrix
     case pixelQuest
+    case controlCabinet
 
     var id: String { rawValue }
 
@@ -14,6 +15,7 @@ enum CodexPhoneTheme: String, CaseIterable, Codable, Identifiable, Sendable {
         case .pixelSpace: "오비탈 픽셀"
         case .dotMatrix: "도트 매트릭스"
         case .pixelQuest: "픽셀 퀘스트"
+        case .controlCabinet: "컨트롤 캐비넷"
         }
     }
 
@@ -23,6 +25,7 @@ enum CodexPhoneTheme: String, CaseIterable, Codable, Identifiable, Sendable {
         case .pixelSpace: "우주 정거장과 픽셀 에너지 모션"
         case .dotMatrix: "도트 그리드와 픽셀 체크 모션"
         case .pixelQuest: "스테이지 HUD와 아케이드 퀘스트"
+        case .controlCabinet: "제어반 배선과 회전 로터·표시등"
         }
     }
 }

@@ -396,6 +396,37 @@ struct CodexConnectionView: View {
     @ViewBuilder
     private func phoneThemePreview(_ theme: CodexPhoneTheme) -> some View {
         switch theme {
+        case .controlCabinet:
+            ZStack {
+                if let url = Bundle.module.url(forResource: "ControlCabinetBackground", withExtension: "png"),
+                   let image = NSImage(contentsOf: url) {
+                    Image(nsImage: image).resizable().scaledToFill()
+                } else {
+                    Color.black
+                }
+                HStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("CODEX").font(.system(size: 16, weight: .bold, design: .monospaced))
+                        Label("CONNECTED", systemImage: "circle.fill")
+                            .font(.system(size: 7, design: .monospaced))
+                            .foregroundStyle(.green)
+                        Text("5H 97%  /  WEEK 76%")
+                            .font(.system(size: 7, design: .monospaced))
+                    }
+                    Spacer(minLength: 0)
+                    VStack(spacing: 8) {
+                        Image(systemName: "fanblades.fill").font(.system(size: 27))
+                        Text("RUNNING").font(.system(size: 10, weight: .bold, design: .monospaced))
+                        HStack(spacing: 5) {
+                            ForEach(0..<5) { _ in Circle().frame(width: 4, height: 4) }
+                        }
+                    }
+                    .foregroundStyle(.orange)
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 25)
+                .padding(.vertical, 18)
+            }
         case .classic:
             ZStack {
                 Color(red: 0.025, green: 0.035, blue: 0.065)

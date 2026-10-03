@@ -29,11 +29,13 @@ internal const val DefaultCodexPhoneTheme = "classic"
 internal const val PixelSpaceCodexPhoneTheme = "pixelSpace"
 internal const val DotMatrixCodexPhoneTheme = "dotMatrix"
 internal const val PixelQuestCodexPhoneTheme = "pixelQuest"
+internal const val ControlCabinetCodexPhoneTheme = "controlCabinet"
 
 internal fun normalizeCodexPhoneTheme(theme: String): String = when (theme) {
     PixelSpaceCodexPhoneTheme -> PixelSpaceCodexPhoneTheme
     DotMatrixCodexPhoneTheme -> DotMatrixCodexPhoneTheme
     PixelQuestCodexPhoneTheme -> PixelQuestCodexPhoneTheme
+    ControlCabinetCodexPhoneTheme -> ControlCabinetCodexPhoneTheme
     else -> DefaultCodexPhoneTheme
 }
 

@@ -16,6 +16,7 @@ import android.os.Looper
 import android.os.IBinder
 import android.os.PowerManager
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import java.util.Calendar
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -52,6 +53,7 @@ class RemoteBridgeService : Service() {
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+        RemoteBridgeRuntime.client(this).onMicrophoneStopped = { setMicrophoneForeground(false) }
         registerScreenReceiver()
         applyCurrentScreenState()
     }
@@ -60,6 +62,18 @@ class RemoteBridgeService : Service() {
         // Android can recreate this service after reclaiming the process while
         // the screen is off; keep the bridge loop running in that case.
         applyCurrentScreenState()
+        when (intent?.action) {
+            ACTION_MICROPHONE_START -> {
+                if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    setMicrophoneForeground(true)
+                    RemoteBridgeRuntime.client(this).requestMicrophoneStart()
+                }
+            }
+            ACTION_MICROPHONE_STOP -> {
+                RemoteBridgeRuntime.client(this).stopMicrophone()
+                setMicrophoneForeground(false)
+            }
+        }
         return remoteBridgeServiceStartMode()
     }
 
@@ -69,6 +83,7 @@ class RemoteBridgeService : Service() {
         if (screenReceiverRegistered) unregisterReceiver(screenReceiver)
         screenReceiverRegistered = false
         RemoteBridgeRuntime.client(this).stop()
+        RemoteBridgeRuntime.client(this).onMicrophoneStopped = null
         releaseNetworkLocks()
         super.onDestroy()
     }
@@ -96,6 +111,11 @@ class RemoteBridgeService : Service() {
     }
 
     private fun applyCurrentScreenState() {
+        val bridge = RemoteBridgeRuntime.client(this)
+        if (bridge.microphoneStarting || bridge.microphoneActive) {
+            resumeConnection()
+            return
+        }
         when (screenOffConnectionAction(getSystemService(PowerManager::class.java).isInteractive)) {
             ScreenOffConnectionAction.Resume -> resumeConnection()
             ScreenOffConnectionAction.ScheduleDisconnect -> scheduleScreenOffDisconnect()
@@ -200,6 +220,17 @@ class RemoteBridgeService : Service() {
         notificationManager.notify(NOTIFICATION_ID, buildNotification(message))
     }
 
+    private fun setMicrophoneForeground(enabled: Boolean) {
+        val notification = buildNotification(if (enabled) "Mac 마이크로 음성 전송 중" else "Mac bridge active")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val types = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                (if (enabled) ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE else 0)
+            startForeground(NOTIFICATION_ID, notification, types)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
     private fun buildNotification(): Notification {
         return buildNotification("Mac bridge active")
     }
@@ -217,6 +248,8 @@ class RemoteBridgeService : Service() {
 
     companion object {
         const val ACTION_START = "com.pdg.galaxymicrolaunchpad.START_REMOTE_BRIDGE"
+        const val ACTION_MICROPHONE_START = "com.pdg.galaxymicrolaunchpad.MICROPHONE_START"
+        const val ACTION_MICROPHONE_STOP = "com.pdg.galaxymicrolaunchpad.MICROPHONE_STOP"
         const val ACTION_TIMEOUT_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_TIMEOUT_CHANGED"
         const val ACTION_CONNECTION_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_CONNECTION_CHANGED"
         private const val CHANNEL_ID = "mac_bridge_connection"

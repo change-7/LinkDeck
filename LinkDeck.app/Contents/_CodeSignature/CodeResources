@@ -8,13 +8,13 @@
 		<data>
 		g3xoPxRSDABCdToSvmhVpWKKYGs=
 		</data>
+		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/ControlCabinetBackground.png</key>
+		<data>
+		VPaKwFyap/+3/8KZM+qsww9Hemg=
+		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/PixelSpaceBackground.png</key>
 		<data>
 		87Q2voiH8vogo4LO6+664jIrFlo=
-		</data>
-		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/app.js</key>
-		<data>
-		dFnZV6r7is1eaEgYalOg9OgqTbI=
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/codex_completion_chime.mp3</key>
 		<data>
@@ -24,17 +24,9 @@
 		<data>
 		0p/wxgJ0fH7o9bz2kKBc+OXKGsE=
 		</data>
-		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/index.html</key>
-		<data>
-		s7791m3awc7Mb1ZwQ05rG8P7Yrg=
-		</data>
-		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/styles.css</key>
-		<data>
-		R7ThHq2X12i23m8MBNb0jWKGc+Y=
-		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeDirectory</key>
 		<data>
-		H78f4iXzL9rzM1Sj7UjXcjDG3pQ=
+		GTAah0J3FBcsCtWW/lXjd5eFPMs=
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeRequirements</key>
 		<data>
@@ -42,7 +34,7 @@
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeResources</key>
 		<data>
-		EZKZTxuq7rhfhP7qo8QTdHSTmSo=
+		j8PNzOwHY7vQZTd7HFWdnygTTmU=
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeSignature</key>
 		<data>
@@ -62,18 +54,18 @@
 			/Zt8MqsbMgfFlb9JGKv0A0+uHtNikWnONyxZInbLyow=
 			</data>
 		</dict>
+		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/ControlCabinetBackground.png</key>
+		<dict>
+			<key>hash2</key>
+			<data>
+			ICTL2oKEFXaFoulFdZbtMYcS4YwoerFjKdYyy43VwnU=
+			</data>
+		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/PixelSpaceBackground.png</key>
 		<dict>
 			<key>hash2</key>
 			<data>
 			g195x7CiznDIlVAbD+E/bsyoNfbKfnWkVxz51P6DFTs=
-			</data>
-		</dict>
-		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/app.js</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			SAybrYgTHEgxw2r05NuQy1nQ/V9WpzmGGdIwJIxBe58=
 			</data>
 		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/codex_completion_chime.mp3</key>
@@ -90,25 +82,11 @@
 			bnQZ/mXHVhCUn7lFjFjbq4Hvf14+znpZboHI6/mGrKc=
 			</data>
 		</dict>
-		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/index.html</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			WQvxIEyhP5H69mUvtUWVKsTGLZq85Bp2ilhKGY+FdoE=
-			</data>
-		</dict>
-		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/Resources/styles.css</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			tmtBltJYtJb2koPSP8/uORldLDBlqB6k+AFVIVo+rHU=
-			</data>
-		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeDirectory</key>
 		<dict>
 			<key>hash2</key>
 			<data>
-			dBPOYiiMP8rLyZ/43b+vpg7PetJbFsEsVpvrd/q8A6c=
+			+B9vEvqlepCZqp+tY+fOXgFEFusQZjMa5z9qAuwWzo8=
 			</data>
 		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeRequirements</key>
@@ -122,7 +100,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			aL20qrDOwP01e2oo0z1PKAy0uEp8NxXJuQ60vo/5G3A=
+			d5+LSmwa4yoqF/h6kEdRCHDWPEMo2MRWhtOxA3p61pw=
 			</data>
 		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeSignature</key>

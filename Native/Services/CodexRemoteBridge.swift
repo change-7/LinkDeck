@@ -11,11 +11,17 @@ private func smartphonePagesForRemote(_ pages: [SmartphonePage]) -> [SmartphoneP
             if sanitizedButton.action.kind == .clipboardText {
                 sanitizedButton.action.value = ""
             }
+            if sanitizedButton.longPressAction.kind == .clipboardText {
+                sanitizedButton.longPressAction.value = ""
+            }
             sanitizedButton.folderShortcuts = button.folderShortcuts.map { shortcut in
                 var sanitizedShortcut = shortcut
                 sanitizedShortcut.customIconData = nil
                 if sanitizedShortcut.action.kind == .clipboardText {
                     sanitizedShortcut.action.value = ""
+                }
+                if sanitizedShortcut.longPressAction.kind == .clipboardText {
+                    sanitizedShortcut.longPressAction.value = ""
                 }
                 return sanitizedShortcut
             }
@@ -205,6 +211,9 @@ final class CodexRemoteBridge {
     private(set) var isRunning = false
     private(set) var clientCount = 0
     var onCommand: ((CodexRemoteCommand) -> CodexRemoteCommandResult)?
+    var onMicrophoneAudio: ((Data) -> Void)?
+    var onMicrophoneStop: (() -> Void)?
+    var onPhoneMicrophoneActivityChanged: ((Bool) -> Void)?
 
     private var listener: NWListener?
     private var connections: [UUID: NWConnection] = [:]
@@ -214,6 +223,7 @@ final class CodexRemoteBridge {
     private var lastCompletionSoundID: String?
     private var lastCompletionSoundOutputTarget: CodexCompletionSoundOutputTarget?
     private var lastCompletionSound: CodexRemoteCompletionSound?
+    private var microphoneConnectionID: UUID?
     private let queue = DispatchQueue(label: "MicroLaunchpad.remote-bridge", qos: .userInitiated)
 
     func start() {
@@ -244,6 +254,11 @@ final class CodexRemoteBridge {
     }
 
     func stop() {
+        if microphoneConnectionID != nil {
+            onMicrophoneStop?()
+            onPhoneMicrophoneActivityChanged?(false)
+        }
+        microphoneConnectionID = nil
         listener?.cancel()
         listener = nil
         for connection in connections.values { connection.cancel() }
@@ -318,10 +333,26 @@ final class CodexRemoteBridge {
                   let type = payload["type"] as? String else { continue }
             if type == "hello" {
                 sendCurrentState(to: connection)
+            } else if type == "microphoneAudio", microphoneConnectionID == id,
+                      let encoded = payload["data"] as? String, encoded.count <= 1024,
+                      let audio = Data(base64Encoded: encoded), audio.count == 640 {
+                onMicrophoneAudio?(audio)
+            } else if type == "command", let commandName = payload["command"] as? String,
+                      (commandName == "microphoneStart" || commandName == "microphoneStop"),
+                      let activeID = microphoneConnectionID, activeID != id,
+                      let commandID = payload["id"] as? String {
+                send(CodexRemoteCommandResult(id: commandID, success: false, message: "다른 휴대폰에서 마이크를 사용 중입니다."), to: connection)
             } else if type == "command",
                       let commandData = try? JSONSerialization.data(withJSONObject: payload),
                       let command = try? JSONDecoder().decode(CodexRemoteCommand.self, from: commandData),
                       let result = onCommand?(command) {
+                if result.success && command.command == "microphoneStart" {
+                    microphoneConnectionID = id
+                    onPhoneMicrophoneActivityChanged?(true)
+                } else if command.command == "microphoneStop" && microphoneConnectionID == id {
+                    microphoneConnectionID = nil
+                    onPhoneMicrophoneActivityChanged?(false)
+                }
                 send(result, to: connection)
             }
         }
@@ -359,6 +390,11 @@ final class CodexRemoteBridge {
     }
 
     private func remove(connectionID id: UUID) {
+        if microphoneConnectionID == id {
+            microphoneConnectionID = nil
+            onMicrophoneStop?()
+            onPhoneMicrophoneActivityChanged?(false)
+        }
         connections[id]?.cancel()
         connections.removeValue(forKey: id)
         receiveBuffers.removeValue(forKey: id)

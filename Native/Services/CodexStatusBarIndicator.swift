@@ -16,6 +16,7 @@ final class CodexStatusBarIndicator {
     private var animationTimer: Timer?
     private var frameIndex = 0
     private var activity: CodexActivity = .idle
+    private var phoneMicrophoneActive = false
 
     private(set) var isEnabled: Bool
 
@@ -36,6 +37,13 @@ final class CodexStatusBarIndicator {
         render()
     }
 
+    func update(phoneMicrophoneActive: Bool) {
+        guard self.phoneMicrophoneActive != phoneMicrophoneActive else { return }
+        self.phoneMicrophoneActive = phoneMicrophoneActive
+        updateAnimationTimer()
+        render()
+    }
+
     func setEnabled(_ enabled: Bool) {
         guard isEnabled != enabled else { return }
         isEnabled = enabled
@@ -46,7 +54,7 @@ final class CodexStatusBarIndicator {
     }
 
     private var shouldAnimate: Bool {
-        isEnabled && Self.isAnimatedActivity(activity)
+        statusButton != nil && !phoneMicrophoneActive && isEnabled && Self.isAnimatedActivity(activity)
     }
 
     static func isAnimatedActivity(_ activity: CodexActivity) -> Bool {
@@ -85,11 +93,29 @@ final class CodexStatusBarIndicator {
 
     private func render() {
         guard let statusButton else { return }
+        if phoneMicrophoneActive {
+            statusButton.image = Self.makePhoneMicrophoneImage()
+            return
+        }
         guard isEnabled, Self.isAnimatedActivity(activity) else {
             statusButton.image = Self.staticImage()
             return
         }
         statusButton.image = Self.makeImage(activity: activity, frameIndex: frameIndex)
+    }
+
+    private static func makePhoneMicrophoneImage() -> NSImage {
+        let image = NSImage(size: iconSize)
+        image.lockFocus()
+
+        for center in dotCenters {
+            drawGlow(at: center, color: .systemOrange, intensity: 1)
+            drawDot(at: center, radius: 2.2, color: .systemOrange)
+        }
+
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
     }
 
     private static func staticImage() -> NSImage? {

@@ -8,8 +8,11 @@ struct SmartphoneSettingsView: View {
     @State private var pageIndex = 0
     @State private var buttonIndex = 0
     @State private var dropTargetButtonID: String?
+    @State private var dropTargetPageIndex: Int?
     @State private var registrationError = ""
     @State private var folderButtonID: String?
+    @State private var folderUsesLongPress = false
+    @State private var editingLongPress = false
     @State private var isCustomIconDropTargeted = false
     @State private var customIconError = ""
     @State private var isSymbolPickerPresented = false
@@ -70,19 +73,19 @@ struct SmartphoneSettingsView: View {
 
     private var page: SmartphonePage { store.smartphonePages[pageIndex] }
     private var selectedButton: SmartphoneButton { page.buttons[buttonIndex] }
+    private var selectedAction: PadAction { editingLongPress ? selectedButton.longPressAction : selectedButton.action }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 12) {
                 pageList
-                buttonGrid
+                buttonGrids
                 editor
             }
         }
         .padding(14)
         .foregroundStyle(.white)
         .background(Color(red: 0.035, green: 0.035, blue: 0.045))
-        .onChange(of: pageIndex) { _, _ in buttonIndex = 0 }
         .overlay {
             if let folderButtonID {
                 ZStack {
@@ -94,7 +97,8 @@ struct SmartphoneSettingsView: View {
                     SmartphoneFolderEditorView(
                         store: store,
                         pageIndex: pageIndex,
-                        folderButtonID: folderButtonID
+                        folderButtonID: folderButtonID,
+                        folderUsesLongPress: folderUsesLongPress
                     )
                     .contentShape(Rectangle())
                     .onTapGesture { }
@@ -116,19 +120,44 @@ struct SmartphoneSettingsView: View {
                 .foregroundStyle(.white.opacity(0.72))
             DarkTextField(text: pageNameBinding, placeholder: "페이지 이름")
             ForEach(Array(store.smartphonePages.enumerated()), id: \.element.id) { index, page in
-                Button { pageIndex = index } label: {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("PAGE \(String(format: "%02d", index + 1))")
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
-                            .foregroundStyle(index == pageIndex ? .orange : .secondary)
-                        Text(page.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                VStack(spacing: 0) {
+                    Button {
+                        pageIndex = index
+                        buttonIndex = 0
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("PAGE \(String(format: "%02d", index + 1))")
+                                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                .foregroundStyle(index == pageIndex ? .orange : .secondary)
+                            Text(page.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                        .background(index == dropTargetPageIndex ? Color.orange.opacity(0.28) : index == pageIndex ? Color.orange.opacity(0.14) : Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(index == dropTargetPageIndex || index == pageIndex ? .orange : .white.opacity(0.10)))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(index == pageIndex ? Color.orange.opacity(0.14) : Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(index == pageIndex ? .orange : .white.opacity(0.10)))
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+                .dropDestination(for: String.self) { items, _ in
+                    guard let source = items.first,
+                          let sourceLocation = smartphoneDragLocation(source),
+                          sourceLocation.pageIndex != index else { return false }
+                    dropTargetPageIndex = nil
+                    pageIndex = index
+                    buttonIndex = 0
+                    return true
+                } isTargeted: { isTargeted in
+                    if isTargeted {
+                        dropTargetPageIndex = index
+                        pageIndex = index
+                        buttonIndex = 0
+                    } else if dropTargetPageIndex == index {
+                        dropTargetPageIndex = nil
+                    }
+                }
+                .help("버튼을 든 채 이 페이지 이름 위에 올리면 페이지가 열립니다. 원하는 버튼 칸에 놓으세요.")
             }
             Spacer()
         }
@@ -138,7 +167,19 @@ struct SmartphoneSettingsView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
     }
 
-    private var buttonGrid: some View {
+    private var buttonGrids: some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Array(store.smartphonePages.enumerated()), id: \.element.id) { index, page in
+                buttonGrid(page: page, at: index)
+                    .opacity(index == pageIndex ? 1 : 0)
+                    .zIndex(index == pageIndex ? 1 : 0)
+                    .allowsHitTesting(index == pageIndex)
+                    .accessibilityHidden(index != pageIndex)
+            }
+        }
+    }
+
+    private func buttonGrid(page: SmartphonePage, at gridPageIndex: Int) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Text("\(page.name) · 버튼 선택").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
@@ -146,13 +187,13 @@ struct SmartphoneSettingsView: View {
                 Label("드래그로 위치 교환", systemImage: "arrow.left.arrow.right")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.orange.opacity(0.9))
-                    .help("버튼을 다른 버튼 위로 드래그하면 두 버튼의 위치를 교환합니다.")
-                Text("\(page.buttons.filter { $0.action.kind != .none }.count)/16 동작 지정")
+                    .help("같은 페이지 버튼 위에 놓거나, 다른 페이지 이름에 올려 페이지를 연 뒤 원하는 칸에 놓습니다.")
+                Text("\(page.buttons.filter { $0.action.kind != .none || $0.longPressAction.kind != .none }.count)/16 동작 지정")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
             }
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
                 ForEach(Array(page.buttons.enumerated()), id: \.element.id) { index, button in
-                    buttonCell(index: index, button: button)
+                    buttonCell(index: index, button: button, pageIndex: gridPageIndex)
                 }
             }
             Spacer()
@@ -163,31 +204,33 @@ struct SmartphoneSettingsView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
     }
 
-    private func buttonCell(index: Int, button: SmartphoneButton) -> some View {
+    private func buttonCell(index: Int, button: SmartphoneButton, pageIndex buttonPageIndex: Int) -> some View {
         ZStack(alignment: .topTrailing) {
             Button {
+                pageIndex = buttonPageIndex
                 buttonIndex = index
-                if button.action.kind == .appFolder {
+                if button.action.kind == .appFolder || button.longPressAction.kind == .appFolder {
+                    folderUsesLongPress = button.action.kind != .appFolder || (editingLongPress && button.longPressAction.kind == .appFolder)
                     folderButtonID = button.id
                 }
             } label: {
                 VStack(spacing: 6) {
-                    buttonIcon(for: button, isSelected: index == buttonIndex)
+                    buttonIcon(for: button, isSelected: buttonPageIndex == pageIndex && index == buttonIndex)
                     if !button.title.isEmpty {
                         Text(button.title)
                             .font(.system(size: 11, weight: .medium))
                             .lineLimit(1)
                     }
-                    if button.action.kind != .none {
-                        Text(button.action.kind.title)
+                    if button.action.kind != .none || button.longPressAction.kind != .none {
+                        Text(button.longPressAction.kind == .none ? button.action.kind.title : (button.action.kind == .none ? "길게 · \(button.longPressAction.kind.title)" : "짧게 / 길게"))
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.secondary)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
                 .padding(7)
-                .background(index == buttonIndex ? Color.orange.opacity(0.15) : Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(index == buttonIndex ? .orange : .white.opacity(0.12), lineWidth: index == buttonIndex ? 1.5 : 1))
+                .background(buttonPageIndex == pageIndex && index == buttonIndex ? Color.orange.opacity(0.15) : Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(buttonPageIndex == pageIndex && index == buttonIndex ? .orange : .white.opacity(0.12), lineWidth: buttonPageIndex == pageIndex && index == buttonIndex ? 1.5 : 1))
                 .overlay {
                     RoundedRectangle(cornerRadius: 9)
                         .stroke(.orange, lineWidth: 2)
@@ -203,26 +246,38 @@ struct SmartphoneSettingsView: View {
                 .foregroundStyle(.white.opacity(0.55))
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
-                .draggable(button.id) {
+                .draggable("\(buttonPageIndex)|\(button.id)") {
                     Label(button.title.isEmpty ? "빈 버튼" : button.title, systemImage: button.symbol.isEmpty ? "square" : button.symbol)
                         .padding(8)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
                 .accessibilityLabel("\(button.title.isEmpty ? "빈 버튼" : button.title) 이동")
-                .accessibilityHint("다른 버튼 위로 드래그해 위치를 교환합니다.")
-                .help("이 손잡이를 드래그하여 버튼 위치를 교환합니다.")
+                .accessibilityHint("같은 페이지 버튼에 놓거나, 다른 페이지 이름 위에 올려 페이지를 연 뒤 원하는 칸에 놓습니다.")
+                .help("이 손잡이를 같은 페이지 버튼 위로 드래그하거나, 다른 페이지 이름 위에 올려 페이지를 연 뒤 원하는 칸에 놓습니다.")
         }
         .dropDestination(for: String.self) { items, _ in
-            guard let sourceID = items.first else { return false }
+            guard let source = items.first,
+                  let sourceLocation = smartphoneDragLocation(source) else { return false }
             dropTargetButtonID = nil
-            guard sourceID != button.id,
-                  store.swapSmartphoneButtonConfigurations(
-                    pageIndex: pageIndex,
-                    from: sourceID,
+            let didSwap: Bool
+            if sourceLocation.pageIndex == buttonPageIndex {
+                didSwap = sourceLocation.buttonID != button.id && store.swapSmartphoneButtonConfigurations(
+                    pageIndex: buttonPageIndex,
+                    from: sourceLocation.buttonID,
                     to: button.id
-                  ) else {
+                )
+            } else {
+                didSwap = store.swapSmartphoneButtonConfigurations(
+                    fromPageIndex: sourceLocation.pageIndex,
+                    from: sourceLocation.buttonID,
+                    toPageIndex: buttonPageIndex,
+                    to: button.id
+                )
+            }
+            guard didSwap else {
                 return false
             }
+            pageIndex = buttonPageIndex
             buttonIndex = index
             return true
         } isTargeted: { isTargeted in
@@ -232,6 +287,17 @@ struct SmartphoneSettingsView: View {
                 dropTargetButtonID = nil
             }
         }
+    }
+
+    private func smartphoneDragLocation(_ value: String) -> (pageIndex: Int, buttonIndex: Int, buttonID: String)? {
+        let components = value.split(separator: "|", maxSplits: 1).map(String.init)
+        guard components.count == 2,
+              let sourcePageIndex = Int(components[0]),
+              store.smartphonePages.indices.contains(sourcePageIndex),
+              let sourceButtonIndex = store.smartphonePages[sourcePageIndex].buttons.firstIndex(where: { $0.id == components[1] }) else {
+            return nil
+        }
+        return (sourcePageIndex, sourceButtonIndex, components[1])
     }
 
     private var editor: some View {
@@ -249,6 +315,12 @@ struct SmartphoneSettingsView: View {
             field("아이콘 선택") { symbolPicker }
             field("사용자 PNG 아이콘") { customIconPicker }
             Divider().overlay(.white.opacity(0.16))
+            Picker("누르기 방식", selection: $editingLongPress) {
+                Text("짧게 누르기").tag(false)
+                Text("길게 누르기").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: editingLongPress) { registrationError = "" }
             field("실행 동작") {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
                     actionButton(.app)
@@ -257,10 +329,11 @@ struct SmartphoneSettingsView: View {
                     actionButton(.url)
                     actionButton(.clipboardText)
                     actionButton(.appFolder)
+                    actionButton(.none)
                 }
             }
             actionRegistration
-            if selectedButton.action.kind != .none {
+            if selectedAction.kind != .none {
                 Button("Mac에서 이 동작 실행") { runSelectedAction() }
                     .font(.system(size: 11, weight: .semibold))
                     .frame(maxWidth: .infinity)
@@ -516,11 +589,15 @@ struct SmartphoneSettingsView: View {
                     .padding(.vertical, 5)
                     .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
             }
-            ShortcutComposerView(
-                value: binding.action.value,
-                targetAppBundleIdentifier: binding.action.targetAppBundleIdentifier,
-                launchTargetAppIfNeeded: binding.action.launchTargetAppIfNeeded
-            )
+            Text("짧게: \(shortcut.action.kind.title) · 길게: \(shortcut.longPressAction.kind.title)")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Button("짧게·길게 동작 편집") {
+                folderUsesLongPress = editingLongPress
+                folderButtonID = selectedButton.id
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.orange)
         }
         .padding(7)
         .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
@@ -529,9 +606,10 @@ struct SmartphoneSettingsView: View {
 
     @ViewBuilder
     private func buttonIcon(for button: SmartphoneButton, isSelected: Bool) -> some View {
-        let appBundleIdentifier: String? = switch button.action.kind {
-        case .app, .appFolder: button.action.value
-        case .shortcut: button.action.targetAppBundleIdentifier
+        let iconAction = button.action.kind == .none ? button.longPressAction : button.action
+        let appBundleIdentifier: String? = switch iconAction.kind {
+        case .app, .appFolder: iconAction.value
+        case .shortcut: iconAction.targetAppBundleIdentifier
         case .terminalCommand, .url, .clipboardText, .none: nil
         }
 
@@ -573,44 +651,47 @@ struct SmartphoneSettingsView: View {
     private func actionButton(_ kind: ActionKind) -> some View {
         Button(kind.title) {
             var button = selectedButton
-            let previousKind = button.action.kind
-            button.action.kind = kind
+            var action = selectedAction
+            let previousKind = action.kind
+            action.kind = kind
             if previousKind != kind {
-                button.action.value = kind == .url ? "https://chatgpt.com" : ""
-                button.action.targetAppBundleIdentifier = ""
+                action.value = kind == .url ? "https://chatgpt.com" : ""
+                action.targetAppBundleIdentifier = ""
             }
-            if kind != .shortcut { button.action.targetAppBundleIdentifier = "" }
-            if kind != .appFolder { button.folderShortcuts = [] }
+            if kind != .shortcut { action.targetAppBundleIdentifier = "" }
+            if editingLongPress { button.longPressAction = action } else { button.action = action }
+            if button.action.kind != .appFolder && button.longPressAction.kind != .appFolder { button.folderShortcuts = [] }
             update(button)
         }
         .font(.system(size: 10, weight: .semibold))
         .padding(.horizontal, 7)
         .padding(.vertical, 7)
-        .foregroundStyle(selectedButton.action.kind == kind ? .black : .white.opacity(0.72))
-        .background(selectedButton.action.kind == kind ? Color.orange : Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 7))
+        .foregroundStyle(selectedAction.kind == kind ? .black : .white.opacity(0.72))
+        .background(selectedAction.kind == kind ? Color.orange : Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 7))
         .buttonStyle(.plain)
     }
 
     @ViewBuilder private var actionRegistration: some View {
-        switch selectedButton.action.kind {
+        switch selectedAction.kind {
         case .app, .appFolder:
-            Button(selectedButton.action.kind == .appFolder ? "앱 폴더 등록" : "앱 등록") {
-                registerApplication(kind: selectedButton.action.kind)
+            Button(selectedAction.kind == .appFolder ? "앱 폴더 등록" : "앱 등록") {
+                registerApplication(kind: selectedAction.kind)
             }
                 .font(.system(size: 11, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
                 .buttonStyle(.plain)
-            if !selectedButton.action.value.isEmpty {
-                Text(AppRegistrationService.displayName(for: selectedButton.action.value) ?? selectedButton.action.value)
+            if !selectedAction.value.isEmpty {
+                Text(AppRegistrationService.displayName(for: selectedAction.value) ?? selectedAction.value)
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
             }
-            if selectedButton.action.kind == .appFolder {
+            if selectedAction.kind == .appFolder {
                 folderShortcutEditor
             }
         case .shortcut:
             ShortcutComposerView(value: actionValueBinding, targetAppBundleIdentifier: targetAppBinding, launchTargetAppIfNeeded: launchTargetBinding)
+                .id("\(selectedButton.id)-\(editingLongPress)")
         case .terminalCommand:
             DarkTextField(text: actionValueBinding, placeholder: "예: open -a Safari")
         case .url:
@@ -630,7 +711,7 @@ struct SmartphoneSettingsView: View {
                     .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.22)))
             }
         case .none:
-            Text("이 버튼은 휴대폰에서 비활성 상태로 표시됩니다.")
+            Text(editingLongPress ? "길게 눌렀을 때 실행할 동작이 없습니다." : "짧게 눌렀을 때 실행할 동작이 없습니다.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
         }
         if !registrationError.isEmpty { Text(registrationError).font(.system(size: 10)).foregroundStyle(.red) }
@@ -638,9 +719,16 @@ struct SmartphoneSettingsView: View {
 
     private var buttonTextBinding: Binding<String> { Binding(get: { selectedButton.title }, set: { var button = selectedButton; button.title = $0; update(button) }) }
     private var pageNameBinding: Binding<String> { Binding(get: { page.name }, set: { store.updateSmartphonePageName($0, at: pageIndex) }) }
-    private var actionValueBinding: Binding<String> { Binding(get: { selectedButton.action.value }, set: { var button = selectedButton; button.action.value = $0; update(button) }) }
-    private var targetAppBinding: Binding<String> { Binding(get: { selectedButton.action.targetAppBundleIdentifier }, set: { var button = selectedButton; button.action.targetAppBundleIdentifier = $0; update(button) }) }
-    private var launchTargetBinding: Binding<Bool> { Binding(get: { selectedButton.action.launchTargetAppIfNeeded }, set: { var button = selectedButton; button.action.launchTargetAppIfNeeded = $0; update(button) }) }
+    private var selectedActionBinding: Binding<PadAction> {
+        Binding(get: { selectedAction }, set: { action in
+            var button = selectedButton
+            if editingLongPress { button.longPressAction = action } else { button.action = action }
+            update(button)
+        })
+    }
+    private var actionValueBinding: Binding<String> { selectedActionBinding.value }
+    private var targetAppBinding: Binding<String> { selectedActionBinding.targetAppBundleIdentifier }
+    private var launchTargetBinding: Binding<Bool> { selectedActionBinding.launchTargetAppIfNeeded }
 
     private func folderShortcutBinding(id: String) -> Binding<SmartphoneFolderShortcut> {
         Binding(
@@ -726,7 +814,7 @@ struct SmartphoneSettingsView: View {
             id: "\(button.id)_folder_\(UUID().uuidString)",
             title: "단축키 \(button.folderShortcuts.count + 1)",
             symbol: "command",
-            action: PadAction(kind: .shortcut, targetAppBundleIdentifier: button.action.value)
+            action: PadAction(kind: .shortcut, targetAppBundleIdentifier: selectedAction.value)
         )
         button.folderShortcuts.append(shortcut)
         update(button)
@@ -744,17 +832,25 @@ struct SmartphoneSettingsView: View {
             switch result {
             case .success(let application):
                 var button = selectedButton
-                button.action.kind = kind
-                button.action.value = application.bundleIdentifier
-                button.action.targetAppBundleIdentifier = ""
+                let previousApp = selectedAction.value
+                var action = selectedAction
+                action.kind = kind
+                action.value = application.bundleIdentifier
+                action.targetAppBundleIdentifier = ""
+                if editingLongPress { button.longPressAction = action } else { button.action = action }
                 if button.title.isEmpty { button.title = application.name }
                 if kind == .appFolder {
                     button.folderShortcuts = button.folderShortcuts.map { shortcut in
                         var updatedShortcut = shortcut
-                        updatedShortcut.action.targetAppBundleIdentifier = application.bundleIdentifier
+                        if updatedShortcut.action.targetAppBundleIdentifier == previousApp {
+                            updatedShortcut.action.targetAppBundleIdentifier = application.bundleIdentifier
+                        }
+                        if updatedShortcut.longPressAction.targetAppBundleIdentifier == previousApp {
+                            updatedShortcut.longPressAction.targetAppBundleIdentifier = application.bundleIdentifier
+                        }
                         return updatedShortcut
                     }
-                } else {
+                } else if button.action.kind != .appFolder && button.longPressAction.kind != .appFolder {
                     button.folderShortcuts = []
                 }
                 update(button)
@@ -764,7 +860,7 @@ struct SmartphoneSettingsView: View {
     }
 
     private func runSelectedAction() {
-        do { store.statusMessage = try runner.execute(selectedButton.action, commandFileID: selectedButton.id) }
+        do { store.statusMessage = try runner.execute(selectedAction, commandFileID: selectedButton.id + (editingLongPress ? "_long_press" : "")) }
         catch { store.statusMessage = error.localizedDescription }
     }
 }

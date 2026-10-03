@@ -1,8 +1,10 @@
 package com.pdg.galaxymicrolaunchpad
 
+import android.Manifest
 import android.graphics.BitmapFactory
 import android.app.TimePickerDialog
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.AudioAttributes
 import android.media.MediaPlayer
@@ -13,6 +15,8 @@ import android.os.SystemClock
 import android.util.Base64
 import java.io.File
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
@@ -27,7 +31,14 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -75,6 +86,8 @@ import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.MusicNote
+import androidx.compose.material.icons.outlined.Mic
+import androidx.compose.material.icons.outlined.MicOff
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.PlayArrow
@@ -93,6 +106,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
+import androidx.compose.material3.ripple
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -120,6 +134,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.input.KeyboardType
@@ -127,7 +142,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.changedToDown
 import androidx.compose.foundation.clickable
@@ -172,6 +192,9 @@ private val PixelQuestGold = Color(0xFFFFC857)
 private val PixelQuestCoral = Color(0xFFFF795E)
 private val PixelQuestMint = Color(0xFFA7E06E)
 private val PixelQuestMuted = Color(0xFFB6A88D)
+private val CabinetAmber = Color(0xFFFFBC54)
+private val CabinetPanel = Color(0xFF15191B)
+private val CabinetFrame = Color(0xFF535B60)
 private const val HorizontalSwipeCommitDistanceDp = 32f
 private const val DefaultHorizontalSwipeCommitDistancePx = HorizontalSwipeCommitDistanceDp
 private const val DefaultVerticalSwipeCommitDistancePx = 80f
@@ -181,7 +204,31 @@ private const val ButtonActionRevealSuppressionMillis = 2_500L
 private val ButtonTileIconSize = 42.dp
 private val ButtonTileContentGap = 4.dp
 private val ButtonTileLabelFontSize = 14.sp
+private val PortraitButtonTileIconSize = 28.dp
+private val PortraitButtonTileLabelFontSize = 11.sp
+private val UsagePanelHorizontalPadding = 10.dp
+private val UsagePanelVerticalPadding = 8.dp
+private val UsagePanelContentGap = 6.dp
+private val PortraitUsageResetFontSize = 16.sp
+private val LandscapeUsageResetFontSize = 14.sp
 private val MainContentTopPadding = 0.dp
+
+private data class PhoneSkinStyle(
+    val accent: Color,
+    val panel: Color,
+    val frame: Color,
+    val cornerRadius: androidx.compose.ui.unit.Dp,
+    val borderWidth: androidx.compose.ui.unit.Dp,
+    val themed: Boolean = true
+)
+
+private fun phoneSkinStyle(theme: String): PhoneSkinStyle = when (theme) {
+    PixelSpaceCodexPhoneTheme -> PhoneSkinStyle(PixelSpaceMint, Color(0xFF101B2D), PixelSpaceMint, 0.dp, 2.dp)
+    DotMatrixCodexPhoneTheme -> PhoneSkinStyle(DotMatrixCyan, DotMatrixBackgroundColor, DotMatrixCyan, 8.dp, 1.dp)
+    PixelQuestCodexPhoneTheme -> PhoneSkinStyle(PixelQuestGold, PixelQuestPanel, PixelQuestFrame, 0.dp, 2.dp)
+    ControlCabinetCodexPhoneTheme -> PhoneSkinStyle(CabinetAmber, CabinetPanel, CabinetFrame, 3.dp, 1.dp)
+    else -> PhoneSkinStyle(Line, Tile, Line, 3.dp, 1.dp, themed = false)
+}
 
 internal fun clampUsagePercent(value: Int?): Int? = value?.coerceIn(0, 100)
 
@@ -203,7 +250,8 @@ internal data class ControlAction(
     val folderActions: List<ControlAction> = emptyList(),
     val iconBitmap: ImageBitmap? = null,
     val isPlaceholder: Boolean = false,
-    val isIconless: Boolean = false
+    val isIconless: Boolean = false,
+    val longPressAction: ControlAction? = null
 )
 
 internal data class ButtonPage(
@@ -433,12 +481,42 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivityResumed: Boolean) {
     val context = LocalContext.current
+    val microphonePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, RemoteBridgeService::class.java).setAction(RemoteBridgeService.ACTION_MICROPHONE_START)
+            )
+        }
+    }
+    val toggleMicrophone: (Boolean) -> Unit = { enabled ->
+        if (!enabled) {
+            context.startService(
+                Intent(context, RemoteBridgeService::class.java).setAction(RemoteBridgeService.ACTION_MICROPHONE_STOP)
+            )
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, RemoteBridgeService::class.java).setAction(RemoteBridgeService.ACTION_MICROPHONE_START)
+            )
+        } else {
+            microphonePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
     val view = LocalView.current
     val preferences = remember(context) { RemoteBridgePreferences(context) }
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     var page by remember { mutableStateOf(AppPage.Controls) }
     var buttonPageIndex by rememberSaveable { mutableStateOf(0) }
     var openFolderAction by remember { mutableStateOf<ControlAction?>(null) }
+    val currentFolderAction = openFolderAction?.let { folder ->
+        remoteBridge.smartphonePages.flatMap { it.actions }
+            .firstOrNull { it.id == folder.id }
+            ?.let { if (folder.command == "smartphoneButtonLongPress") it.longPressAction else it }
+            ?.takeIf { it.actionKind == "appFolder" }
+    }
     var suppressCodexRevealUntilElapsedMillis by remember { mutableStateOf(0L) }
     var showConnectionSettings by rememberSaveable { mutableStateOf(false) }
     var idleBlackoutEnabled by rememberSaveable { mutableStateOf(preferences.idleBlackoutEnabled) }
@@ -451,7 +529,7 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
     var blackoutClockSizePercent by rememberSaveable {
         mutableStateOf(preferences.blackoutClockSizePercent)
     }
-    var completionFlashDismissed by remember { mutableStateOf(false) }
+    var dismissedCompletionEventId by rememberSaveable { mutableStateOf(0) }
     var blackoutVisible by remember { mutableStateOf(false) }
     var screenKeepAwakeExpired by remember { mutableStateOf(false) }
     var lastInteractionElapsedMillis by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
@@ -465,7 +543,7 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
         lastInteractionElapsedMillis = nowElapsedMillis
         lastUserInteractionElapsedMillis = nowElapsedMillis
         blackoutVisible = false
-        completionFlashDismissed = true
+        dismissedCompletionEventId = remoteBridge.codexRevealEventId
     }
     val markRemoteActivity = {
         lastInteractionElapsedMillis = SystemClock.elapsedRealtime()
@@ -541,15 +619,8 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
             markRemoteActivity()
         }
     }
-    LaunchedEffect(remoteBridge.codexRevealEventId, remoteBridge.codexRevealReason) {
-        if (remoteBridge.codexRevealEventId > 0
-            && shouldBlinkCompletionHeader(remoteBridge.codexRevealReason)
-        ) {
-            completionFlashDismissed = false
-        }
-    }
     val completionEventId = if (
-        !completionFlashDismissed
+        remoteBridge.codexRevealEventId > dismissedCompletionEventId
             && shouldBlinkCompletionHeader(remoteBridge.codexRevealReason)
     ) {
         remoteBridge.codexRevealEventId
@@ -639,7 +710,7 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                 codexPhoneTheme = remoteBridge.codexPhoneTheme,
                 completionEventId = completionEventId,
                 completionBlinkDurationMillis = completionBlinkDurationMillis(completionBlinkDurationSeconds),
-                onCompletionFlashFinished = { completionFlashDismissed = true }
+                onCompletionFlashFinished = { dismissedCompletionEventId = completionEventId }
             )
             Box(
                 modifier = Modifier
@@ -657,9 +728,13 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                 ) { targetPage ->
                     when (targetPage) {
                         AppPage.Controls -> ControlsPage(
+                            phoneTheme = remoteBridge.codexPhoneTheme,
+                            microphoneActive = remoteBridge.microphoneActive || remoteBridge.microphoneStarting,
+                            microphoneEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected && !remoteBridge.microphoneStarting,
+                            onMicrophoneToggle = toggleMicrophone,
                             pages = remoteBridge.smartphonePages,
                             pageIndex = buttonPageIndex,
-                            folderAction = openFolderAction,
+                            folderAction = currentFolderAction,
                             fiveHourRemaining = remoteBridge.fiveHourRemainingPercent,
                             weeklyRemaining = remoteBridge.remainingPercent,
                             fiveHourResetsAt = remoteBridge.fiveHourResetsAt,
@@ -675,14 +750,14 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                                 openFolderAction = action
                                 suppressCodexRevealUntilElapsedMillis =
                                     SystemClock.elapsedRealtime() + ButtonActionRevealSuppressionMillis
-                                remoteBridge.sendSmartphoneButton(action.id)
+                                remoteBridge.sendSmartphoneButton(action.id, action.command == "smartphoneButtonLongPress")
                             },
                             onCloseFolder = { openFolderAction = null },
                             onAction = { action ->
                                 suppressCodexRevealUntilElapsedMillis =
                                     SystemClock.elapsedRealtime() + ButtonActionRevealSuppressionMillis
-                                if (action.command == "smartphoneButton") {
-                                    remoteBridge.sendSmartphoneButton(action.id)
+                                if (action.command == "smartphoneButton" || action.command == "smartphoneButtonLongPress") {
+                                    remoteBridge.sendSmartphoneButton(action.id, action.command == "smartphoneButtonLongPress")
                                 } else {
                                     remoteBridge.sendCommand(action.command)
                                 }
@@ -719,6 +794,10 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
         }
         if (showConnectionSettings) {
             BridgeConnectionSettingsDialog(
+                microphoneActive = remoteBridge.microphoneActive,
+                microphoneStarting = remoteBridge.microphoneStarting,
+                microphoneEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
+                onMicrophoneToggle = toggleMicrophone,
                 completionSoundTarget = remoteBridge.completionSoundTarget,
                 completionSoundTargetEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
                 onCompletionSoundTargetChanged = remoteBridge::requestCompletionSoundTarget,
@@ -814,6 +893,7 @@ private fun Header(
     val dotMatrixSkin = codexPhoneTheme == DotMatrixCodexPhoneTheme
     val pixelQuestSkin = codexPhoneTheme == PixelQuestCodexPhoneTheme
     val workingAccent = when {
+        codexPhoneTheme == ControlCabinetCodexPhoneTheme -> CabinetAmber
         pixelSpaceSkin -> PixelSpaceMint
         dotMatrixSkin -> DotMatrixCyan
         pixelQuestSkin -> PixelQuestGold
@@ -1030,6 +1110,10 @@ private fun RunningStatusIndicator(
 
 @Composable
 private fun BridgeConnectionSettingsDialog(
+    microphoneActive: Boolean,
+    microphoneStarting: Boolean,
+    microphoneEnabled: Boolean,
+    onMicrophoneToggle: (Boolean) -> Unit,
     completionSoundTarget: String,
     completionSoundTargetEnabled: Boolean,
     onCompletionSoundTargetChanged: (String) -> Unit,
@@ -1276,6 +1360,27 @@ private fun BridgeConnectionSettingsDialog(
                         }
                     }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("휴대폰을 Mac 마이크로 사용", color = TextPrimary, fontSize = 14.sp)
+                    Spacer(Modifier.weight(1f))
+                    Switch(
+                        checked = microphoneActive || microphoneStarting,
+                        onCheckedChange = onMicrophoneToggle,
+                        enabled = microphoneEnabled && !microphoneStarting,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Black,
+                            checkedTrackColor = Green,
+                            checkedBorderColor = Green,
+                            uncheckedThumbColor = TextMuted,
+                            uncheckedTrackColor = Tile,
+                            uncheckedBorderColor = TextMuted
+                        )
+                    )
+                }
+                Text("켜면 Mac 기본 마이크가 BlackHole 2ch로 바뀝니다.", color = TextMuted, fontSize = 12.sp)
                 Spacer(Modifier.height(6.dp))
                 Text("절전 시간대", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1397,6 +1502,10 @@ private fun UsageMeter(label: String, remainingPercent: Int?, accent: Color) {
 
 @Composable
 private fun ControlsPage(
+    phoneTheme: String,
+    microphoneActive: Boolean,
+    microphoneEnabled: Boolean,
+    onMicrophoneToggle: (Boolean) -> Unit,
     pages: List<ButtonPage>,
     pageIndex: Int,
     folderAction: ControlAction?,
@@ -1413,12 +1522,10 @@ private fun ControlsPage(
     onAction: (ControlAction) -> Unit
 ) {
     var nowEpochSeconds by remember { mutableStateOf(System.currentTimeMillis() / 1_000L) }
-    LaunchedEffect(pixelQuestSkin) {
-        if (pixelQuestSkin) {
-            while (true) {
-                nowEpochSeconds = System.currentTimeMillis() / 1_000L
-                delay(30_000L)
-            }
+    LaunchedEffect(phoneTheme) {
+        while (true) {
+            nowEpochSeconds = System.currentTimeMillis() / 1_000L
+            delay(30_000L)
         }
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -1440,6 +1547,7 @@ private fun ControlsPage(
                             pages.forEachIndexed { index, buttonPage ->
                                 Box(Modifier.weight(1f)) {
                                     PageSelector(
+                                        phoneTheme = phoneTheme,
                                         page = buttonPage,
                                         selected = index == pageIndex,
                                         onClick = { onPageChange(index) },
@@ -1455,6 +1563,7 @@ private fun ControlsPage(
                         ) {
                             pages.forEachIndexed { index, buttonPage ->
                                 PageSelector(
+                                    phoneTheme = phoneTheme,
                                     page = buttonPage,
                                     selected = index == pageIndex,
                                     onClick = { onPageChange(index) },
@@ -1464,12 +1573,25 @@ private fun ControlsPage(
                             }
                         }
                     }
+                    IconButton(
+                        onClick = { onMicrophoneToggle(!microphoneActive) },
+                        enabled = microphoneEnabled,
+                        modifier = Modifier.size(44.dp)
+                            .background(if (microphoneActive) Green.copy(alpha = 0.18f) else Tile, RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(
+                            if (microphoneActive) Icons.Outlined.Mic else Icons.Outlined.MicOff,
+                            contentDescription = if (microphoneActive) "마이크 끄기" else "마이크 켜기",
+                            tint = if (microphoneActive) Green else TextMuted
+                        )
+                    }
                     IconButton(onClick = onConnectionSettings, modifier = Modifier.size(44.dp)) {
                         Icon(Icons.Outlined.Settings, contentDescription = "연결 설정", tint = TextMuted)
                     }
                 }
                 Spacer(Modifier.height(10.dp))
                 ControlsPageContent(
+                    phoneTheme = phoneTheme,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     isPortrait = true,
                     pages = pages,
@@ -1499,19 +1621,12 @@ private fun ControlsPage(
                             nowEpochSeconds = nowEpochSeconds,
                             accent = PixelQuestCoral
                         )
+                    } else if (phoneTheme == ControlCabinetCodexPhoneTheme) {
+                        ControlCabinetUsageGauge("1-week remaining", weeklyRemaining, weeklyResetsAt, true, nowEpochSeconds)
+                        ControlCabinetUsageGauge("5-hour remaining", fiveHourRemaining, fiveHourResetsAt, false, nowEpochSeconds)
                     } else {
-                        UsageGauge(
-                            label = "1-week remaining",
-                            remaining = weeklyRemaining,
-                            dotStyle = dotMatrixSkin,
-                            dotTint = DotMatrixPurple
-                        )
-                        UsageGauge(
-                            label = "5-hour remaining",
-                            remaining = fiveHourRemaining,
-                            dotStyle = dotMatrixSkin,
-                            dotTint = DotMatrixCyan
-                        )
+                        PhoneUsageGauge(phoneTheme, "1-week remaining", weeklyRemaining, weeklyResetsAt, true, nowEpochSeconds)
+                        PhoneUsageGauge(phoneTheme, "5-hour remaining", fiveHourRemaining, fiveHourResetsAt, false, nowEpochSeconds)
                     }
                 }
             }
@@ -1533,17 +1648,31 @@ private fun ControlsPage(
                     Spacer(Modifier.height(8.dp))
                     pages.forEachIndexed { index, buttonPage ->
                         PageSelector(
+                            phoneTheme = phoneTheme,
                             page = buttonPage,
                             selected = index == pageIndex,
                             onClick = { onPageChange(index) }
                         )
                     }
                     Spacer(Modifier.weight(1f))
+                    IconButton(
+                        onClick = { onMicrophoneToggle(!microphoneActive) },
+                        enabled = microphoneEnabled,
+                        modifier = Modifier.size(44.dp)
+                            .background(if (microphoneActive) Green.copy(alpha = 0.18f) else Tile, RoundedCornerShape(12.dp))
+                    ) {
+                        Icon(
+                            if (microphoneActive) Icons.Outlined.Mic else Icons.Outlined.MicOff,
+                            contentDescription = if (microphoneActive) "마이크 끄기" else "마이크 켜기",
+                            tint = if (microphoneActive) Green else TextMuted
+                        )
+                    }
                     IconButton(onClick = onConnectionSettings, modifier = Modifier.size(44.dp)) {
                         Icon(Icons.Outlined.Settings, contentDescription = "연결 설정", tint = TextMuted)
                     }
                 }
                 ControlsPageContent(
+                    phoneTheme = phoneTheme,
                     modifier = Modifier.fillMaxSize(),
                     isPortrait = false,
                     pages = pages,
@@ -1561,6 +1690,7 @@ private fun ControlsPage(
 
 @Composable
 private fun ControlsPageContent(
+    phoneTheme: String,
     modifier: Modifier,
     isPortrait: Boolean,
     pages: List<ButtonPage>,
@@ -1618,6 +1748,7 @@ private fun ControlsPageContent(
             val gap = 10.dp
             if (targetFolderAction != null) {
                 FolderContentsPage(
+                    phoneTheme = phoneTheme,
                     folderAction = targetFolderAction,
                     maxWidth = availableWidth,
                     maxHeight = availableHeight,
@@ -1654,10 +1785,14 @@ private fun ControlsPageContent(
                     ) {
                         items(targetPage.actions) { action ->
                             ActionTile(
+                                phoneTheme = phoneTheme,
                                 action = action,
                                 tileHeight = tileHeight,
                                 onClick = {
                                     if (action.actionKind == "appFolder") onOpenFolder(action) else onAction(action)
+                                },
+                                onLongClick = action.longPressAction?.let { longAction ->
+                                    { if (longAction.actionKind == "appFolder") onOpenFolder(longAction) else onAction(longAction) }
                                 }
                             )
                         }
@@ -1670,6 +1805,7 @@ private fun ControlsPageContent(
 
 @Composable
 private fun FolderContentsPage(
+    phoneTheme: String,
     folderAction: ControlAction,
     maxWidth: androidx.compose.ui.unit.Dp,
     maxHeight: androidx.compose.ui.unit.Dp,
@@ -1707,9 +1843,11 @@ private fun FolderContentsPage(
         ) {
             items(folderItems) { action ->
                 ActionTile(
+                    phoneTheme = phoneTheme,
                     action = action,
                     tileHeight = tileHeight,
-                    onClick = { if (action.command == "closeFolder") onCloseFolder() else onAction(action) }
+                    onClick = { if (action.command == "closeFolder") onCloseFolder() else onAction(action) },
+                    onLongClick = action.longPressAction?.let { longAction -> { onAction(longAction) } }
                 )
             }
         }
@@ -1757,31 +1895,35 @@ private fun pageTransitionDirection(initialPage: Int, targetPage: Int, pageCount
 
 @Composable
 private fun PageSelector(
+    phoneTheme: String,
     page: ButtonPage,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     compact: Boolean = false
 ) {
+    val skin = phoneSkinStyle(phoneTheme)
+    val shape = RoundedCornerShape(skin.cornerRadius)
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(40.dp)
             .clickable(onClick = onClick)
-            .background(if (selected) Tile else Color.Transparent, RoundedCornerShape(3.dp))
-            .border(1.dp, if (selected) Line else Color.Transparent, RoundedCornerShape(3.dp))
+            .background(if (selected) skin.panel else Color.Transparent, shape)
+            .border(skin.borderWidth, if (selected) skin.frame else Color.Transparent, shape)
             .padding(horizontal = if (compact) 6.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box(
             Modifier
                 .size(if (compact) 5.dp else 6.dp)
-                .background(if (selected) Green else TextMuted, RoundedCornerShape(50))
+                .background(if (selected && skin.themed) skin.accent else if (selected) Green else TextMuted, RoundedCornerShape(50))
         )
         Spacer(Modifier.width(if (compact) 6.dp else 10.dp))
         Text(
             page.label,
-            color = if (selected) TextPrimary else TextMuted,
+            color = if (selected && skin.themed) skin.accent else if (selected) TextPrimary else TextMuted,
+            fontFamily = if (skin.themed) FontFamily.Monospace else FontFamily.Default,
             fontSize = if (compact) 12.sp else 14.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
@@ -1789,47 +1931,133 @@ private fun PageSelector(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ActionTile(action: ControlAction, tileHeight: androidx.compose.ui.unit.Dp, onClick: () -> Unit) {
+private fun ActionTile(
+    phoneTheme: String,
+    action: ControlAction,
+    tileHeight: androidx.compose.ui.unit.Dp,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null
+) {
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    val pixelSpace = phoneTheme == PixelSpaceCodexPhoneTheme
+    val dotMatrix = phoneTheme == DotMatrixCodexPhoneTheme
+    val pixelQuest = phoneTheme == PixelQuestCodexPhoneTheme
+    val controlCabinet = phoneTheme == ControlCabinetCodexPhoneTheme
+    val skin = phoneSkinStyle(phoneTheme)
+    val themed = skin.themed
+    val hasShortPressAction = !action.isPlaceholder && (action.command != "smartphoneButton" || action.actionKind != "none")
+    val hasLongPressAction = !action.isPlaceholder && action.longPressAction != null && onLongClick != null
+    val hapticFeedback = LocalHapticFeedback.current
+    val interactionSource = remember { MutableInteractionSource() }
+    val pressed by interactionSource.collectIsPressedAsState()
+    val accent = skin.accent
+    val background = skin.panel
+    val frame = skin.frame
+    val shape = RoundedCornerShape(skin.cornerRadius)
     androidx.compose.material3.Surface(
-        onClick = { if (!action.isPlaceholder) onClick() },
-        color = Tile,
+        color = if (pressed && themed) androidx.compose.ui.graphics.lerp(background, accent, 0.18f) else background,
         contentColor = action.accent,
-        shape = RoundedCornerShape(3.dp),
+        shape = shape,
         modifier = Modifier
             .fillMaxWidth()
             .height(tileHeight)
-            .border(1.dp, Line, RoundedCornerShape(3.dp))
+            .border(skin.borderWidth, if (pressed && themed) accent else frame, shape)
+            .clip(shape)
+            .combinedClickable(
+                enabled = hasShortPressAction || hasLongPressAction,
+                role = Role.Button,
+                interactionSource = interactionSource,
+                indication = ripple(),
+                onClickLabel = if (hasShortPressAction) "짧게 눌러 실행" else null,
+                onLongClickLabel = if (hasLongPressAction) "길게 눌러 실행" else null,
+                onLongClick = if (action.command == "smartphoneButton" || hasLongPressAction) {
+                    {
+                        if (hasLongPressAction) {
+                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onLongClick?.invoke()
+                        }
+                    }
+                } else null,
+                onClick = { if (hasShortPressAction) onClick() }
+            )
+            .semantics {
+                if (hasLongPressAction) {
+                    stateDescription = if (hasShortPressAction) "짧게 누르기와 길게 누르기에 각각 동작 지정됨" else "길게 눌러 실행"
+                }
+            }
     ) {
-        if (!action.isPlaceholder) {
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(ButtonTileContentGap, Alignment.CenterVertically)
-            ) {
-                if (!action.isIconless) {
-                    action.iconBitmap?.let { bitmap ->
-                        Image(
-                            bitmap = bitmap,
+        Box(Modifier.fillMaxSize().drawBehind {
+            if (controlCabinet) {
+                val inset = 7.dp.toPx()
+                for (x in listOf(inset, size.width - inset)) {
+                    for (y in listOf(inset, size.height - inset)) {
+                        val bolt = Offset(x, y)
+                        drawCircle(CabinetFrame, 2.5.dp.toPx(), bolt)
+                        drawLine(Black, bolt - Offset(1.5.dp.toPx(), 0f), bolt + Offset(1.5.dp.toPx(), 0f), 1.dp.toPx())
+                    }
+                }
+                drawLine(accent.copy(alpha = if (pressed) 1f else 0.4f), Offset(inset * 2, size.height - inset), Offset(size.width - inset * 2, size.height - inset), 2.dp.toPx())
+            } else if (dotMatrix) {
+                val step = 8.dp.toPx()
+                var y = step / 2
+                while (y < size.height) {
+                    var x = step / 2
+                    while (x < size.width) {
+                        drawCircle(DotMatrixGridColor.copy(alpha = 0.45f), 0.7.dp.toPx(), Offset(x, y))
+                        x += step
+                    }
+                    y += step
+                }
+            } else if (pixelSpace || pixelQuest) {
+                val inset = 5.dp.toPx()
+                val edge = 1.dp.toPx()
+                drawLine(accent.copy(alpha = 0.35f), Offset(inset, inset), Offset(size.width - inset, inset), edge)
+                drawLine(accent.copy(alpha = 0.35f), Offset(inset, inset), Offset(inset, size.height - inset), edge)
+            }
+        }) {
+            if (!action.isPlaceholder) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(ButtonTileContentGap, Alignment.CenterVertically)
+                ) {
+                    if (!action.isIconless) {
+                        action.iconBitmap?.let { bitmap ->
+                            Image(
+                                bitmap = bitmap,
+                                contentDescription = action.label,
+                                modifier = Modifier.size(if (isPortrait) PortraitButtonTileIconSize else ButtonTileIconSize)
+                            )
+                        } ?: Icon(
+                            action.icon,
                             contentDescription = action.label,
-                            modifier = Modifier.size(if (isPortrait) 28.dp else ButtonTileIconSize)
+                            modifier = Modifier.size(if (isPortrait) PortraitButtonTileIconSize else ButtonTileIconSize)
                         )
-                    } ?: Icon(
-                        action.icon,
-                        contentDescription = action.label,
-                        modifier = Modifier.size(if (isPortrait) 28.dp else ButtonTileIconSize)
+                    }
+                    Text(
+                        action.label,
+                        color = if (themed && action.accent == TextPrimary) accent else action.accent,
+                        fontFamily = if (themed) FontFamily.Monospace else FontFamily.Default,
+                        fontSize = if (isPortrait) PortraitButtonTileLabelFontSize else ButtonTileLabelFontSize,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
-                Text(
-                    action.label,
-                    color = action.accent,
-                    fontSize = if (isPortrait) 11.sp else ButtonTileLabelFontSize,
-                    fontWeight = FontWeight.Medium,
-                    textAlign = TextAlign.Center,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
+                if (hasLongPressAction) {
+                    Text(
+                        if (hasShortPressAction) "짧게 / 길게" else "길게",
+                        color = if (themed) accent else TextMuted,
+                        fontSize = 10.sp,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 3.dp, end = 12.dp)
+                            .clearAndSetSemantics { }
+                    )
+                }
             }
         }
     }
@@ -1851,6 +2079,7 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
     val pixelSpaceSkin = remoteBridge.codexPhoneTheme == PixelSpaceCodexPhoneTheme
     val dotMatrixSkin = remoteBridge.codexPhoneTheme == DotMatrixCodexPhoneTheme
     val pixelQuestSkin = remoteBridge.codexPhoneTheme == PixelQuestCodexPhoneTheme
+    val controlCabinetSkin = remoteBridge.codexPhoneTheme == ControlCabinetCodexPhoneTheme
     val activityTitle = when (activity) {
         "connecting" -> "CONNECTING"
         "running" -> "RUNNING"
@@ -1860,6 +2089,8 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
         else -> "IDLE"
     }
     val activityColor = when {
+        controlCabinetSkin && activity == "running" -> CabinetAmber
+        controlCabinetSkin && activity == "completed" -> Green
         pixelQuestSkin && activity == "running" -> PixelQuestGold
         pixelQuestSkin && activity == "completed" -> PixelQuestMint
         pixelQuestSkin && activity == "waitingForApproval" -> PixelQuestCoral
@@ -1876,6 +2107,10 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
     }
     val fiveHourRemaining = remoteBridge.fiveHourRemainingPercent
     val weeklyRemaining = remoteBridge.remainingPercent
+    if (controlCabinetSkin) {
+        ControlCabinetCodexStatusPage(remoteBridge, activity, activityTitle, activityColor, nowEpochSeconds)
+        return
+    }
     if (pixelQuestSkin) {
         PixelQuestCodexStatusPage(
             remoteBridge = remoteBridge,
@@ -2097,6 +2332,124 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
 }
 
 @Composable
+private fun ControlCabinetCodexStatusPage(
+    remoteBridge: RemoteBridgeClient,
+    activity: String,
+    activityTitle: String,
+    activityColor: Color,
+    nowEpochSeconds: Long
+) {
+    val portrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    BoxWithConstraints(Modifier.fillMaxSize().background(CabinetPanel)) {
+        Image(
+            painter = painterResource(R.drawable.control_cabinet_background),
+            contentDescription = null,
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier.fillMaxSize()
+        )
+        val horizontalInset = maxWidth * 0.095f
+        val verticalInset = if (portrait) 20.dp else maxHeight * 0.09f
+        val summary: @Composable () -> Unit = {
+            Text("CODEX", color = CabinetAmber, fontSize = 28.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            StatusLine(if (remoteBridge.codexConnected) "Codex connected" else "Codex unavailable", if (remoteBridge.codexConnected) Green else TextMuted)
+            Spacer(Modifier.height(16.dp))
+            Text("REMAINING USAGE", color = TextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                for ((label, remaining, resetAt) in listOf(
+                    Triple("5-hour", remoteBridge.fiveHourRemainingPercent, remoteBridge.fiveHourResetsAt),
+                    Triple("1-week", remoteBridge.remainingPercent, remoteBridge.resetsAt)
+                )) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                        Text(label, color = TextMuted, fontSize = 12.sp)
+                        Text(remaining?.let { "$it%" } ?: "—", color = usageGaugeColor(remaining), fontSize = 30.sp, fontFamily = FontFamily.Monospace)
+                        Text(formatResetTime(resetAt, includeDate = label == "1-week"), color = TextPrimary, fontSize = 13.sp)
+                        Text(formatRemainingDuration(resetAt, nowEpochSeconds), color = TextMuted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        val status: @Composable () -> Unit = {
+            Text("CODEX STATUS", color = CabinetAmber, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                ControlCabinetMotion(activity, activityColor)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text(activityTitle, color = activityColor, fontSize = if (activity == "waitingForApproval") 18.sp else 25.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Text(remoteBridge.message, color = TextPrimary, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            remoteBridge.pendingApproval?.let { approval ->
+                ApprovalPrompt(approval, remoteBridge::sendCodexApproval)
+            }
+            ControlCabinetUsageGauge("5-hour remaining", remoteBridge.fiveHourRemainingPercent, remoteBridge.fiveHourResetsAt, false, nowEpochSeconds)
+            ControlCabinetUsageGauge("1-week remaining", remoteBridge.remainingPercent, remoteBridge.resetsAt, true, nowEpochSeconds)
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                StatusLine("Mac bridge", if (remoteBridge.connectionState == RemoteConnectionState.Connected) Green else TextMuted)
+                StatusLine("Codex App Server", if (remoteBridge.codexConnected) Green else TextMuted)
+            }
+        }
+        val panel = Modifier.background(CabinetPanel.copy(alpha = 0.90f), RoundedCornerShape(4.dp))
+            .border(1.dp, CabinetFrame, RoundedCornerShape(4.dp)).padding(16.dp)
+        if (portrait) {
+            Column(
+                Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = horizontalInset, vertical = verticalInset),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Column(Modifier.fillMaxWidth().then(panel)) { summary() }
+                Column(Modifier.fillMaxWidth().then(panel), verticalArrangement = Arrangement.spacedBy(12.dp)) { status() }
+            }
+        } else {
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = horizontalInset, vertical = verticalInset),
+                horizontalArrangement = Arrangement.spacedBy(18.dp)
+            ) {
+                Column(Modifier.weight(0.43f).fillMaxHeight().then(panel).verticalScroll(rememberScrollState())) { summary() }
+                Column(
+                    Modifier.weight(0.57f).fillMaxHeight().then(panel).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) { status() }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlCabinetMotion(activity: String, color: Color) {
+    val running = activity == "running"
+    val phase = if (running) {
+        val motion = rememberInfiniteTransition(label = "cabinet-running")
+        val value by motion.animateFloat(
+            initialValue = 0f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(tween(1800, easing = LinearEasing), RepeatMode.Restart),
+            label = "cabinet-rotor-leds"
+        )
+        value
+    } else 0f
+    Canvas(Modifier.size(width = 68.dp, height = 82.dp)) {
+        val center = Offset(size.width / 2f, 32.dp.toPx())
+        val radius = 25.dp.toPx()
+        drawCircle(Black, radius, center)
+        drawCircle(CabinetFrame, radius, center, style = Stroke(2.dp.toPx()))
+        rotate(phase * 360f, center) {
+            repeat(6) { index ->
+                rotate(index * 60f, center) {
+                    drawLine(color.copy(alpha = 0.8f), center + Offset(8.dp.toPx(), 0f), center + Offset(19.dp.toPx(), 5.dp.toPx()), 6.dp.toPx(), StrokeCap.Round)
+                }
+            }
+        }
+        drawCircle(CabinetFrame, 6.dp.toPx(), center)
+        drawCircle(color, 2.dp.toPx(), center)
+        repeat(6) { index ->
+            val lit = if (running) index == (phase * 6).toInt().coerceAtMost(5) else index == 0
+            val position = Offset(9.dp.toPx() + index * 10.dp.toPx(), 73.dp.toPx())
+            if (lit) drawCircle(color.copy(alpha = 0.15f), 5.dp.toPx(), position)
+            drawCircle(if (lit) color else CabinetFrame.copy(alpha = 0.5f), 2.5.dp.toPx(), position)
+        }
+    }
+}
+
+@Composable
 private fun PortraitCodexStatusPage(
     remoteBridge: RemoteBridgeClient,
     activity: String,
@@ -2174,24 +2527,14 @@ private fun PortraitCodexStatusPage(
                     dotStyle = dotMatrixSkin,
                     dotTint = DotMatrixPurple
                 )
-                Text(
-                    "Reset ${formatResetTime(remoteBridge.resetsAt, includeDate = true)} · " +
-                        formatRemainingDuration(remoteBridge.resetsAt, nowEpochSeconds),
-                    color = TextPrimary,
-                    fontSize = 12.sp
-                )
+                UsageResetInfo(remoteBridge.resetsAt, true, nowEpochSeconds, TextPrimary, TextMuted)
                 UsageGauge(
                     label = "5-hour remaining",
                     remaining = fiveHourRemaining,
                     dotStyle = dotMatrixSkin,
                     dotTint = DotMatrixCyan
                 )
-                Text(
-                    "Reset ${formatResetTime(remoteBridge.fiveHourResetsAt, includeDate = false)} · " +
-                        formatRemainingDuration(remoteBridge.fiveHourResetsAt, nowEpochSeconds),
-                    color = TextPrimary,
-                    fontSize = 12.sp
-                )
+                UsageResetInfo(remoteBridge.fiveHourResetsAt, false, nowEpochSeconds, TextPrimary, TextMuted)
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Connections", color = TextMuted, fontSize = 12.sp)
@@ -2570,7 +2913,7 @@ private fun PixelQuestUsageCard(
             Text(remaining?.let { "$it%" } ?: "—", color = accent, fontSize = 23.sp, fontWeight = FontWeight.Black)
         }
         PixelQuestUsageBar(remaining, accent)
-        PixelQuestUsageResetInfo(resetAt, includeDate, nowEpochSeconds)
+        UsageResetInfo(resetAt, includeDate, nowEpochSeconds)
     }
 }
 
@@ -2583,7 +2926,7 @@ private fun PixelQuestUsageProgress(
     nowEpochSeconds: Long,
     accent: Color
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = UsagePanelHorizontalPadding, vertical = UsagePanelVerticalPadding), verticalArrangement = Arrangement.spacedBy(UsagePanelContentGap)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Canvas(Modifier.size(8.dp)) { drawRect(accent, size = size) }
             Spacer(Modifier.width(7.dp))
@@ -2592,12 +2935,13 @@ private fun PixelQuestUsageProgress(
             Text(remaining?.let { "$it%" } ?: "—", color = accent, fontSize = 23.sp, fontWeight = FontWeight.Black)
         }
         PixelQuestUsageBar(remaining, accent)
-        PixelQuestUsageResetInfo(resetAt, includeDate, nowEpochSeconds)
+        UsageResetInfo(resetAt, includeDate, nowEpochSeconds)
     }
 }
 
 @Composable
-private fun PixelQuestUsageResetInfo(resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long) {
+private fun UsageResetInfo(resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long, timeColor: Color = PixelQuestMuted, remainingColor: Color = PixelQuestGold) {
+    val fontSize = if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) PortraitUsageResetFontSize else LandscapeUsageResetFontSize
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -2606,17 +2950,19 @@ private fun PixelQuestUsageResetInfo(resetAt: Double?, includeDate: Boolean, now
         Text(
             formatResetTime(resetAt, includeDate),
             modifier = Modifier.weight(1f),
-            color = PixelQuestMuted,
-            fontSize = 14.sp,
+            color = timeColor,
+            fontSize = fontSize,
+            fontWeight = FontWeight.Medium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
         Text(
             formatRemainingDuration(resetAt, nowEpochSeconds),
             modifier = Modifier.weight(1f),
-            color = PixelQuestGold,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.Bold,
+            color = remainingColor,
+            fontSize = fontSize,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.End,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
@@ -2982,6 +3328,54 @@ private fun DotMatrixStatusMotion(
                         size = Size(cellSize, cellSize)
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhoneUsageGauge(phoneTheme: String, label: String, remaining: Int?, resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long) {
+    val skin = phoneSkinStyle(phoneTheme)
+    val dotMatrix = phoneTheme == DotMatrixCodexPhoneTheme
+    val pixelSpace = phoneTheme == PixelSpaceCodexPhoneTheme
+    val accent = if (dotMatrix) {
+        if (includeDate) DotMatrixPurple else DotMatrixCyan
+    } else if (pixelSpace) {
+        if (includeDate) PixelSpaceViolet else PixelSpaceMint
+    } else TextPrimary
+    val themed = dotMatrix || pixelSpace
+    val shape = RoundedCornerShape(skin.cornerRadius)
+    val panel = if (themed) {
+        Modifier.background(skin.panel, shape)
+            .border(1.dp, accent.copy(alpha = 0.55f), shape)
+            .padding(horizontal = UsagePanelHorizontalPadding, vertical = UsagePanelVerticalPadding)
+    } else Modifier.padding(horizontal = UsagePanelHorizontalPadding, vertical = UsagePanelVerticalPadding)
+    Column(Modifier.fillMaxWidth().then(panel), verticalArrangement = Arrangement.spacedBy(UsagePanelContentGap)) {
+        UsageGauge(label, remaining, dotStyle = themed, dotTint = if (themed) accent else null)
+        UsageResetInfo(resetAt, includeDate, nowEpochSeconds, accent, TextMuted)
+    }
+}
+
+@Composable
+private fun ControlCabinetUsageGauge(label: String, remaining: Int?, resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long) {
+    Box(
+        Modifier.fillMaxWidth()
+            .background(CabinetPanel, RoundedCornerShape(3.dp))
+            .border(1.dp, CabinetFrame, RoundedCornerShape(3.dp))
+            .drawBehind {
+                val inset = 4.dp.toPx()
+                for (x in listOf(inset, size.width - inset)) {
+                    for (y in listOf(inset, size.height - inset)) {
+                        drawCircle(CabinetFrame, 1.5.dp.toPx(), Offset(x, y))
+                    }
+                }
+            }
+            .padding(horizontal = UsagePanelHorizontalPadding, vertical = UsagePanelVerticalPadding)
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(UsagePanelContentGap)) {
+            UsageGauge(label, remaining, dotStyle = true)
+            if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) {
+                UsageResetInfo(resetAt, includeDate, nowEpochSeconds, TextPrimary, TextMuted)
             }
         }
     }

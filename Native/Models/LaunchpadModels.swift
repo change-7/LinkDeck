@@ -82,23 +82,30 @@ struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
     var symbol = "command"
     var customIconData: Data?
     var action = PadAction(kind: .shortcut)
+    var longPressAction = PadAction()
 
     init(
         id: String,
         title: String = "",
         symbol: String = "command",
         customIconData: Data? = nil,
-        action: PadAction = PadAction(kind: .shortcut)
+        action: PadAction = PadAction(kind: .shortcut),
+        longPressAction: PadAction = PadAction()
     ) {
         self.id = id
         self.title = title
         self.symbol = symbol
         self.customIconData = customIconData
         self.action = action
+        self.longPressAction = longPressAction
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, symbol, customIconData, action
+        case id, title, symbol, customIconData, action, longPressAction
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case requiresLongPress
     }
 
     init(from decoder: Decoder) throws {
@@ -108,6 +115,14 @@ struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
         symbol = try container.decodeIfPresent(String.self, forKey: .symbol) ?? "command"
         customIconData = try container.decodeIfPresent(Data.self, forKey: .customIconData)
         action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction(kind: .shortcut)
+        let savedLongPressAction = try container.decodeIfPresent(PadAction.self, forKey: .longPressAction)
+        longPressAction = savedLongPressAction ?? PadAction()
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if savedLongPressAction == nil,
+           try legacy.decodeIfPresent(Bool.self, forKey: .requiresLongPress) == true {
+            longPressAction = action
+            action = PadAction()
+        }
     }
 }
 
@@ -138,6 +153,7 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
     var customIconData: Data?
     var action = PadAction()
     var folderShortcuts: [SmartphoneFolderShortcut] = []
+    var longPressAction = PadAction()
 
     init(
         id: String,
@@ -145,7 +161,8 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         symbol: String = "square.grid.2x2",
         customIconData: Data? = nil,
         action: PadAction = PadAction(),
-        folderShortcuts: [SmartphoneFolderShortcut] = []
+        folderShortcuts: [SmartphoneFolderShortcut] = [],
+        longPressAction: PadAction = PadAction()
     ) {
         self.id = id
         self.title = title
@@ -153,10 +170,15 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         self.customIconData = customIconData
         self.action = action
         self.folderShortcuts = folderShortcuts
+        self.longPressAction = longPressAction
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, symbol, customIconData, action, folderShortcuts
+        case id, title, symbol, customIconData, action, folderShortcuts, longPressAction
+    }
+
+    private enum LegacyCodingKeys: String, CodingKey {
+        case requiresLongPress
     }
 
     init(from decoder: Decoder) throws {
@@ -167,6 +189,14 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         customIconData = try container.decodeIfPresent(Data.self, forKey: .customIconData)
         action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction()
         folderShortcuts = try container.decodeIfPresent([SmartphoneFolderShortcut].self, forKey: .folderShortcuts) ?? []
+        let savedLongPressAction = try container.decodeIfPresent(PadAction.self, forKey: .longPressAction)
+        longPressAction = savedLongPressAction ?? PadAction()
+        let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+        if savedLongPressAction == nil,
+           try legacy.decodeIfPresent(Bool.self, forKey: .requiresLongPress) == true {
+            longPressAction = action
+            action = PadAction()
+        }
     }
 
     func configuration(at id: String) -> SmartphoneButton {
@@ -176,7 +206,8 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
             symbol: symbol,
             customIconData: customIconData,
             action: action,
-            folderShortcuts: folderShortcuts
+            folderShortcuts: folderShortcuts,
+            longPressAction: longPressAction
         )
     }
 }
@@ -199,6 +230,20 @@ struct SmartphonePage: Identifiable, Codable, Hashable {
         let destination = buttons[destinationIndex]
         buttons[sourceIndex] = destination.configuration(at: sourceID)
         buttons[destinationIndex] = source.configuration(at: destinationID)
+        return true
+    }
+
+    mutating func swapButtonConfigurations(from sourceID: String, with destinationPage: inout SmartphonePage, to destinationID: String) -> Bool {
+        guard sourceID != destinationID,
+              let sourceIndex = buttons.firstIndex(where: { $0.id == sourceID }),
+              let destinationIndex = destinationPage.buttons.firstIndex(where: { $0.id == destinationID }) else {
+            return false
+        }
+
+        let source = buttons[sourceIndex]
+        let destination = destinationPage.buttons[destinationIndex]
+        buttons[sourceIndex] = destination.configuration(at: sourceID)
+        destinationPage.buttons[destinationIndex] = source.configuration(at: destinationID)
         return true
     }
 }
