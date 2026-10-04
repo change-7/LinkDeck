@@ -30,17 +30,23 @@ struct PadAction: Codable, Hashable {
     var targetAppBundleIdentifier = ""
     /// When a shortcut has a target app, launch it before dispatching when it is not running.
     var launchTargetAppIfNeeded = true
+    var showTerminalWindow = true
+    var openURLInCurrentTab = false
 
     init(
         kind: ActionKind = .none,
         value: String = "",
         targetAppBundleIdentifier: String = "",
-        launchTargetAppIfNeeded: Bool = true
+        launchTargetAppIfNeeded: Bool = true,
+        showTerminalWindow: Bool = true,
+        openURLInCurrentTab: Bool = false
     ) {
         self.kind = kind
         self.value = value
         self.targetAppBundleIdentifier = targetAppBundleIdentifier
         self.launchTargetAppIfNeeded = launchTargetAppIfNeeded
+        self.showTerminalWindow = showTerminalWindow
+        self.openURLInCurrentTab = openURLInCurrentTab
     }
 
     /// Repairs the value left by the old action-kind switcher when an app
@@ -56,7 +62,7 @@ struct PadAction: Codable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, value, targetAppBundleIdentifier, launchTargetAppIfNeeded
+        case kind, value, targetAppBundleIdentifier, launchTargetAppIfNeeded, showTerminalWindow, openURLInCurrentTab
     }
 
     init(from decoder: Decoder) throws {
@@ -65,6 +71,8 @@ struct PadAction: Codable, Hashable {
         value = try container.decodeIfPresent(String.self, forKey: .value) ?? ""
         targetAppBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .targetAppBundleIdentifier) ?? ""
         launchTargetAppIfNeeded = try container.decodeIfPresent(Bool.self, forKey: .launchTargetAppIfNeeded) ?? true
+        showTerminalWindow = try container.decodeIfPresent(Bool.self, forKey: .showTerminalWindow) ?? true
+        openURLInCurrentTab = try container.decodeIfPresent(Bool.self, forKey: .openURLInCurrentTab) ?? false
     }
 
     func encode(to encoder: Encoder) throws {
@@ -73,6 +81,8 @@ struct PadAction: Codable, Hashable {
         try container.encode(value, forKey: .value)
         try container.encode(targetAppBundleIdentifier, forKey: .targetAppBundleIdentifier)
         try container.encode(launchTargetAppIfNeeded, forKey: .launchTargetAppIfNeeded)
+        try container.encode(showTerminalWindow, forKey: .showTerminalWindow)
+        try container.encode(openURLInCurrentTab, forKey: .openURLInCurrentTab)
     }
 }
 

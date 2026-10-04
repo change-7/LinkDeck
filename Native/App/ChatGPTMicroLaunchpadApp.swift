@@ -7,6 +7,7 @@ struct ChatGPTMicroLaunchpadApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = LaunchpadStore()
     @State private var midi = LaunchpadMIDIManager()
+    @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
     private let runner = MacActionRunner()
 
     var body: some Scene {
@@ -17,9 +18,10 @@ struct ChatGPTMicroLaunchpadApp: App {
                 midi: midi,
                 codex: appDelegate.codex,
                 codexActivity: appDelegate.codexActivityController,
-                launchpadLEDBubble: appDelegate.launchpadLEDBubble
+                launchpadLEDBubble: appDelegate.launchpadLEDBubble,
+                chatGPTTunnel: appDelegate.chatGPTTunnel
             )
-                .preferredColorScheme(.dark)
+                .preferredColorScheme(macDarkModeEnabled ? .dark : .light)
                 .frame(width: 1120, height: 740)
         }
         .defaultSize(width: 1120, height: 740)
@@ -197,6 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     let codex: CodexAppServerClient
     let codexActivityController: CodexActivityController
     let launchpadLEDBubble = LaunchpadLEDStatusBubble()
+    let chatGPTTunnel = ChatGPTTunnelController()
     private let codexStatusBarIndicator = CodexStatusBarIndicator()
     private let remoteActionRunner = MacActionRunner()
     private let connectionStarter: any CodexAppServerConnectionStarting
@@ -306,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        chatGPTTunnel.disconnect()
         launchpadLEDBubble.close()
         codexActivityController.stopDesktopMonitoring()
         codex.stopRemoteBridge()
@@ -361,11 +365,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let self else {
                 return CodexRemoteCommandResult(id: command.id, success: false, message: "Mac 명령 처리기를 사용할 수 없습니다.")
             }
-            return self.handleRemoteCommand(command)
+            return await self.handleRemoteCommand(command)
         }
     }
 
-    private func handleRemoteCommand(_ command: CodexRemoteCommand) -> CodexRemoteCommandResult {
+    private func handleRemoteCommand(_ command: CodexRemoteCommand) async -> CodexRemoteCommandResult {
         do {
             let message: String
             switch command.command {
@@ -377,10 +381,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             case "microphoneStop":
                 codex.stopPhoneMicrophone()
                 message = "휴대폰 마이크 연결을 종료했습니다."
-            case "completionSoundOnPhone", "completionSoundOnMac":
-                let target: CodexCompletionSoundOutputTarget = command.command == "completionSoundOnPhone" ? .phone : .mac
-                codex.setRemoteCompletionSoundTarget(target)
-                message = "작업 완료음 재생 기기를 \(target.title)(으)로 변경했습니다."
+            case "notificationSoundOnPhone", "notificationSoundOnMac", "completionSoundOnPhone", "completionSoundOnMac":
+                let target: CodexCompletionSoundOutputTarget = command.command.hasSuffix("OnPhone") ? .phone : .mac
+                codex.setRemoteSoundOutputTarget(target)
+                message = "완료·승인 사운드 재생 기기를 \(target.title)(으)로 변경했습니다."
             case "smartphoneButton", "smartphoneButtonLongPress":
                 let longPress = command.command == "smartphoneButtonLongPress"
                 guard let buttonID = command.buttonID,
@@ -397,7 +401,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let decision = command.decision else {
                     return CodexRemoteCommandResult(id: command.id, success: false, message: "Codex 승인 응답이 없습니다.")
                 }
-                let response = codex.respondToRemoteApproval(decision: decision)
+                let response = await codex.respondToRemoteApproval(
+                    decision: decision,
+                    requestKey: command.approvalRequestKey
+                )
                 guard response.success else {
                     return CodexRemoteCommandResult(id: command.id, success: false, message: response.message)
                 }

@@ -12,6 +12,8 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.os.SystemClock
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Base64
 import java.io.File
 import androidx.activity.ComponentActivity
@@ -53,6 +55,7 @@ import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.Arrangement
@@ -81,6 +84,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.DarkMode
+import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -133,6 +137,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.res.painterResource
@@ -144,6 +149,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
@@ -172,6 +178,7 @@ private val Line = Color(0xFF777777)
 private val TextPrimary = Color(0xFFF2F2F2)
 private val TextMuted = Color(0xFF9A9A9A)
 private val Green = Color(0xFF32E875)
+private const val LongPressVibrationDurationMillis = 40L
 private val Red = Color(0xFFFF3B30)
 private val GaugeTrack = Color(0xFF303030)
 private val GaugeMid = Color(0xFFFFB020)
@@ -535,6 +542,20 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
     var lastInteractionElapsedMillis by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
     var lastUserInteractionElapsedMillis by remember { mutableStateOf(lastInteractionElapsedMillis) }
     var localMessage by remember { mutableStateOf("Mac을 찾는 중…") }
+    var dismissedApproval by remember { mutableStateOf<RemoteApproval?>(null) }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    LaunchedEffect(remoteBridge.pendingApproval) {
+        dismissedApproval = null
+    }
     LaunchedEffect(isPortrait) {
         if (isPortrait) page = AppPage.Controls
     }
@@ -704,6 +725,7 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                     null -> TextMuted
                 },
                 connectionState = remoteBridge.connectionState,
+                macSleepMode = remoteBridge.macSleepMode,
                 activeSessionCount = remoteBridge.activeSessionCount,
                 fiveHourRemaining = remoteBridge.fiveHourRemainingPercent,
                 weeklyRemaining = remoteBridge.remainingPercent,
@@ -798,9 +820,9 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                 microphoneStarting = remoteBridge.microphoneStarting,
                 microphoneEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
                 onMicrophoneToggle = toggleMicrophone,
-                completionSoundTarget = remoteBridge.completionSoundTarget,
-                completionSoundTargetEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
-                onCompletionSoundTargetChanged = remoteBridge::requestCompletionSoundTarget,
+                soundOutputTarget = remoteBridge.completionSoundTarget.takeIf { it == remoteBridge.approvalSoundOutputTarget } ?: "",
+                soundOutputTargetEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
+                onSoundOutputTargetChanged = remoteBridge::requestSoundOutputTarget,
                 idleBlackoutEnabled = idleBlackoutEnabled,
                 displayKeepAwakeMinutes = displayKeepAwakeMinutes,
                 completionBlinkDurationSeconds = completionBlinkDurationSeconds,
@@ -812,10 +834,13 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                 onDismiss = { showConnectionSettings = false }
             )
         }
-        remoteBridge.pendingApproval?.let { approval ->
+        remoteBridge.pendingApproval?.takeIf {
+            shouldShowApprovalDialog(it, dismissedApproval)
+        }?.let { approval ->
             ApprovalRequestDialog(
                 approval = approval,
-                onDecision = remoteBridge::sendCodexApproval
+                onDecision = { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) },
+                onDismiss = { dismissedApproval = approval }
             )
         }
     }
@@ -855,6 +880,7 @@ private fun Header(
     message: String,
     messageColor: Color,
     connectionState: RemoteConnectionState,
+    macSleepMode: String,
     activeSessionCount: Int,
     fiveHourRemaining: Int?,
     weeklyRemaining: Int?,
@@ -936,6 +962,8 @@ private fun Header(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.width(12.dp))
+                MacSleepStatusBadge(connectionState, macSleepMode)
+                Spacer(Modifier.width(8.dp))
                 HeaderActivityStatus(
                     modifier = Modifier.weight(1f),
                     isCodexWorking = isCodexWorking,
@@ -971,6 +999,8 @@ private fun Header(
                     fontSize = 16.sp
                 )
                 Spacer(Modifier.width(18.dp))
+                MacSleepStatusBadge(connectionState, macSleepMode)
+                Spacer(Modifier.width(12.dp))
                 HeaderActivityStatus(
                     modifier = Modifier.weight(1f).padding(end = 12.dp),
                     isCodexWorking = isCodexWorking,
@@ -988,6 +1018,36 @@ private fun Header(
                 UsageMeter(label = "주간", remainingPercent = weeklyRemaining, accent = GaugeHigh)
             }
         }
+    }
+}
+
+@Composable
+private fun MacSleepStatusBadge(connectionState: RemoteConnectionState, mode: String) {
+    val connected = connectionState == RemoteConnectionState.Connected
+    val label = if (!connected) "상태 미확인" else when (mode) {
+        "insomnia" -> "불면증"
+        "sleep" -> "숙면"
+        else -> "상태 미확인"
+    }
+    val color = when {
+        connected && mode == "insomnia" -> Color(0xFFFFB45C)
+        connected && mode == "sleep" -> Color(0xFF8DBFFF)
+        else -> TextMuted
+    }
+    val icon = when {
+        connected && mode == "insomnia" -> Icons.Outlined.LightMode
+        connected && mode == "sleep" -> Icons.Outlined.DarkMode
+        else -> Icons.Outlined.MoreHoriz
+    }
+    Row(
+        modifier = Modifier.background(color.copy(alpha = 0.22f), RoundedCornerShape(6.dp))
+            .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
+        Text(text = label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
@@ -1114,9 +1174,9 @@ private fun BridgeConnectionSettingsDialog(
     microphoneStarting: Boolean,
     microphoneEnabled: Boolean,
     onMicrophoneToggle: (Boolean) -> Unit,
-    completionSoundTarget: String,
-    completionSoundTargetEnabled: Boolean,
-    onCompletionSoundTargetChanged: (String) -> Unit,
+    soundOutputTarget: String,
+    soundOutputTargetEnabled: Boolean,
+    onSoundOutputTargetChanged: (String) -> Unit,
     idleBlackoutEnabled: Boolean,
     displayKeepAwakeMinutes: Int,
     completionBlinkDurationSeconds: Int,
@@ -1141,7 +1201,7 @@ private fun BridgeConnectionSettingsDialog(
     var draftCompletionBlinkDurationSeconds by remember {
         mutableStateOf(completionBlinkDurationSeconds)
     }
-    var draftCompletionSoundTarget by remember(completionSoundTarget) { mutableStateOf(completionSoundTarget) }
+    var draftSoundOutputTarget by remember(soundOutputTarget) { mutableStateOf(soundOutputTarget) }
     var draftBlackoutClockSizePercent by remember {
         mutableStateOf(clampBlackoutClockSizePercent(blackoutClockSizePercent))
     }
@@ -1341,22 +1401,23 @@ private fun BridgeConnectionSettingsDialog(
                         Icon(Icons.Outlined.Add, contentDescription = "완료 깜빡임 시간 늘리기", tint = TextPrimary)
                     }
                 }
-                Text("작업 완료음 재생 기기", color = TextPrimary, fontSize = 14.sp)
+                Text("알림 사운드 재생 기기", color = TextPrimary, fontSize = 14.sp)
+                Text("완료·승인 사운드에 함께 적용됩니다.", color = TextMuted, fontSize = 11.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     listOf("phone" to "휴대폰", "mac" to "Mac").forEach { (target, label) ->
                         Row(
-                            modifier = Modifier.clickable(enabled = completionSoundTargetEnabled) {
-                                draftCompletionSoundTarget = target
+                            modifier = Modifier.clickable(enabled = soundOutputTargetEnabled) {
+                                draftSoundOutputTarget = target
                             },
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             RadioButton(
-                                selected = draftCompletionSoundTarget == target,
-                                onClick = { draftCompletionSoundTarget = target },
-                                enabled = completionSoundTargetEnabled,
+                                selected = draftSoundOutputTarget == target,
+                                onClick = { draftSoundOutputTarget = target },
+                                enabled = soundOutputTargetEnabled,
                                 colors = RadioButtonDefaults.colors(selectedColor = Green, unselectedColor = TextMuted)
                             )
-                            Text(label, color = if (completionSoundTargetEnabled) TextPrimary else TextMuted, fontSize = 14.sp)
+                            Text(label, color = if (soundOutputTargetEnabled) TextPrimary else TextMuted, fontSize = 14.sp)
                         }
                     }
                 }
@@ -1441,8 +1502,8 @@ private fun BridgeConnectionSettingsDialog(
                     onDisplayKeepAwakeMinutesChanged(draftDisplayKeepAwakeMinutes)
                     onCompletionBlinkDurationSecondsChanged(draftCompletionBlinkDurationSeconds)
                     onBlackoutClockSizePercentChanged(draftBlackoutClockSizePercent)
-                    if (draftCompletionSoundTarget != completionSoundTarget) {
-                        onCompletionSoundTargetChanged(draftCompletionSoundTarget)
+                    if (soundOutputTargetEnabled && draftSoundOutputTarget != soundOutputTarget && draftSoundOutputTarget in setOf("phone", "mac")) {
+                        onSoundOutputTargetChanged(draftSoundOutputTarget)
                     }
                     onDismiss()
                 }
@@ -1950,8 +2011,32 @@ private fun ActionTile(
     val hasShortPressAction = !action.isPlaceholder && (action.command != "smartphoneButton" || action.actionKind != "none")
     val hasLongPressAction = !action.isPlaceholder && action.longPressAction != null && onLongClick != null
     val hapticFeedback = LocalHapticFeedback.current
+    val context = LocalContext.current
+    val vibrator = remember(context) { context.getSystemService(Vibrator::class.java) }
     val interactionSource = remember { MutableInteractionSource() }
     val pressed by interactionSource.collectIsPressedAsState()
+    var longPressProgress by remember(action.id) { mutableStateOf(0f) }
+    val longPressTimeoutMillis = LocalViewConfiguration.current.longPressTimeoutMillis
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.96f else 1f,
+        animationSpec = tween(durationMillis = 100),
+        label = "action-tile-press-scale"
+    )
+    LaunchedEffect(pressed, hasLongPressAction, longPressTimeoutMillis) {
+        if (!pressed || !hasLongPressAction) {
+            longPressProgress = 0f
+            return@LaunchedEffect
+        }
+
+        val startedAt = SystemClock.uptimeMillis()
+        while (true) {
+            val elapsedMillis = SystemClock.uptimeMillis() - startedAt
+            longPressProgress = (elapsedMillis.toFloat() / longPressTimeoutMillis.coerceAtLeast(1L))
+                .coerceIn(0f, 1f)
+            if (longPressProgress >= 1f) break
+            delay(16L)
+        }
+    }
     val accent = skin.accent
     val background = skin.panel
     val frame = skin.frame
@@ -1963,6 +2048,10 @@ private fun ActionTile(
         modifier = Modifier
             .fillMaxWidth()
             .height(tileHeight)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
             .border(skin.borderWidth, if (pressed && themed) accent else frame, shape)
             .clip(shape)
             .combinedClickable(
@@ -1975,7 +2064,16 @@ private fun ActionTile(
                 onLongClick = if (action.command == "smartphoneButton" || hasLongPressAction) {
                     {
                         if (hasLongPressAction) {
-                            hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (vibrator?.hasVibrator() == true) {
+                                vibrator.vibrate(
+                                    VibrationEffect.createOneShot(
+                                        LongPressVibrationDurationMillis,
+                                        VibrationEffect.DEFAULT_AMPLITUDE
+                                    )
+                                )
+                            } else {
+                                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                            }
                             onLongClick?.invoke()
                         }
                     }
@@ -2057,6 +2155,22 @@ private fun ActionTile(
                             .padding(top = 3.dp, end = 12.dp)
                             .clearAndSetSemantics { }
                     )
+                }
+            }
+            if (hasLongPressAction) {
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(3.dp)
+                        .align(Alignment.BottomCenter)
+                ) {
+                    drawRect(frame.copy(alpha = 0.35f))
+                    if (longPressProgress > 0f) {
+                        drawRect(
+                            color = accent,
+                            size = Size(size.width * longPressProgress, size.height)
+                        )
+                    }
                 }
             }
         }
@@ -2295,7 +2409,7 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
                     Spacer(Modifier.height(14.dp))
                     ApprovalPrompt(
                         approval = approval,
-                        onDecision = remoteBridge::sendCodexApproval
+                        onDecision = { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) }
                     )
                 }
                 Spacer(Modifier.weight(1f))
@@ -2379,7 +2493,7 @@ private fun ControlCabinetCodexStatusPage(
                 }
             }
             remoteBridge.pendingApproval?.let { approval ->
-                ApprovalPrompt(approval, remoteBridge::sendCodexApproval)
+                ApprovalPrompt(approval) { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) }
             }
             ControlCabinetUsageGauge("5-hour remaining", remoteBridge.fiveHourRemainingPercent, remoteBridge.fiveHourResetsAt, false, nowEpochSeconds)
             ControlCabinetUsageGauge("1-week remaining", remoteBridge.remainingPercent, remoteBridge.resetsAt, true, nowEpochSeconds)
@@ -2517,7 +2631,7 @@ private fun PortraitCodexStatusPage(
                 }
             }
             remoteBridge.pendingApproval?.let { approval ->
-                ApprovalPrompt(approval = approval, onDecision = remoteBridge::sendCodexApproval)
+                ApprovalPrompt(approval = approval) { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) }
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Remaining usage", color = TextMuted, fontSize = 14.sp)
@@ -2628,7 +2742,7 @@ private fun PixelQuestCodexStatusPage(
                 }
             )
             remoteBridge.pendingApproval?.let { approval ->
-                ApprovalPrompt(approval = approval, onDecision = remoteBridge::sendCodexApproval)
+                ApprovalPrompt(approval = approval) { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) }
             }
 
             if (isPortrait) {
@@ -3086,7 +3200,7 @@ private fun DrawScope.drawPixelSpinner(color: Color, rotation: Float) {
 @Composable
 private fun ApprovalPrompt(
     approval: RemoteApproval,
-    onDecision: (String) -> Unit
+    onDecision: (String, String?) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -3103,37 +3217,41 @@ private fun ApprovalPrompt(
             maxLines = 3,
             lineHeight = 16.sp
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            androidx.compose.material3.Surface(
-                onClick = { onDecision("accept") },
-                color = GaugeHigh,
-                contentColor = TextPrimary,
-                shape = RoundedCornerShape(3.dp),
-                modifier = Modifier.height(34.dp)
-            ) {
-                Box(
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                    contentAlignment = Alignment.Center
+        if (approval.canRespond) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                androidx.compose.material3.Surface(
+                    onClick = { onDecision("accept", approval.requestKey) },
+                    color = GaugeHigh,
+                    contentColor = TextPrimary,
+                    shape = RoundedCornerShape(3.dp),
+                    modifier = Modifier.height(34.dp)
                 ) {
-                    Text("승인", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Box(
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("승인", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+                androidx.compose.material3.Surface(
+                    onClick = { onDecision("decline", approval.requestKey) },
+                    color = Tile,
+                    contentColor = Red,
+                    shape = RoundedCornerShape(3.dp),
+                    modifier = Modifier
+                        .height(34.dp)
+                        .border(1.dp, Red, RoundedCornerShape(3.dp))
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("거절", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    }
                 }
             }
-            androidx.compose.material3.Surface(
-                onClick = { onDecision("decline") },
-                color = Tile,
-                contentColor = Red,
-                shape = RoundedCornerShape(3.dp),
-                modifier = Modifier
-                    .height(34.dp)
-                    .border(1.dp, Red, RoundedCornerShape(3.dp))
-            ) {
-                Box(
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("거절", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                }
-            }
+        } else {
+            Text("Mac에서 승인 요청을 확인해 주세요.", color = TextMuted, fontSize = 12.sp)
         }
     }
 }
@@ -3141,10 +3259,11 @@ private fun ApprovalPrompt(
 @Composable
 private fun ApprovalRequestDialog(
     approval: RemoteApproval,
-    onDecision: (String) -> Unit
+    onDecision: (String, String?) -> Unit,
+    onDismiss: () -> Unit
 ) {
     AlertDialog(
-        onDismissRequest = {},
+        onDismissRequest = { if (!approval.canRespond) onDismiss() },
         containerColor = Tile,
         titleContentColor = TextPrimary,
         textContentColor = TextPrimary,
@@ -3170,13 +3289,21 @@ private fun ApprovalRequestDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onDecision("accept") }) {
-                Text("승인", color = GaugeHigh, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            if (approval.canRespond) {
+                TextButton(onClick = { onDecision("accept", approval.requestKey) }) {
+                    Text("승인", color = GaugeHigh, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+            } else {
+                TextButton(onClick = onDismiss) {
+                    Text("확인", color = Green, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
             }
         },
         dismissButton = {
-            TextButton(onClick = { onDecision("decline") }) {
-                Text("거절", color = Red, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            if (approval.canRespond) {
+                TextButton(onClick = { onDecision("decline", approval.requestKey) }) {
+                    Text("거절", color = Red, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
             }
         }
     )

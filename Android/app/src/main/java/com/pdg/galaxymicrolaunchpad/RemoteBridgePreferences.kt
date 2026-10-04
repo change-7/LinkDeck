@@ -92,6 +92,24 @@ internal class RemoteBridgePreferences(context: Context) {
             preferences.edit().putString(KEY_MAC_BRIDGE_HOST, value.trim()).apply()
         }
 
+    var approvalSoundName: String?
+        get() = preferences.getString(KEY_APPROVAL_SOUND_NAME, null)
+        set(value) {
+            preferences.edit().apply {
+                if (value.isNullOrBlank()) remove(KEY_APPROVAL_SOUND_NAME)
+                else putString(KEY_APPROVAL_SOUND_NAME, value)
+            }.apply()
+        }
+
+    var approvalSoundOutputTarget: String
+        get() = preferences.getString(KEY_APPROVAL_SOUND_OUTPUT_TARGET, "phone")
+            ?.takeIf { it in setOf("phone", "mac") } ?: "phone"
+        set(value) {
+            preferences.edit()
+                .putString(KEY_APPROVAL_SOUND_OUTPUT_TARGET, value.takeIf { it in setOf("phone", "mac") } ?: "phone")
+                .apply()
+        }
+
     val screenOffTimeoutMillis: Long
         get() = screenOffConnectionOption(screenOffOptionKey).timeoutMillis
 
@@ -161,6 +179,8 @@ internal class RemoteBridgePreferences(context: Context) {
         private const val KEY_SCREEN_OFF_OPTION = "screen_off_option"
         private const val KEY_CODEX_PHONE_THEME = "codex_phone_theme"
         private const val KEY_MAC_BRIDGE_HOST = "mac_bridge_host"
+        private const val KEY_APPROVAL_SOUND_NAME = "approval_sound_name"
+        private const val KEY_APPROVAL_SOUND_OUTPUT_TARGET = "approval_sound_output_target"
         private const val KEY_SLEEP_WINDOW_ENABLED = "sleep_window_enabled"
         private const val KEY_IDLE_BLACKOUT_ENABLED = "idle_blackout_enabled"
         private const val KEY_DISPLAY_KEEP_AWAKE_MINUTES = "display_keep_awake_minutes"

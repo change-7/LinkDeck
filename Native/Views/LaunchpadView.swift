@@ -147,6 +147,7 @@ struct LaunchpadView: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
+        .focusEffectDisabled()
     }
 
     private func motionColor(row: Int, column: Int) -> String? {

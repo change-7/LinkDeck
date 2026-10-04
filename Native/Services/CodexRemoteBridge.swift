@@ -51,8 +51,10 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
     let completionEventID: Int
     let activeSessionCount: Int
     let completionSoundVolumePercent: Int?
+    let approvalSoundVolumePercent: Int?
     /// Optional so older cached/recorded bridge states remain decodable.
     let codexPhoneTheme: CodexPhoneTheme?
+    let macSleepStatus: MacSleepStatus?
 
     init(
         macConnected: Bool,
@@ -67,7 +69,9 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
         completionEventID: Int = 0,
         activeSessionCount: Int = 0,
         completionSoundVolumePercent: Int = 100,
-        codexPhoneTheme: CodexPhoneTheme = .classic
+        approvalSoundVolumePercent: Int = 100,
+        codexPhoneTheme: CodexPhoneTheme = .classic,
+        macSleepStatus: MacSleepStatus? = nil
     ) {
         let used = weeklyUsage.map { min(max($0.usedPercent, 0), 100) }
         let fiveHourUsed = fiveHourUsage.map { min(max($0.usedPercent, 0), 100) }
@@ -89,7 +93,9 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
         self.completionEventID = completionEventID
         self.activeSessionCount = activeSessionCount
         self.completionSoundVolumePercent = min(max(completionSoundVolumePercent, 0), 100)
+        self.approvalSoundVolumePercent = min(max(approvalSoundVolumePercent, 0), 100)
         self.codexPhoneTheme = codexPhoneTheme
+        self.macSleepStatus = macSleepStatus
     }
 }
 
@@ -152,10 +158,102 @@ struct CodexRemoteCompletionSound: Codable, Equatable, Sendable {
     static let builtIn = CodexRemoteCompletionSound(id: "built-in")
 }
 
+struct CodexRemoteApprovalSound: Codable, Equatable, Sendable {
+    let type: String
+    let protocolVersion: Int
+    let id: String
+    let title: String?
+    let fileName: String?
+    let mimeType: String?
+    let data: String?
+    let useBuiltIn: Bool
+    let configured: Bool
+    let outputTarget: CodexApprovalSoundOutputTarget
+    let volumePercent: Int
+
+    init(
+        id: String,
+        title: String? = nil,
+        fileName: String? = nil,
+        mimeType: String? = nil,
+        data: String? = nil,
+        configured: Bool = false,
+        outputTarget: CodexApprovalSoundOutputTarget = .phone,
+        volumePercent: Int = 100
+    ) {
+        self.type = "codexApprovalSound"
+        self.protocolVersion = 1
+        self.id = id
+        self.title = title
+        self.fileName = fileName
+        self.mimeType = mimeType
+        self.data = data
+        self.useBuiltIn = data == nil
+        self.configured = configured
+        self.outputTarget = outputTarget
+        self.volumePercent = min(max(volumePercent, 0), 100)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type, protocolVersion, id, title, fileName, mimeType, data, useBuiltIn, configured, outputTarget, volumePercent
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let data = try values.decodeIfPresent(String.self, forKey: .data)
+        type = try values.decodeIfPresent(String.self, forKey: .type) ?? "codexApprovalSound"
+        protocolVersion = try values.decodeIfPresent(Int.self, forKey: .protocolVersion) ?? 1
+        id = try values.decode(String.self, forKey: .id)
+        title = try values.decodeIfPresent(String.self, forKey: .title)
+        fileName = try values.decodeIfPresent(String.self, forKey: .fileName)
+        mimeType = try values.decodeIfPresent(String.self, forKey: .mimeType)
+        self.data = data
+        useBuiltIn = try values.decodeIfPresent(Bool.self, forKey: .useBuiltIn) ?? (data == nil)
+        configured = try values.decodeIfPresent(Bool.self, forKey: .configured) ?? false
+        outputTarget = try values.decodeIfPresent(CodexApprovalSoundOutputTarget.self, forKey: .outputTarget) ?? .phone
+        volumePercent = min(max(try values.decodeIfPresent(Int.self, forKey: .volumePercent) ?? 100, 0), 100)
+    }
+
+    static let builtIn = CodexRemoteApprovalSound(id: "built-in")
+}
+
 struct CodexRemoteApproval: Codable, Equatable, Sendable {
-    let requestID: Int
+    let requestID: Int?
     let title: String
     let detail: String
+    let requestKey: String?
+    let source: String
+    let canRespond: Bool
+
+    init(
+        requestID: Int? = nil,
+        title: String,
+        detail: String,
+        requestKey: String? = nil,
+        source: String = "appServer",
+        canRespond: Bool = true
+    ) {
+        self.requestID = requestID
+        self.title = title
+        self.detail = detail
+        self.requestKey = requestKey
+        self.source = source
+        self.canRespond = canRespond
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestID, title, detail, requestKey, source, canRespond
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        requestID = try values.decodeIfPresent(Int.self, forKey: .requestID)
+        title = try values.decode(String.self, forKey: .title)
+        detail = try values.decode(String.self, forKey: .detail)
+        requestKey = try values.decodeIfPresent(String.self, forKey: .requestKey)
+        source = try values.decodeIfPresent(String.self, forKey: .source) ?? "appServer"
+        canRespond = try values.decodeIfPresent(Bool.self, forKey: .canRespond) ?? true
+    }
 }
 
 struct CodexRemoteCommand: Codable, Equatable, Sendable {
@@ -166,6 +264,7 @@ struct CodexRemoteCommand: Codable, Equatable, Sendable {
     let buttonID: String?
     let action: PadAction?
     let decision: String?
+    let approvalRequestKey: String?
 
     init(
         type: String,
@@ -174,7 +273,8 @@ struct CodexRemoteCommand: Codable, Equatable, Sendable {
         command: String,
         buttonID: String? = nil,
         action: PadAction? = nil,
-        decision: String? = nil
+        decision: String? = nil,
+        approvalRequestKey: String? = nil
     ) {
         self.type = type
         self.protocolVersion = protocolVersion
@@ -183,6 +283,7 @@ struct CodexRemoteCommand: Codable, Equatable, Sendable {
         self.buttonID = buttonID
         self.action = action
         self.decision = decision
+        self.approvalRequestKey = approvalRequestKey
     }
 }
 
@@ -210,7 +311,7 @@ final class CodexRemoteBridge {
 
     private(set) var isRunning = false
     private(set) var clientCount = 0
-    var onCommand: ((CodexRemoteCommand) -> CodexRemoteCommandResult)?
+    var onCommand: (@MainActor (CodexRemoteCommand) async -> CodexRemoteCommandResult)?
     var onMicrophoneAudio: ((Data) -> Void)?
     var onMicrophoneStop: (() -> Void)?
     var onPhoneMicrophoneActivityChanged: ((Bool) -> Void)?
@@ -223,6 +324,10 @@ final class CodexRemoteBridge {
     private var lastCompletionSoundID: String?
     private var lastCompletionSoundOutputTarget: CodexCompletionSoundOutputTarget?
     private var lastCompletionSound: CodexRemoteCompletionSound?
+    private var lastApprovalSoundID: String?
+    private var lastApprovalSoundConfigured: Bool?
+    private var lastApprovalSoundOutputTarget: CodexApprovalSoundOutputTarget?
+    private var lastApprovalSound: CodexRemoteApprovalSound?
     private var microphoneConnectionID: UUID?
     private let queue = DispatchQueue(label: "MicroLaunchpad.remote-bridge", qos: .userInitiated)
 
@@ -268,21 +373,39 @@ final class CodexRemoteBridge {
         lastCompletionSoundID = nil
         lastCompletionSoundOutputTarget = nil
         lastCompletionSound = nil
+        lastApprovalSoundID = nil
+        lastApprovalSoundConfigured = nil
+        lastApprovalSoundOutputTarget = nil
+        lastApprovalSound = nil
         clientCount = 0
         isRunning = false
     }
 
-    func publish(_ state: CodexRemoteState, completionSound: CodexRemoteCompletionSound) {
+    func publish(
+        _ state: CodexRemoteState,
+        completionSound: CodexRemoteCompletionSound,
+        approvalSound: CodexRemoteApprovalSound = .builtIn
+    ) {
         let iconAssetsChanged = state.smartphoneIconAssets != lastIconAssets
         let completionSoundChanged = completionSound.id != lastCompletionSoundID
             || completionSound.outputTarget != lastCompletionSoundOutputTarget
+        let approvalSoundChanged = approvalSound.id != lastApprovalSoundID
+            || approvalSound.configured != lastApprovalSoundConfigured
+            || approvalSound.outputTarget != lastApprovalSoundOutputTarget
         lastState = state
         lastIconAssets = state.smartphoneIconAssets
         lastCompletionSoundID = completionSound.id
         lastCompletionSoundOutputTarget = completionSound.outputTarget
         lastCompletionSound = completionSound
+        lastApprovalSoundID = approvalSound.id
+        lastApprovalSoundConfigured = approvalSound.configured
+        lastApprovalSoundOutputTarget = approvalSound.outputTarget
+        lastApprovalSound = approvalSound
         if completionSoundChanged {
             send(completionSound, to: connections.values)
+        }
+        if approvalSoundChanged {
+            send(approvalSound, to: connections.values)
         }
         guard let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
         for connection in connections.values {
@@ -344,16 +467,18 @@ final class CodexRemoteBridge {
                 send(CodexRemoteCommandResult(id: commandID, success: false, message: "다른 휴대폰에서 마이크를 사용 중입니다."), to: connection)
             } else if type == "command",
                       let commandData = try? JSONSerialization.data(withJSONObject: payload),
-                      let command = try? JSONDecoder().decode(CodexRemoteCommand.self, from: commandData),
-                      let result = onCommand?(command) {
-                if result.success && command.command == "microphoneStart" {
-                    microphoneConnectionID = id
-                    onPhoneMicrophoneActivityChanged?(true)
-                } else if command.command == "microphoneStop" && microphoneConnectionID == id {
-                    microphoneConnectionID = nil
-                    onPhoneMicrophoneActivityChanged?(false)
+                      let command = try? JSONDecoder().decode(CodexRemoteCommand.self, from: commandData) {
+                Task { @MainActor [weak self] in
+                    guard let self, let result = await self.onCommand?(command) else { return }
+                    if result.success && command.command == "microphoneStart" {
+                        self.microphoneConnectionID = id
+                        self.onPhoneMicrophoneActivityChanged?(true)
+                    } else if command.command == "microphoneStop" && self.microphoneConnectionID == id {
+                        self.microphoneConnectionID = nil
+                        self.onPhoneMicrophoneActivityChanged?(false)
+                    }
+                    self.send(result, to: connection)
                 }
-                send(result, to: connection)
             }
         }
         receiveBuffers[id] = buffer
@@ -363,6 +488,9 @@ final class CodexRemoteBridge {
         guard let state = lastState, let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
         if let completionSound = lastCompletionSound {
             send(completionSound, to: [connection])
+        }
+        if let approvalSound = lastApprovalSound {
+            send(approvalSound, to: [connection])
         }
         connection.send(content: data, completion: .contentProcessed { _ in })
         if let assets = state.smartphoneIconAssets {

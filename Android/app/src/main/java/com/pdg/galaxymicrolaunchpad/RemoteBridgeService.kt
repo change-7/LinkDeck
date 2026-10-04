@@ -4,11 +4,14 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.AudioAttributes
+import android.media.MediaPlayer
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -32,6 +35,7 @@ class RemoteBridgeService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var screenOffDisconnectRunnable: Runnable? = null
     private var screenReceiverRegistered = false
+    private var approvalNotificationPlayer: MediaPlayer? = null
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -53,7 +57,10 @@ class RemoteBridgeService : Service() {
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
-        RemoteBridgeRuntime.client(this).onMicrophoneStopped = { setMicrophoneForeground(false) }
+        RemoteBridgeRuntime.client(this).apply {
+            onMicrophoneStopped = { setMicrophoneForeground(false) }
+            onCodexApprovalChanged = ::updateApprovalNotification
+        }
         registerScreenReceiver()
         applyCurrentScreenState()
     }
@@ -82,8 +89,13 @@ class RemoteBridgeService : Service() {
         screenOffDisconnectRunnable = null
         if (screenReceiverRegistered) unregisterReceiver(screenReceiver)
         screenReceiverRegistered = false
-        RemoteBridgeRuntime.client(this).stop()
-        RemoteBridgeRuntime.client(this).onMicrophoneStopped = null
+        RemoteBridgeRuntime.client(this).apply {
+            stop()
+            onMicrophoneStopped = null
+            onCodexApprovalChanged = null
+        }
+        notificationManager.cancel(APPROVAL_NOTIFICATION_ID)
+        stopApprovalSound()
         releaseNetworkLocks()
         super.onDestroy()
     }
@@ -209,6 +221,121 @@ class RemoteBridgeService : Service() {
             setShowBadge(false)
         }
         notificationManager.createNotificationChannel(channel)
+        notificationManager.createNotificationChannel(
+            NotificationChannel(
+                APPROVAL_CHANNEL_ID,
+                "Codex approval requests",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Alerts when Codex is waiting for approval in LinkDeck."
+                setShowBadge(true)
+                setSound(null, null)
+            }
+        )
+    }
+
+    private fun updateApprovalNotification(approval: RemoteApproval?) {
+        if (approval == null) {
+            notificationManager.cancel(APPROVAL_NOTIFICATION_ID)
+            stopApprovalSound()
+            return
+        }
+        if (shouldPlayApprovalSoundOnPhone(RemoteBridgeRuntime.client(this).approvalSoundOutputTarget)) {
+            playApprovalSound()
+        } else {
+            stopApprovalSound()
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val openLinkDeck = PendingIntent.getActivity(
+            this,
+            APPROVAL_NOTIFICATION_ID,
+            Intent(this, MainActivity::class.java).addFlags(
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            ),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val publicNotification = NotificationCompat.Builder(this, APPROVAL_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_micro)
+            .setContentTitle("LinkDeck")
+            .setContentText("Codex 승인 요청이 있습니다.")
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .build()
+        val notification = NotificationCompat.Builder(this, APPROVAL_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher_micro)
+            .setContentTitle(approval.title)
+            .setContentText("눌러서 LinkDeck에서 요청 내용을 확인하세요.")
+            .setContentIntent(openLinkDeck)
+            .setPublicVersion(publicNotification)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setOngoing(true)
+            .build()
+        notificationManager.notify(APPROVAL_NOTIFICATION_ID, notification)
+    }
+
+    private fun playApprovalSound(builtInOnly: Boolean = false) {
+        stopApprovalSound()
+        val customFile = if (builtInOnly) null else RemoteBridgeRuntime.client(this).selectedApprovalSoundFile
+        val audioAttributes = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+        val player = if (customFile == null) {
+            MediaPlayer.create(this, R.raw.codex_completion_chime, audioAttributes, 0) ?: return
+        } else {
+            MediaPlayer().apply { setAudioAttributes(audioAttributes) }
+        }
+        approvalNotificationPlayer = player
+        player.setOnCompletionListener { finishedPlayer ->
+            if (approvalNotificationPlayer === finishedPlayer) approvalNotificationPlayer = null
+            finishedPlayer.release()
+        }
+        player.setOnErrorListener { failedPlayer, _, _ ->
+            if (approvalNotificationPlayer === failedPlayer) approvalNotificationPlayer = null
+            failedPlayer.release()
+            if (customFile != null) playApprovalSound(builtInOnly = true)
+            true
+        }
+        if (customFile == null) {
+            runCatching {
+                val volume = RemoteBridgeRuntime.client(this).selectedApprovalSoundVolume
+                player.setVolume(volume, volume)
+                player.start()
+            }.onFailure {
+                if (approvalNotificationPlayer === player) approvalNotificationPlayer = null
+                player.release()
+            }
+            return
+        }
+        player.setOnPreparedListener { preparedPlayer ->
+            if (approvalNotificationPlayer === preparedPlayer) {
+                val volume = RemoteBridgeRuntime.client(this).selectedApprovalSoundVolume
+                preparedPlayer.setVolume(volume, volume)
+                preparedPlayer.start()
+            } else preparedPlayer.release()
+        }
+        runCatching {
+            player.setDataSource(customFile.absolutePath)
+            player.prepareAsync()
+        }.onFailure {
+            if (approvalNotificationPlayer === player) approvalNotificationPlayer = null
+            player.release()
+            playApprovalSound(builtInOnly = true)
+        }
+    }
+
+    private fun stopApprovalSound() {
+        approvalNotificationPlayer?.let { player ->
+            runCatching { player.stop() }
+            player.release()
+        }
+        approvalNotificationPlayer = null
     }
 
     private fun updateNotification(message: String) {
@@ -253,6 +380,8 @@ class RemoteBridgeService : Service() {
         const val ACTION_TIMEOUT_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_TIMEOUT_CHANGED"
         const val ACTION_CONNECTION_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_CONNECTION_CHANGED"
         private const val CHANNEL_ID = "mac_bridge_connection"
+        private const val APPROVAL_CHANNEL_ID = "codex_approval_v2"
         private const val NOTIFICATION_ID = 43123
+        private const val APPROVAL_NOTIFICATION_ID = 43124
     }
 }

@@ -3,8 +3,19 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SmartphoneSettingsView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
+    private let editorPanelWidth: CGFloat = 270
+    private let editorPanelPadding: CGFloat = 13
+    private let actionGridSpacing: CGFloat = 6
+
     @Bindable var store: LaunchpadStore
     let runner: MacActionRunner
+    @Binding var selectedMainScreen: MainScreen
+    let codexIsConnected: Bool
+    let midiIsConnected: Bool
+    let onOpenBackupRestore: () -> Void
+    let onOpenCodexSettings: () -> Void
     @State private var pageIndex = 0
     @State private var buttonIndex = 0
     @State private var dropTargetButtonID: String?
@@ -74,18 +85,26 @@ struct SmartphoneSettingsView: View {
     private var page: SmartphonePage { store.smartphonePages[pageIndex] }
     private var selectedButton: SmartphoneButton { page.buttons[buttonIndex] }
     private var selectedAction: PadAction { editingLongPress ? selectedButton.longPressAction : selectedButton.action }
+    private var imageIconBacking: Color {
+        colorScheme == .light ? Color(red: 0.54, green: 0.60, blue: 0.70) : .clear
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        GeometryReader { geometry in
             HStack(alignment: .top, spacing: 12) {
                 pageList
                 buttonGrids
-                editor
+                ScrollView(.vertical) {
+                    editor
+                }
+                .frame(width: editorPanelWidth, height: max(0, geometry.size.height - 28))
+                .scrollIndicators(.visible)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(14)
         }
-        .padding(14)
-        .foregroundStyle(.white)
-        .background(Color(red: 0.035, green: 0.035, blue: 0.045))
+        .foregroundStyle(theme.foreground)
+        .background(theme.canvas)
         .overlay {
             if let folderButtonID {
                 ZStack {
@@ -103,7 +122,7 @@ struct SmartphoneSettingsView: View {
                     .contentShape(Rectangle())
                     .onTapGesture { }
                     .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(.white.opacity(0.14)))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(theme.foreground.opacity(0.14)))
                     .shadow(color: .black.opacity(0.55), radius: 28, y: 12)
                 }
                 .transition(.opacity.combined(with: .scale(scale: 0.98)))
@@ -114,10 +133,15 @@ struct SmartphoneSettingsView: View {
 
     private var pageList: some View {
         VStack(alignment: .leading, spacing: 9) {
+            MainScreenSidebarNavigation(
+                selection: $selectedMainScreen,
+                midiIsConnected: midiIsConnected
+            )
+            .padding(.bottom, 5)
             Text("스마트폰 페이지").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
             Text("현재 페이지 이름")
                 .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.72))
+                .foregroundStyle(theme.foreground.opacity(0.72))
             DarkTextField(text: pageNameBinding, placeholder: "페이지 이름")
             ForEach(Array(store.smartphonePages.enumerated()), id: \.element.id) { index, page in
                 VStack(spacing: 0) {
@@ -128,13 +152,13 @@ struct SmartphoneSettingsView: View {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("PAGE \(String(format: "%02d", index + 1))")
                                 .font(.system(size: 10, weight: .bold, design: .monospaced))
-                                .foregroundStyle(index == pageIndex ? .orange : .secondary)
+                                .foregroundStyle(index == pageIndex ? theme.accent : .secondary)
                             Text(page.name).font(.system(size: 13, weight: .medium)).lineLimit(1)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(10)
-                        .background(index == dropTargetPageIndex ? Color.orange.opacity(0.28) : index == pageIndex ? Color.orange.opacity(0.14) : Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(index == dropTargetPageIndex || index == pageIndex ? .orange : .white.opacity(0.10)))
+                        .background(index == dropTargetPageIndex ? theme.accent.opacity(0.24) : index == pageIndex ? theme.accent.opacity(0.18) : theme.control, in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(index == dropTargetPageIndex || index == pageIndex ? theme.accent : theme.foreground.opacity(0.22)))
                     }
                     .buttonStyle(.plain)
                 }
@@ -159,12 +183,18 @@ struct SmartphoneSettingsView: View {
                 }
                 .help("버튼을 든 채 이 페이지 이름 위에 올리면 페이지가 열립니다. 원하는 버튼 칸에 놓으세요.")
             }
-            Spacer()
+            Spacer(minLength: 8)
+            MainSidebarFooter(
+                codexIsConnected: codexIsConnected,
+                midiIsConnected: midiIsConnected,
+                onOpenBackupRestore: onOpenBackupRestore,
+                onOpenCodexSettings: onOpenCodexSettings
+            )
         }
         .frame(width: 150, alignment: .leading)
         .padding(10)
-        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.border))
     }
 
     private var buttonGrids: some View {
@@ -186,7 +216,7 @@ struct SmartphoneSettingsView: View {
                 Spacer()
                 Label("드래그로 위치 교환", systemImage: "arrow.left.arrow.right")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.orange.opacity(0.9))
+                    .foregroundStyle(theme.accent.opacity(0.9))
                     .help("같은 페이지 버튼 위에 놓거나, 다른 페이지 이름에 올려 페이지를 연 뒤 원하는 칸에 놓습니다.")
                 Text("\(page.buttons.filter { $0.action.kind != .none || $0.longPressAction.kind != .none }.count)/16 동작 지정")
                     .font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary)
@@ -200,8 +230,8 @@ struct SmartphoneSettingsView: View {
         }
         .frame(minWidth: 350, maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.border))
     }
 
     private func buttonCell(index: Int, button: SmartphoneButton, pageIndex buttonPageIndex: Int) -> some View {
@@ -229,21 +259,22 @@ struct SmartphoneSettingsView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
                 .padding(7)
-                .background(buttonPageIndex == pageIndex && index == buttonIndex ? Color.orange.opacity(0.15) : Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(buttonPageIndex == pageIndex && index == buttonIndex ? .orange : .white.opacity(0.12), lineWidth: buttonPageIndex == pageIndex && index == buttonIndex ? 1.5 : 1))
+                .background(buttonPageIndex == pageIndex && index == buttonIndex ? theme.accent.opacity(0.2) : theme.control, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(buttonPageIndex == pageIndex && index == buttonIndex ? theme.accent : theme.foreground.opacity(0.22), lineWidth: buttonPageIndex == pageIndex && index == buttonIndex ? 1.5 : 1))
                 .overlay {
                     RoundedRectangle(cornerRadius: 9)
-                        .stroke(.orange, lineWidth: 2)
+                        .stroke(theme.accent, lineWidth: 2)
                         .opacity(dropTargetButtonID == button.id ? 1 : 0)
                 }
             }
             .buttonStyle(.plain)
+            .focusEffectDisabled()
             .accessibilityLabel(button.title.isEmpty ? "비어 있는 스마트폰 버튼 슬롯" : button.title)
             .accessibilityHint("선택하여 버튼을 편집합니다.")
 
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(.white.opacity(0.55))
+                .foregroundStyle(theme.foreground.opacity(0.55))
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
                 .draggable("\(buttonPageIndex)|\(button.id)") {
@@ -311,25 +342,25 @@ struct SmartphoneSettingsView: View {
                 .buttonStyle(.plain)
                 .help("이 스마트폰 버튼의 이름, 아이콘, 기능을 비웁니다.")
             }
-            field("버튼 라벨") { DarkTextField(text: buttonTextBinding) }
+            DarkTextField(text: buttonTextBinding, placeholder: "버튼 라벨")
             field("아이콘 선택") { symbolPicker }
-            field("사용자 PNG 아이콘") { customIconPicker }
-            Divider().overlay(.white.opacity(0.16))
+            customIconPicker
+            Divider().overlay(theme.foreground.opacity(0.16))
             Picker("누르기 방식", selection: $editingLongPress) {
                 Text("짧게 누르기").tag(false)
                 Text("길게 누르기").tag(true)
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .onChange(of: editingLongPress) { registrationError = "" }
             field("실행 동작") {
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 6) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: actionGridSpacing) {
                     actionButton(.app)
                     actionButton(.shortcut)
                     actionButton(.terminalCommand)
                     actionButton(.url)
                     actionButton(.clipboardText)
                     actionButton(.appFolder)
-                    actionButton(.none)
                 }
             }
             actionRegistration
@@ -338,16 +369,16 @@ struct SmartphoneSettingsView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 9)
-                    .foregroundStyle(.orange)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(theme.accent)
+                    .background(theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                     .buttonStyle(.plain)
             }
             Spacer()
         }
-        .padding(13)
-        .frame(width: 270, alignment: .leading)
-        .background(Color(red: 0.065, green: 0.065, blue: 0.08), in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(.white.opacity(0.12)))
+        .padding(editorPanelPadding)
+        .frame(width: editorPanelWidth, alignment: .leading)
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(theme.foreground.opacity(0.16)))
     }
 
     private var symbolPicker: some View {
@@ -368,9 +399,9 @@ struct SmartphoneSettingsView: View {
             }
             .padding(.horizontal, 9)
             .frame(maxWidth: .infinity, minHeight: 32)
-            .foregroundStyle(.white.opacity(0.86))
-            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.12)))
+            .foregroundStyle(theme.foreground.opacity(0.86))
+            .background(theme.foreground.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.foreground.opacity(0.18)))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("아이콘 선택: \(selectedButton.symbol.isEmpty ? "아이콘 없음" : selectedButton.symbol)")
@@ -405,9 +436,9 @@ struct SmartphoneSettingsView: View {
         }
         .padding(11)
         .frame(width: 250)
-        .foregroundStyle(.white)
-        .background(Color(red: 0.075, green: 0.075, blue: 0.09), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.16)))
+        .foregroundStyle(theme.foreground)
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.16)))
         .shadow(color: .black.opacity(0.48), radius: 16, y: 8)
     }
 
@@ -432,14 +463,14 @@ struct SmartphoneSettingsView: View {
         } label: {
             symbolGlyph(symbol, size: 17)
                 .frame(maxWidth: .infinity, minHeight: 34)
-                .foregroundStyle(selectedButton.symbol == symbol ? .black : .white.opacity(0.78))
+                .foregroundStyle(selectedButton.symbol == symbol ? theme.accentForeground : theme.foreground.opacity(0.78))
                 .background(
-                    selectedButton.symbol == symbol ? Color.orange : Color.black.opacity(0.28),
+                    selectedButton.symbol == symbol ? theme.accent : theme.foreground.opacity(0.06),
                     in: RoundedRectangle(cornerRadius: 6)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(selectedButton.symbol == symbol ? .orange : .white.opacity(0.12))
+                        .stroke(selectedButton.symbol == symbol ? theme.accent : theme.foreground.opacity(0.2))
                 )
         }
         .buttonStyle(.plain)
@@ -451,7 +482,7 @@ struct SmartphoneSettingsView: View {
     private func symbolGlyph(_ symbol: String, size: CGFloat) -> some View {
         if symbol.isEmpty {
             RoundedRectangle(cornerRadius: 4)
-                .stroke(.white.opacity(0.36), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                .stroke(theme.foreground.opacity(0.36), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
                 .padding(7)
         } else {
             Image(systemName: symbol)
@@ -477,14 +508,14 @@ struct SmartphoneSettingsView: View {
                 }
             }
             .frame(width: 38, height: 38)
-            .background(.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 7))
+            .background(theme.foreground.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
             .overlay(
                 RoundedRectangle(cornerRadius: 7)
-                    .stroke(isCustomIconDropTargeted ? .orange : .white.opacity(0.12), lineWidth: isCustomIconDropTargeted ? 1.5 : 1)
+                    .stroke(isCustomIconDropTargeted ? theme.accent : theme.foreground.opacity(0.18), lineWidth: isCustomIconDropTargeted ? 1.5 : 1)
             )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(selectedButton.customIconData == nil ? "PNG 없음" : "사용자 PNG 적용")
+                Text(selectedButton.customIconData == nil ? "PNG 없음" : "PNG 적용됨")
                     .font(.system(size: 10, weight: .semibold))
                 Text("복사 후 붙여넣기 또는 드래그")
                     .font(.system(size: 9))
@@ -492,10 +523,14 @@ struct SmartphoneSettingsView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 2)
+            Button("선택") { chooseCustomIcon() }
+                .font(.system(size: 10, weight: .semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.accent)
             Button("붙여넣기") { pasteCustomIcon() }
                 .font(.system(size: 10, weight: .semibold))
                 .buttonStyle(.plain)
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.accent)
             if selectedButton.customIconData != nil {
                 Button("제거") { clearCustomIcon() }
                     .font(.system(size: 10, weight: .semibold))
@@ -504,8 +539,8 @@ struct SmartphoneSettingsView: View {
             }
         }
         .padding(7)
-        .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.12)))
+        .background(theme.foreground.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.18)))
         .onDrop(
             of: [UTType.fileURL.identifier, UTType.png.identifier],
             isTargeted: $isCustomIconDropTargeted,
@@ -526,7 +561,7 @@ struct SmartphoneSettingsView: View {
             HStack {
                 Text("폴더 안 단축키")
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(theme.foreground.opacity(0.72))
                 Spacer()
                 Button {
                     addFolderShortcut()
@@ -536,7 +571,7 @@ struct SmartphoneSettingsView: View {
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.accent)
                 .help("앱 폴더에 단축키를 추가합니다.")
             }
             if selectedButton.folderShortcuts.isEmpty {
@@ -555,8 +590,8 @@ struct SmartphoneSettingsView: View {
             }
         }
         .padding(9)
-        .background(.black.opacity(0.24), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(.white.opacity(0.12)))
+        .background(theme.foreground.opacity(0.045), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.16)))
     }
 
     private func folderShortcutRow(_ shortcut: SmartphoneFolderShortcut) -> some View {
@@ -568,7 +603,7 @@ struct SmartphoneSettingsView: View {
                     .font(.system(size: 11, weight: .medium))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 5)
-                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                    .background(theme.foreground.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
                 Button(role: .destructive) {
                     removeFolderShortcut(id: shortcut.id)
                 } label: {
@@ -581,13 +616,13 @@ struct SmartphoneSettingsView: View {
             HStack(spacing: 6) {
                 Image(systemName: binding.wrappedValue.symbol.isEmpty ? "command" : binding.wrappedValue.symbol)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.accent)
                 TextField("SF Symbol", text: binding.symbol)
                     .textFieldStyle(.plain)
                     .font(.system(size: 10, design: .monospaced))
                     .padding(.horizontal, 7)
                     .padding(.vertical, 5)
-                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                    .background(theme.foreground.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
             }
             Text("짧게: \(shortcut.action.kind.title) · 길게: \(shortcut.longPressAction.kind.title)")
                 .font(.system(size: 10))
@@ -597,11 +632,11 @@ struct SmartphoneSettingsView: View {
                 folderButtonID = selectedButton.id
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.orange)
+            .foregroundStyle(theme.accent)
         }
         .padding(7)
-        .background(.white.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-        .overlay(RoundedRectangle(cornerRadius: 7).stroke(.white.opacity(0.08)))
+        .background(theme.foreground.opacity(0.055), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.foreground.opacity(0.16)))
     }
 
     @ViewBuilder
@@ -620,6 +655,7 @@ struct SmartphoneSettingsView: View {
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: 24, height: 24)
+                .background(imageIconBacking, in: RoundedRectangle(cornerRadius: 5))
                 .opacity(isSelected ? 1 : 0.82)
         } else if button.symbol.isEmpty {
             Color.clear
@@ -632,17 +668,18 @@ struct SmartphoneSettingsView: View {
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: 24, height: 24)
+                .background(imageIconBacking, in: RoundedRectangle(cornerRadius: 5))
                 .opacity(isSelected ? 1 : 0.82)
         } else {
             Image(systemName: button.symbol)
                 .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(isSelected ? .orange : .white.opacity(0.72))
+                .foregroundStyle(isSelected ? theme.accent : theme.foreground.opacity(0.72))
         }
     }
 
     private func field<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.white.opacity(0.72))
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.foreground.opacity(0.72))
             content()
         }
         .zIndex(title == "아이콘 선택" && isSymbolPickerPresented ? 100 : 0)
@@ -665,9 +702,10 @@ struct SmartphoneSettingsView: View {
         }
         .font(.system(size: 10, weight: .semibold))
         .padding(.horizontal, 7)
-        .padding(.vertical, 7)
-        .foregroundStyle(selectedAction.kind == kind ? .black : .white.opacity(0.72))
-        .background(selectedAction.kind == kind ? Color.orange : Color.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 7))
+        .frame(maxWidth: .infinity, minHeight: 38)
+        .foregroundStyle(selectedAction.kind == kind ? theme.accentForeground : theme.foreground.opacity(0.72))
+        .background(selectedAction.kind == kind ? theme.accent : theme.foreground.opacity(0.075), in: RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7).stroke(selectedAction.kind == kind ? theme.accent : theme.foreground.opacity(0.2)))
         .buttonStyle(.plain)
     }
 
@@ -680,7 +718,7 @@ struct SmartphoneSettingsView: View {
                 .font(.system(size: 11, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
-                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
+                .background(theme.foreground.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
                 .buttonStyle(.plain)
             if !selectedAction.value.isEmpty {
                 Text(AppRegistrationService.displayName(for: selectedAction.value) ?? selectedAction.value)
@@ -694,8 +732,11 @@ struct SmartphoneSettingsView: View {
                 .id("\(selectedButton.id)-\(editingLongPress)")
         case .terminalCommand:
             DarkTextField(text: actionValueBinding, placeholder: "예: open -a Safari")
+            Toggle("터미널 창 표시", isOn: selectedActionBinding.showTerminalWindow)
+                .toggleStyle(.checkbox)
         case .url:
             DarkTextField(text: actionValueBinding, placeholder: "https://example.com")
+            URLTabPicker(openInCurrentTab: selectedActionBinding.openURLInCurrentTab)
         case .clipboardText:
             VStack(alignment: .leading, spacing: 6) {
                 Text("버튼을 누르면 현재 활성 앱에 붙여넣습니다.")
@@ -703,12 +744,12 @@ struct SmartphoneSettingsView: View {
                     .foregroundStyle(.secondary)
                 TextEditor(text: actionValueBinding)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(theme.foreground)
                     .scrollContentBackground(.hidden)
                     .padding(7)
                     .frame(minHeight: 92, maxHeight: 140)
-                    .background(Color(red: 0.01, green: 0.02, blue: 0.05), in: RoundedRectangle(cornerRadius: 9))
-                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.22)))
+                    .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
+                    .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
             }
         case .none:
             Text(editingLongPress ? "길게 눌렀을 때 실행할 동작이 없습니다." : "짧게 눌렀을 때 실행할 동작이 없습니다.")
@@ -747,6 +788,19 @@ struct SmartphoneSettingsView: View {
 
     private func update(_ button: SmartphoneButton) { store.updateSmartphoneButton(button, at: pageIndex) }
 
+    private func chooseCustomIcon() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.png]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let data = try? Data(contentsOf: url) else {
+            customIconError = "PNG 파일을 읽지 못했습니다."
+            return
+        }
+        applyCustomIcon(data)
+    }
+
     private func pasteCustomIcon() {
         if let data = SmartphoneIconData.dataFromPasteboard() {
             applyCustomIcon(data)
@@ -758,6 +812,8 @@ struct SmartphoneSettingsView: View {
     private func importDroppedIcon(_ providers: [NSItemProvider]) -> Bool {
         guard let provider = providers.first else { return false }
         customIconError = ""
+        let targetButtonID = selectedButton.id
+        let targetPageIndex = pageIndex
 
         if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
             provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -775,7 +831,7 @@ struct SmartphoneSettingsView: View {
                     Task { @MainActor in customIconError = "PNG 파일을 읽지 못했습니다." }
                     return
                 }
-                Task { @MainActor in applyCustomIcon(data) }
+                Task { @MainActor in applyCustomIcon(data, buttonID: targetButtonID, page: targetPageIndex) }
             }
             return true
         }
@@ -785,19 +841,22 @@ struct SmartphoneSettingsView: View {
                 Task { @MainActor in customIconError = "PNG 이미지를 읽지 못했습니다." }
                 return
             }
-            Task { @MainActor in applyCustomIcon(data) }
+            Task { @MainActor in applyCustomIcon(data, buttonID: targetButtonID, page: targetPageIndex) }
         }
         return true
     }
 
-    private func applyCustomIcon(_ data: Data) {
+    private func applyCustomIcon(_ data: Data, buttonID: String? = nil, page: Int? = nil) {
         guard let normalized = SmartphoneIconData.normalizedPNGData(from: data) else {
             customIconError = "유효한 PNG 이미지만 추가할 수 있습니다."
             return
         }
-        var button = selectedButton
+        let targetPage = page ?? pageIndex
+        let targetID = buttonID ?? selectedButton.id
+        guard store.smartphonePages.indices.contains(targetPage),
+              var button = store.smartphonePages[targetPage].buttons.first(where: { $0.id == targetID }) else { return }
         button.customIconData = normalized
-        update(button)
+        store.updateSmartphoneButton(button, at: targetPage)
         customIconError = ""
     }
 

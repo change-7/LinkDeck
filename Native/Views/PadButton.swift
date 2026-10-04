@@ -52,6 +52,7 @@ struct PadButton: View {
             .scaleEffect(pressed ? 0.96 : (selected ? 1.035 : 1))
         }
         .buttonStyle(.plain)
+        .focusEffectDisabled()
         .contextMenu {
             if let runAction {
                 Button("동작 실행", action: runAction)

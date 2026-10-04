@@ -3,10 +3,11 @@ import Foundation
 
 enum SmartphoneIconData {
     private static let maximumPixelDimension = 256
+    private static let maximumSourceDataLength = 20 * 1024 * 1024
     private static let maximumDataLength = 512 * 1024
 
     static func normalizedPNGData(from data: Data) -> Data? {
-        guard data.count <= maximumDataLength,
+        guard data.count <= maximumSourceDataLength,
               let image = NSImage(data: data),
               let sourceRepresentation = image.representations.first else {
             return nil

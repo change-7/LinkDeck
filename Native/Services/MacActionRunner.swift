@@ -139,6 +139,7 @@ final class MacActionRunner {
     static let targetAppActivationRetryCount = 12
     static let targetAppActivationRetryInterval: TimeInterval = 0.15
     private static var fillRestoreFrames: [String: CGRect] = [:]
+    private static var backgroundProcesses: [UUID: Process] = [:]
 
     func execute(_ action: PadAction, commandFileID: String? = nil) throws -> String {
         switch action.kind {
@@ -159,6 +160,10 @@ final class MacActionRunner {
                 ? action.value
                 : "https://\(action.value)"
             guard let url = URL(string: address) else { throw MacActionError.invalidAddress }
+            if action.openURLInCurrentTab {
+                try BrowserURLRunner.openInCurrentTab(url)
+                return "현재 탭에서 웹페이지를 열었습니다."
+            }
             NSWorkspace.shared.open(url)
             return "웹페이지를 열었습니다."
         case .shortcut:
@@ -229,7 +234,12 @@ final class MacActionRunner {
         case .terminalCommand:
             let command = action.value.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !command.isEmpty else { throw MacActionError.terminalCommandNotConfigured }
-            try Self.runTerminalCommand(TerminalCommandFileStore.shellCommand(for: commandFileID ?? "") ?? command)
+            let shellCommand = TerminalCommandFileStore.shellCommand(for: commandFileID ?? "") ?? command
+            if !action.showTerminalWindow {
+                try Self.runBackgroundTerminalCommand(shellCommand)
+                return "터미널 명령을 백그라운드에서 실행했습니다."
+            }
+            try Self.runTerminalCommand(shellCommand)
             return "터미널 명령을 실행했습니다."
         case .clipboardText:
             guard !action.value.isEmpty else { throw MacActionError.clipboardTextNotConfigured }
@@ -308,6 +318,29 @@ final class MacActionRunner {
         } else {
             _ = app.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         }
+    }
+
+    @discardableResult
+    static func runBackgroundTerminalCommand(_ command: String) throws -> Process {
+        let process = Process()
+        let id = UUID()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", command]
+        process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
+        process.standardInput = FileHandle.nullDevice
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        process.terminationHandler = { _ in
+            Task { @MainActor in backgroundProcesses[id] = nil }
+        }
+        backgroundProcesses[id] = process
+        do {
+            try process.run()
+        } catch {
+            backgroundProcesses[id] = nil
+            throw MacActionError.terminalCommandFailed
+        }
+        return process
     }
 
     private static func runTerminalCommand(_ command: String) throws {

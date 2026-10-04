@@ -36,6 +36,30 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertEqual(state.fiveHourUsedPercent, 16)
         XCTAssertEqual(state.fiveHourRemainingPercent, 84)
         XCTAssertEqual(state.completionSoundVolumePercent, 100)
+        XCTAssertEqual(state.approvalSoundVolumePercent, 100)
+    }
+
+    func testRemoteApprovalSound_decodingOldMessageDefaultsToPhoneAtFullVolume() throws {
+        let data = Data(#"{"type":"codexApprovalSound","protocolVersion":1,"id":"built-in","useBuiltIn":true,"configured":false}"#.utf8)
+
+        let sound = try JSONDecoder().decode(CodexRemoteApprovalSound.self, from: data)
+
+        XCTAssertEqual(sound.outputTarget, .phone)
+        XCTAssertEqual(sound.volumePercent, 100)
+        XCTAssertFalse(sound.outputTarget.playsOnMac)
+        XCTAssertTrue(sound.outputTarget.playsOnPhone)
+    }
+
+    func testRemoteApprovalSound_roundTripsVolumeAndMigratesLegacyBothTarget() throws {
+        let legacy = Data(#"{"id":"built-in","outputTarget":"both","volumePercent":37}"#.utf8)
+        let sound = try JSONDecoder().decode(CodexRemoteApprovalSound.self, from: legacy)
+        XCTAssertEqual(sound.outputTarget, .phone)
+        XCTAssertEqual(sound.volumePercent, 37)
+        XCTAssertEqual(try JSONDecoder().decode(CodexRemoteApprovalSound.self, from: JSONEncoder().encode(sound)), sound)
+        let state = CodexRemoteState(macConnected: true, codexConnected: true, activity: .idle,
+            message: "", weeklyUsage: nil, fiveHourUsage: nil, approvalSoundVolumePercent: 37)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        XCTAssertEqual(json["approvalSoundVolumePercent"] as? Int, 37)
     }
 
     func testRemoteState_whenSmartphoneButtonUsesClipboardText_omitsTextFromPhonePayload() throws {
@@ -119,13 +143,16 @@ final class CodexRemoteStateTests: XCTestCase {
             type: "command",
             protocolVersion: 1,
             id: "test-command",
-            command: "terminal"
+            command: "codexApproval",
+            decision: "accept",
+            approvalRequestKey: "desktop:thread:request:approval"
         )
 
         let encoded = try JSONEncoder().encode(command)
         let decoded = try JSONDecoder().decode(CodexRemoteCommand.self, from: encoded)
 
         XCTAssertEqual(decoded, command)
+        XCTAssertEqual(decoded.approvalRequestKey, "desktop:thread:request:approval")
     }
 
     func testRemoteCommandResult_usesCommandResultEnvelope() throws {
@@ -381,7 +408,8 @@ final class CodexRemoteStateTests: XCTestCase {
         let approval = CodexRemoteApproval(
             requestID: 42,
             title: "파일 변경 승인 필요",
-            detail: "README.md를 수정합니다."
+            detail: "README.md를 수정합니다.",
+            requestKey: "appServer:42"
         )
         let state = CodexRemoteState(
             macConnected: true,
@@ -396,6 +424,122 @@ final class CodexRemoteStateTests: XCTestCase {
         let decoded = try JSONDecoder().decode(CodexRemoteState.self, from: JSONEncoder().encode(state))
 
         XCTAssertEqual(decoded.approval, approval)
+    }
+
+    func testRemoteApproval_decodesMessagesFromBeforeRequestRoutingFieldsWereAdded() throws {
+        let data = Data(#"{"requestID":42,"title":"승인 필요","detail":"확인해 주세요"}"#.utf8)
+        let approval = try JSONDecoder().decode(CodexRemoteApproval.self, from: data)
+
+        XCTAssertEqual(approval.requestID, 42)
+        XCTAssertEqual(approval.source, "appServer")
+        XCTAssertTrue(approval.canRespond)
+    }
+
+    func testCodexDesktopApprovalKindRecognizesSupportedApprovalRequests() {
+        XCTAssertEqual(CodexDesktopApprovalKind(method: "item/commandExecution/requestApproval"), .commandExecution)
+        XCTAssertEqual(CodexDesktopApprovalKind(method: "item/fileChange/requestApproval"), .fileChange)
+        XCTAssertEqual(CodexDesktopApprovalKind(method: "item/permissions/requestApproval"), .permissions)
+        XCTAssertEqual(CodexDesktopApprovalKind(method: "mcpServer/elicitation/request"), .elicitation)
+        XCTAssertEqual(CodexDesktopApprovalKind(method: "item/other/requestApproval"), .unsupported)
+    }
+
+    func testCodexDesktopElicitation_isSurfacedButCannotBeAnsweredByLinkDeck() {
+        let approval = CodexDesktopPendingApproval(
+            conversationID: "thread-3",
+            requestID: .integer(8),
+            requestKey: "desktop:thread-3:8:mcpServer/elicitation/request",
+            method: "mcpServer/elicitation/request",
+            title: "Codex 확인 필요",
+            detail: "Allow this request?",
+            requestedPermissions: nil
+        )
+
+        XCTAssertEqual(approval.kind, .elicitation)
+        XCTAssertFalse(approval.canRespond)
+        XCTAssertNil(CodexDesktopApprovalIPC.route(for: approval, decision: "accept"))
+    }
+
+    func testCodexDesktopIPC_parsesElicitationAndUnknownApprovalRequests() throws {
+        let requests: CodexIPCJSONValue = .array([
+            .object([
+                "method": .string("mcpServer/elicitation/request"),
+                "id": .integer(8),
+                "params": .object([
+                    "message": .string("Allow this request?"),
+                    "serverName": .string("sample")
+                ])
+            ]),
+            .object([
+                "method": .string("item/networkAccess/requestApproval"),
+                "id": .integer(9),
+                "params": .object(["reason": .string("Network access")])
+            ])
+        ])
+
+        let approvals = CodexDesktopApprovalIPC.approvals(in: requests, conversationID: "thread-3")
+
+        XCTAssertEqual(approvals.count, 2)
+        XCTAssertEqual(approvals[0].title, "Codex 확인 필요")
+        XCTAssertEqual(approvals[0].detail, "Allow this request?\nMCP 서버: sample")
+        XCTAssertFalse(approvals[0].canRespond)
+        XCTAssertEqual(approvals[1].kind, .unsupported)
+        XCTAssertEqual(approvals[1].detail, "Network access")
+        XCTAssertFalse(approvals[1].canRespond)
+    }
+
+    @MainActor
+    func testAppServerElicitation_isRecognizedForPhoneAlertsWithoutUnsafeAutoResponse() {
+        let method = "mcpServer/elicitation/request"
+
+        XCTAssertTrue(CodexAppServerClient.isRemoteApprovalRequest(method))
+        XCTAssertEqual(CodexAppServerClient.remoteApprovalTitle(for: method), "Codex 확인 필요")
+        XCTAssertEqual(
+            CodexAppServerClient.remoteApprovalDetail(from: [
+                "message": "Allow this request?",
+                "serverName": "sample"
+            ]),
+            "Allow this request?\nMCP 서버: sample"
+        )
+    }
+
+    func testCodexDesktopCommandApproval_routesTheDecisionToItsThreadAndRequest() throws {
+        let approval = CodexDesktopPendingApproval(
+            conversationID: "thread-1",
+            requestID: .integer(42),
+            requestKey: "desktop:thread-1:42:item/commandExecution/requestApproval",
+            method: "item/commandExecution/requestApproval",
+            title: "명령 실행 승인 필요",
+            detail: "",
+            requestedPermissions: nil
+        )
+
+        let route = try XCTUnwrap(CodexDesktopApprovalIPC.route(for: approval, decision: "accept"))
+
+        XCTAssertEqual(route.method, "thread-follower-command-approval-decision")
+        XCTAssertEqual(route.params["conversationId"] as? String, "thread-1")
+        XCTAssertEqual(route.params["requestId"] as? Int, 42)
+        XCTAssertEqual(route.params["decision"] as? String, "accept")
+    }
+
+    func testCodexDesktopPermissionApproval_sendsRequestedPermissionsOnlyOnAccept() throws {
+        let approval = CodexDesktopPendingApproval(
+            conversationID: "thread-2",
+            requestID: .string("permission-request"),
+            requestKey: "desktop:thread-2:permission-request:item/permissions/requestApproval",
+            method: "item/permissions/requestApproval",
+            title: "권한 승인 필요",
+            detail: "",
+            requestedPermissions: .object(["network": .bool(true)])
+        )
+
+        let route = try XCTUnwrap(CodexDesktopApprovalIPC.route(for: approval, decision: "accept"))
+        let response = try XCTUnwrap(route.params["response"] as? [String: Any])
+        let permissions = try XCTUnwrap(response["permissions"] as? [String: Any])
+
+        XCTAssertEqual(route.method, "thread-follower-permissions-request-approval-response")
+        XCTAssertEqual(response["scope"] as? String, "turn")
+        XCTAssertEqual(permissions["network"] as? Bool, true)
+        XCTAssertTrue(approval.canRespond)
     }
 
     @MainActor
@@ -530,7 +674,7 @@ final class CodexRemoteStateTests: XCTestCase {
 
         XCTAssertEqual(
             plist["NSAppleEventsUsageDescription"] as? String,
-            "LinkDeck이 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다."
+            "LinkDeck이 등록된 터미널 명령을 실행하거나 브라우저의 현재 탭에서 웹페이지를 열기 위해 앱을 제어합니다."
         )
     }
 

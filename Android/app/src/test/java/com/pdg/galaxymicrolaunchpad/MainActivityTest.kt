@@ -21,6 +21,17 @@ class MainActivityTest {
     }
 
     @Test
+    fun codexApprovalCommand_includesTheRequestKeyBeingDisplayed() {
+        val payload = remoteCommandPayload(
+            command = "codexApproval",
+            decision = "accept",
+            approvalRequestKey = "desktop:thread:request:item/commandExecution/requestApproval"
+        )
+
+        assertEquals("desktop:thread:request:item/commandExecution/requestApproval", payload.approvalRequestKey)
+    }
+
+    @Test
     fun remoteUsageField_preservesCachedValueWhenWireFieldIsAbsent() {
         assertEquals(67, mergeRemoteUsageInt(fieldPresent = false, fieldIsNull = false, fieldValue = null, current = 67))
     }
@@ -232,6 +243,37 @@ class MainActivityTest {
         assertTrue(shouldWakeForCodexApproval(previousApproval = null, currentApproval = approval))
         assertFalse(shouldWakeForCodexApproval(previousApproval = approval, currentApproval = approval))
         assertFalse(shouldWakeForCodexApproval(previousApproval = approval, currentApproval = null))
+    }
+
+    @Test
+    fun approvalWake_distinguishesRepeatedRequestsWithTheSameDetails() {
+        val first = RemoteApproval("권한 승인 필요", "명령을 실행할까요?", requestID = 41, requestKey = "request-41")
+        val next = RemoteApproval("권한 승인 필요", "명령을 실행할까요?", requestID = 42, requestKey = "request-42")
+
+        assertTrue(shouldWakeForCodexApproval(previousApproval = first, currentApproval = next))
+    }
+
+    @Test
+    fun aggregatedCodexApproval_isVisibleButNotActionable() {
+        val approval = RemoteApproval(
+            title = "승인 요청 여러 건",
+            detail = "Mac에서 확인해 주세요.",
+            source = "multiple",
+            canRespond = false
+        )
+
+        assertFalse(approval.canRespond)
+        assertEquals("multiple", approval.source)
+        assertTrue(shouldShowApprovalDialog(approval, dismissedApproval = null))
+        assertFalse(shouldShowApprovalDialog(approval, dismissedApproval = approval))
+        assertTrue(shouldShowApprovalDialog(approval, dismissedApproval = RemoteApproval("이전 요청", "이전 내용")))
+    }
+
+    @Test
+    fun approvalSoundOutputTarget_routesPhonePlaybackForPhoneAndBoth() {
+        assertTrue(shouldPlayApprovalSoundOnPhone("phone"))
+        assertFalse(shouldPlayApprovalSoundOnPhone("mac"))
+        assertTrue(shouldPlayApprovalSoundOnPhone("both"))
     }
 
     @Test

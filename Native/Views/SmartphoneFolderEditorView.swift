@@ -32,6 +32,8 @@ func smartphoneFolderEditorSlots(for folder: SmartphoneButton) -> [SmartphoneFol
 }
 
 struct SmartphoneFolderEditorView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Bindable var store: LaunchpadStore
     let pageIndex: Int
     let folderButtonID: String
@@ -84,15 +86,15 @@ struct SmartphoneFolderEditorView: View {
             }
         }
         .padding(22)
-        .foregroundStyle(.white)
-        .background(Color(red: 0.035, green: 0.035, blue: 0.045))
+        .foregroundStyle(theme.foreground)
+        .background(theme.canvas)
         .frame(width: 900, height: 640)
     }
 
     private func header(_ folderButton: SmartphoneButton) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Image(systemName: "iphone").foregroundStyle(.orange)
+                Image(systemName: "iphone").foregroundStyle(theme.accent)
                 Text("스마트폰 버튼 설정")
                     .font(.system(size: 20, weight: .bold))
                 Text("· \(folderButton.title.isEmpty ? "앱 폴더" : folderButton.title)")
@@ -108,14 +110,14 @@ struct SmartphoneFolderEditorView: View {
                     Label("상위 폴더", systemImage: "chevron.left")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.accent)
                 Button {
                     addShortcut()
                 } label: {
                     Label("버튼 추가", systemImage: "plus")
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.accent)
                 .disabled(folderButton.folderShortcuts.count >= 15)
                 .opacity(folderButton.folderShortcuts.count >= 15 ? 0.45 : 1)
             }
@@ -141,7 +143,7 @@ struct SmartphoneFolderEditorView: View {
             }
         }
         .padding(.bottom, 4)
-        .overlay(alignment: .bottom) { Divider().overlay(.white.opacity(0.16)) }
+        .overlay(alignment: .bottom) { Divider().overlay(theme.foreground.opacity(0.16)) }
     }
 
     private func folderGrid(_ folderButton: SmartphoneButton) -> some View {
@@ -166,8 +168,8 @@ struct SmartphoneFolderEditorView: View {
         }
         .frame(minWidth: 530, maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(Color.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.white.opacity(0.08)))
+        .background(theme.inset, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.foreground.opacity(0.08)))
     }
 
     @ViewBuilder
@@ -181,9 +183,9 @@ struct SmartphoneFolderEditorView: View {
                         .font(.system(size: 11, weight: .medium))
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
-                .foregroundStyle(.orange)
-                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(.orange, lineWidth: 1.5))
+                .foregroundStyle(theme.accent)
+                .background(theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.accent, lineWidth: 1.5))
             }
             .buttonStyle(.plain)
         } else if let shortcut = slot.shortcut {
@@ -209,9 +211,9 @@ struct SmartphoneFolderEditorView: View {
                     .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
-                .foregroundStyle(selectedShortcutID == shortcut.id ? .orange : .white)
-                .background(selectedShortcutID == shortcut.id ? Color.orange.opacity(0.14) : Color.black.opacity(0.28), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedShortcutID == shortcut.id ? .orange : .white.opacity(0.12), lineWidth: selectedShortcutID == shortcut.id ? 1.5 : 1))
+                .foregroundStyle(selectedShortcutID == shortcut.id ? theme.accent : theme.foreground)
+                .background(selectedShortcutID == shortcut.id ? theme.accent.opacity(0.14) : theme.control, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(selectedShortcutID == shortcut.id ? theme.accent : theme.foreground.opacity(0.12), lineWidth: selectedShortcutID == shortcut.id ? 1.5 : 1))
             }
             .buttonStyle(.plain)
         } else {
@@ -223,9 +225,9 @@ struct SmartphoneFolderEditorView: View {
                         .font(.system(size: 11, weight: .medium))
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
-                .foregroundStyle(.white.opacity(0.46))
-                .background(Color.black.opacity(0.20), in: RoundedRectangle(cornerRadius: 9))
-                .overlay(RoundedRectangle(cornerRadius: 9).stroke(.white.opacity(0.12)))
+                .foregroundStyle(theme.foreground.opacity(0.46))
+                .background(theme.control, in: RoundedRectangle(cornerRadius: 9))
+                .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.12)))
             }
             .buttonStyle(.plain)
             .disabled((folderButton?.folderShortcuts.count ?? 15) >= 15)
@@ -283,7 +285,7 @@ struct SmartphoneFolderEditorView: View {
                 } else {
                     Image(systemName: "square.grid.2x2")
                         .font(.system(size: 28, weight: .medium))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(theme.accent)
                     Text("4×4 버튼에서 편집할 버튼을 선택하세요.")
                         .font(.system(size: 13, weight: .medium))
                     Text("빈 칸은 ‘버튼 추가’로 등록할 수 있습니다.")
@@ -296,8 +298,8 @@ struct SmartphoneFolderEditorView: View {
         }
         .frame(width: 285, alignment: .leading)
         .frame(maxHeight: .infinity)
-        .background(Color(red: 0.065, green: 0.065, blue: 0.08), in: RoundedRectangle(cornerRadius: 13))
-        .overlay(RoundedRectangle(cornerRadius: 13).stroke(.white.opacity(0.12)))
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: 13))
+        .overlay(RoundedRectangle(cornerRadius: 13).stroke(theme.foreground.opacity(0.12)))
     }
 
     @ViewBuilder
@@ -324,9 +326,18 @@ struct SmartphoneFolderEditorView: View {
         case .terminalCommand:
             TextField("예: open -a Safari", text: shortcutValueBinding)
                 .textFieldStyle(.roundedBorder)
+            Toggle("터미널 창 표시", isOn: Binding(
+                get: { selectedAction.showTerminalWindow },
+                set: { value in updateSelectedAction { $0.showTerminalWindow = value } }
+            ))
+            .toggleStyle(.checkbox)
         case .url:
             TextField("https://example.com", text: shortcutValueBinding)
                 .textFieldStyle(.roundedBorder)
+            URLTabPicker(openInCurrentTab: Binding(
+                get: { selectedAction.openURLInCurrentTab },
+                set: { value in updateSelectedAction { $0.openURLInCurrentTab = value } }
+            ))
         case .clipboardText:
             Text("현재 활성 앱에 붙여넣을 텍스트")
                 .font(.system(size: 10))
@@ -336,7 +347,7 @@ struct SmartphoneFolderEditorView: View {
                 .scrollContentBackground(.hidden)
                 .padding(7)
                 .frame(height: 100)
-                .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
         case .none:
             Text("\(editingLongPress ? "길게" : "짧게") 누르면 실행하지 않습니다.")
                 .font(.system(size: 10))
@@ -455,9 +466,9 @@ struct SmartphoneFolderEditorView: View {
                     Image(systemName: symbol.isEmpty ? "circle.slash" : symbol)
                         .font(.system(size: 16, weight: .medium))
                         .frame(width: 34, height: 34)
-                        .foregroundStyle(shortcut.symbol == symbol ? .orange : .primary)
+                        .foregroundStyle(shortcut.symbol == symbol ? theme.accent : .primary)
                         .background(
-                            shortcut.symbol == symbol ? Color.orange.opacity(0.14) : Color.primary.opacity(0.06),
+                            shortcut.symbol == symbol ? theme.accent.opacity(0.14) : Color.primary.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 6)
                         )
                 }
@@ -504,7 +515,7 @@ struct SmartphoneFolderEditorView: View {
                     }
                 }
                 .frame(width: 34, height: 34)
-                .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
+                .background(theme.input, in: RoundedRectangle(cornerRadius: 6))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(shortcut.customIconData == nil ? "PNG 없음" : "PNG 적용됨")
@@ -518,11 +529,11 @@ struct SmartphoneFolderEditorView: View {
                 Button("선택") { chooseShortcutPNG(for: shortcut.id) }
                     .font(.system(size: 10, weight: .semibold))
                     .buttonStyle(.plain)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.accent)
                 Button("붙여넣기") { pasteShortcutPNG(for: shortcut.id) }
                     .font(.system(size: 10, weight: .semibold))
                     .buttonStyle(.plain)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.accent)
                 if shortcut.customIconData != nil {
                     Button {
                         clearShortcutPNG(for: shortcut.id)
@@ -535,10 +546,10 @@ struct SmartphoneFolderEditorView: View {
                 }
             }
             .padding(7)
-            .background(.black.opacity(0.2), in: RoundedRectangle(cornerRadius: 8))
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
             .overlay(
                 RoundedRectangle(cornerRadius: 8)
-                    .stroke(isCustomIconDropTargeted ? .orange : .white.opacity(0.12), lineWidth: isCustomIconDropTargeted ? 1.5 : 1)
+                    .stroke(isCustomIconDropTargeted ? theme.accent : theme.foreground.opacity(0.12), lineWidth: isCustomIconDropTargeted ? 1.5 : 1)
             )
             .onDrop(
                 of: [UTType.fileURL.identifier, UTType.png.identifier],

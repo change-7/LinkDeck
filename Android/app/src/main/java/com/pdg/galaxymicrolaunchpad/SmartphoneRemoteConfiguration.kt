@@ -46,7 +46,11 @@ internal fun parseRemoteApproval(state: JSONObject): RemoteApproval? {
     val approval = state.optJSONObject("approval") ?: return null
     return RemoteApproval(
         title = approval.optString("title", "Codex 승인 필요"),
-        detail = approval.optString("detail", "계속 진행하려면 확인이 필요합니다.")
+        detail = approval.optString("detail", "계속 진행하려면 확인이 필요합니다."),
+        requestID = approval.optInt("requestID").takeIf { approval.has("requestID") },
+        requestKey = approval.optString("requestKey").takeIf { approval.has("requestKey") },
+        source = approval.optString("source", "appServer"),
+        canRespond = approval.optBoolean("canRespond", true)
     )
 }
 
@@ -204,7 +208,7 @@ internal fun shouldWakeForCodexApproval(
     previousApproval: RemoteApproval?,
     currentApproval: RemoteApproval?
 ): Boolean {
-    return currentApproval != null && previousApproval == null
+    return currentApproval != null && previousApproval != currentApproval
 }
 
 internal fun shouldRevealCodex(

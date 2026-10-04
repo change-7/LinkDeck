@@ -1,9 +1,16 @@
 import SwiftUI
 
 struct InspectorView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Binding var pad: Pad
     let pages: [LaunchPage]
+    @Binding var selectedMainScreen: MainScreen
     let selectedPageLEDIndex: Int?
+    let codexIsConnected: Bool
+    let midiIsConnected: Bool
+    let onOpenBackupRestore: () -> Void
+    let onOpenCodexSettings: () -> Void
     let onSelectPageLED: (Int?) -> Void
     let onUpdatePageColor: (Int, String, Bool) -> Void
     let onUpdatePageName: (Int, String) -> Void
@@ -15,10 +22,19 @@ struct InspectorView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(selectedPageLEDIndex == nil ? "SELECTED PAD" : "SELECTED TOP BUTTON")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.yellow)
-                Text(inspectorTitle).font(.system(size: 17, weight: .bold)).foregroundStyle(.white)
+                HStack(spacing: 6) {
+                    Text(selectedPageLEDIndex == nil ? "SELECTED PAD" : "SELECTED TOP BUTTON")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.yellow)
+                    Spacer(minLength: 0)
+                    MainScreenSidebarNavigation(
+                        selection: $selectedMainScreen,
+                        midiIsConnected: midiIsConnected,
+                        compact: true
+                    )
+                    .padding(.trailing, selectedPageLEDIndex == nil ? 34 : 0)
+                }
+                Text(inspectorTitle).font(.system(size: 17, weight: .bold)).foregroundStyle(theme.foreground)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .overlay(alignment: .topTrailing) {
@@ -28,7 +44,7 @@ struct InspectorView: View {
                 }
             }
             .padding(.bottom, 11)
-            .overlay(alignment: .bottom) { Divider().overlay(Color.white.opacity(0.18)) }
+            .overlay(alignment: .bottom) { Divider().overlay(theme.foreground.opacity(0.18)) }
 
             if let pageIndex = selectedPageLEDIndex, pages.indices.contains(pageIndex) {
                 fieldSection("P 버튼 이름") {
@@ -82,8 +98,8 @@ struct InspectorView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 9)
-                            .foregroundStyle(.orange)
-                            .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(theme.accent)
+                            .background(theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
                             .buttonStyle(.plain)
                     }
                 }
@@ -97,12 +113,18 @@ struct InspectorView: View {
                 }
             }
             Spacer(minLength: 0)
+            MainSidebarFooter(
+                codexIsConnected: codexIsConnected,
+                midiIsConnected: midiIsConnected,
+                onOpenBackupRestore: onOpenBackupRestore,
+                onOpenCodexSettings: onOpenCodexSettings
+            )
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
-        .foregroundStyle(Color(red: 0.88, green: 0.88, blue: 0.91))
-        .background(Color(red: 0.065, green: 0.065, blue: 0.08), in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.white.opacity(0.11)))
+        .foregroundStyle(theme.foreground.opacity(0.9))
+        .background(theme.panel, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.foreground.opacity(0.11)))
         .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
         .onChange(of: pad.id) { _, _ in
             appRegistrationRequestID = UUID()
@@ -121,12 +143,12 @@ struct InspectorView: View {
 
     @ViewBuilder private func fieldSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(.white.opacity(0.76))
+            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(theme.foreground.opacity(0.76))
             content()
         }
     }
 
-    private var sectionDivider: some View { Divider().overlay(Color.white.opacity(0.18)).padding(.vertical, 1) }
+    private var sectionDivider: some View { Divider().overlay(theme.foreground.opacity(0.18)).padding(.vertical, 1) }
 
     private func sideButtonRoleSection(_ descriptor: PadDefaults.SideButtonDescriptor) -> some View {
         let usesDefault = descriptor.defaultAction == pad.action
@@ -137,7 +159,7 @@ struct InspectorView: View {
                     .foregroundStyle(.green)
                 Text(description)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.82))
+                    .foregroundStyle(theme.foreground.opacity(0.82))
                 Text("아래에서 앱·단축키·웹 동작으로 바꾸면 사용자 지정 버튼이 됩니다.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -145,13 +167,13 @@ struct InspectorView: View {
                     pad.action = PadAction()
                 }
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.accent)
                 .buttonStyle(.plain)
                 .help("기본 macOS 기능을 해제합니다. 아래에서 앱 실행, 단축키, 웹 동작을 새로 지정할 수 있습니다.")
             } else {
                 Label("사용자 지정 버튼", systemImage: "slider.horizontal.3")
                     .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(theme.accent)
                 Text(descriptor.isCustomOnly ? "이 표기는 앱마다 의미가 달라 원하는 동작을 직접 정할 수 있습니다." : "기본 기능 대신 직접 지정한 동작을 사용 중입니다.")
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary)
@@ -167,8 +189,8 @@ struct InspectorView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
-        .background((usesDefault ? Color.green : Color.orange).opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke((usesDefault ? Color.green : Color.orange).opacity(0.26)))
+        .background((usesDefault ? Color.green : theme.accent).opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke((usesDefault ? Color.green : theme.accent).opacity(0.26)))
     }
 
     private func actionButton(_ kind: ActionKind) -> some View {
@@ -181,9 +203,9 @@ struct InspectorView: View {
             if changedKind || pad.action.value.isEmpty { pad.action.value = defaultValue(for: kind) }
         } label: {
             Text(kind.title).font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 12)
-                .foregroundStyle(pad.action.kind == kind ? Color.black : .white.opacity(0.72))
-                .background(pad.action.kind == kind ? Color.orange : Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(pad.action.kind == kind ? Color.orange : Color.white.opacity(0.18)))
+                .foregroundStyle(pad.action.kind == kind ? theme.accentForeground : theme.foreground.opacity(0.72))
+                .background(pad.action.kind == kind ? theme.accent : theme.foreground.opacity(0.075), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(pad.action.kind == kind ? theme.accent : theme.foreground.opacity(0.22)))
                 .frame(minHeight: 42)
         }
         .buttonStyle(.plain)
@@ -197,8 +219,8 @@ struct InspectorView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 9)
-                    .foregroundStyle(.white)
-                    .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+                    .foregroundStyle(theme.foreground)
+                    .background(theme.foreground.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
                     .buttonStyle(.plain)
                 registrationValue(
                     title: pad.action.value.isEmpty ? "등록된 앱 없음" : (AppRegistrationService.displayName(for: pad.action.value) ?? "등록된 앱"),
@@ -213,17 +235,20 @@ struct InspectorView: View {
             )
         case .terminalCommand:
             DarkTextField(text: $pad.action.value, placeholder: "예: open -a Safari")
+            Toggle("터미널 창 표시", isOn: $pad.action.showTerminalWindow)
+                .toggleStyle(.checkbox)
         case .url:
             DarkTextField(text: $pad.action.value, placeholder: "https://example.com")
+            URLTabPicker(openInCurrentTab: $pad.action.openURLInCurrentTab)
         case .clipboardText:
             TextEditor(text: $pad.action.value)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(theme.foreground)
                 .scrollContentBackground(.hidden)
                 .padding(7)
                 .frame(minHeight: 92, maxHeight: 140)
-                .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.18)))
+                .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.18)))
         case .none:
             EmptyView()
         }
@@ -238,7 +263,7 @@ struct InspectorView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 11)
         .padding(.vertical, 8)
-        .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
+        .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func registerApplication() {
@@ -265,14 +290,14 @@ struct InspectorView: View {
                 ForEach(PadColor.launchpadPalette) { color in
                     Button { selection.wrappedValue = color.rawValue } label: {
                         RoundedRectangle(cornerRadius: 4).fill(color.color).frame(width: 31, height: 31)
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selection.wrappedValue == color.rawValue ? Color.white : .white.opacity(0.32), lineWidth: selection.wrappedValue == color.rawValue ? 3 : 1))
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selection.wrappedValue == color.rawValue ? Color.white : theme.foreground.opacity(0.32), lineWidth: selection.wrappedValue == color.rawValue ? 3 : 1))
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(9)
-            .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.16)))
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.16)))
         }
     }
 
@@ -283,14 +308,14 @@ struct InspectorView: View {
                 ForEach(PadColor.launchpadPalette) { color in
                     Button { onUpdatePageColor(index, color.rawValue, selected) } label: {
                         RoundedRectangle(cornerRadius: 4).fill(color.color).frame(width: 31, height: 31)
-                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selection == color.rawValue ? Color.white : .white.opacity(0.32), lineWidth: selection == color.rawValue ? 3 : 1))
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selection == color.rawValue ? Color.white : theme.foreground.opacity(0.32), lineWidth: selection == color.rawValue ? 3 : 1))
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(9)
-            .background(Color.black.opacity(0.38), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.16)))
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.16)))
         }
     }
 
@@ -304,6 +329,8 @@ struct InspectorView: View {
 }
 
 private struct LaunchpadIconPicker: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Binding var selection: String
     let isSideButton: Bool
     @State private var isShowingPicker = false
@@ -355,8 +382,8 @@ private struct LaunchpadIconPicker: View {
                 Image(systemName: selection.isEmpty ? "square.dashed" : selection)
                     .font(.system(size: 16, weight: .medium))
                     .frame(width: 25, height: 25)
-                    .foregroundStyle(selection.isEmpty ? Color.secondary : Color.orange)
-                    .background(.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
+                    .foregroundStyle(selection.isEmpty ? Color.secondary : theme.accent)
+                    .background(theme.foreground.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
                 Text(selection.isEmpty ? "아이콘 없음" : iconTitle(for: selection))
                     .font(.system(size: 13, weight: .medium))
                 Spacer()
@@ -364,11 +391,11 @@ private struct LaunchpadIconPicker: View {
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.secondary)
             }
-            .foregroundStyle(.white)
+            .foregroundStyle(theme.foreground)
             .padding(.horizontal, 9)
             .frame(height: 38)
-            .background(Color(red: 0.01, green: 0.02, blue: 0.05), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(.white.opacity(0.22)))
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isShowingPicker, arrowEdge: .bottom) {
@@ -388,7 +415,7 @@ private struct LaunchpadIconPicker: View {
                             if isSideButton {
                                 Text(category.title)
                                     .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(theme.accent)
                             }
                             LazyVGrid(columns: Array(repeating: GridItem(.fixed(42), spacing: 8), count: 6), spacing: 8) {
                                 ForEach(category.icons, id: \.self) { icon in
@@ -402,7 +429,7 @@ private struct LaunchpadIconPicker: View {
             }
             .padding(14)
             .frame(width: 322)
-            .background(Color(red: 0.065, green: 0.065, blue: 0.08))
+            .background(theme.panel)
         }
     }
 
@@ -414,9 +441,9 @@ private struct LaunchpadIconPicker: View {
             Image(systemName: icon)
                 .font(.system(size: 17, weight: .medium))
                 .frame(width: 42, height: 38)
-                .foregroundStyle(selection == icon ? Color.black : .white)
-                .background(selection == icon ? Color.orange : Color.black.opacity(0.22), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selection == icon ? .orange : .white.opacity(0.15)))
+                .foregroundStyle(selection == icon ? theme.accentForeground : theme.foreground)
+                .background(selection == icon ? theme.accent : theme.control, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selection == icon ? theme.accent : theme.foreground.opacity(0.15)))
         }
         .buttonStyle(.plain)
         .help(iconTitle(for: icon))
@@ -455,6 +482,8 @@ private struct LaunchpadIconPicker: View {
 }
 
 struct DarkTextField: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Binding var text: String
     var placeholder = ""
 
@@ -462,10 +491,10 @@ struct DarkTextField: View {
         TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
             .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(.white)
+            .foregroundStyle(theme.foreground)
             .padding(.horizontal, 13)
             .frame(height: 34)
-            .background(Color(red: 0.01, green: 0.02, blue: 0.05), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Color.white.opacity(0.22)))
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
     }
 }

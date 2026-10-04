@@ -36,10 +36,14 @@ final class CodexAppServerClient {
     private var isUsingShellFallback = false
     private var desktopActivity: CodexActivity?
     private var pendingRemoteApproval: PendingRemoteApproval?
+    private var desktopPendingApprovals: [CodexDesktopPendingApproval] = []
+    private var desktopApprovalMonitorLastError: String?
+    private var desktopApprovalResponseInFlightKey: String?
     private var remoteCompletionEventID = 0
     private var remoteActiveSessionCount = 0
     private var usageRefreshTask: Task<Void, Never>?
     private var remoteStateRefreshTask: Task<Void, Never>?
+    private var desktopApprovalMonitorTask: Task<Void, Never>?
     private var adbReverseTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var automaticReconnectCount = 0
@@ -47,7 +51,9 @@ final class CodexAppServerClient {
     private var remoteSmartphonePagesProvider: () -> [SmartphonePage] = SmartphoneDefaults.persistedPages
     private var remoteCodexPhoneThemeProvider: () -> CodexPhoneTheme = { .classic }
     private var remoteCompletionSoundProvider: () -> CodexRemoteCompletionSound = { .builtIn }
+    private var remoteApprovalSoundProvider: () -> CodexRemoteApprovalSound = { .builtIn }
     private var localCompletionSoundHandler: () -> Void = {}
+    private var localApprovalSoundHandler: () -> Void = {}
 
     private struct PendingRemoteApproval {
         let requestID: Int
@@ -56,10 +62,13 @@ final class CodexAppServerClient {
         let responseKind: ResponseKind
         let requestedPermissions: [String: Any]?
 
-        enum ResponseKind {
+        enum ResponseKind: Equatable {
             case decision
             case permissions
+            case unsupported
         }
+
+        var canRespond: Bool { responseKind != .unsupported }
     }
 
     func startRemoteBridge() {
@@ -79,9 +88,10 @@ final class CodexAppServerClient {
         remoteBridge.start()
         publishRemoteState()
         startRemoteStateRefreshLoop()
+        startDesktopApprovalMonitorLoop()
     }
 
-    func setRemoteCommandHandler(_ handler: @escaping (CodexRemoteCommand) -> CodexRemoteCommandResult) {
+    func setRemoteCommandHandler(_ handler: @escaping @MainActor (CodexRemoteCommand) async -> CodexRemoteCommandResult) {
         remoteBridge.onCommand = handler
     }
 
@@ -100,14 +110,23 @@ final class CodexAppServerClient {
         publishRemoteState()
     }
 
-    var onRemoteCompletionSoundTarget: ((CodexCompletionSoundOutputTarget) -> Void)?
+    func setRemoteApprovalSoundProvider(_ provider: @escaping () -> CodexRemoteApprovalSound) {
+        remoteApprovalSoundProvider = provider
+        publishRemoteState()
+    }
 
-    func setRemoteCompletionSoundTarget(_ target: CodexCompletionSoundOutputTarget) {
-        onRemoteCompletionSoundTarget?(target)
+    var onRemoteSoundOutputTarget: ((CodexCompletionSoundOutputTarget) -> Void)?
+
+    func setRemoteSoundOutputTarget(_ target: CodexCompletionSoundOutputTarget) {
+        onRemoteSoundOutputTarget?(target)
     }
 
     func setLocalCompletionSoundHandler(_ handler: @escaping () -> Void) {
         localCompletionSoundHandler = handler
+    }
+
+    func setLocalApprovalSoundHandler(_ handler: @escaping () -> Void) {
+        localApprovalSoundHandler = handler
     }
 
     func stopRemoteBridge() {
@@ -116,6 +135,9 @@ final class CodexAppServerClient {
         phoneMicrophone.stop()
         remoteStateRefreshTask?.cancel()
         remoteStateRefreshTask = nil
+        desktopApprovalMonitorTask?.cancel()
+        desktopApprovalMonitorTask = nil
+        desktopPendingApprovals = []
         remoteBridge.stop()
     }
 
@@ -130,6 +152,41 @@ final class CodexAppServerClient {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 self.publishRemoteState()
+            }
+        }
+    }
+
+    private func startDesktopApprovalMonitorLoop() {
+        guard desktopApprovalMonitorTask == nil else { return }
+        desktopApprovalMonitorTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                let result: (approvals: [CodexDesktopPendingApproval]?, error: String?) = await Task.detached(priority: .utility) {
+                    do {
+                        return (approvals: Optional(try CodexDesktopApprovalIPC.pendingApprovals()), error: nil)
+                    } catch {
+                        return (approvals: nil, error: Optional(error.localizedDescription))
+                    }
+                }.value
+                guard !Task.isCancelled, let self else { return }
+                guard let approvals = result.approvals else {
+                    let error = result.error ?? "unknown error"
+                    if self.desktopApprovalMonitorLastError != error {
+                        NSLog("LinkDeck Codex approval monitor failed: %@", error)
+                        self.desktopApprovalMonitorLastError = error
+                    }
+                    try? await Task.sleep(for: .seconds(2))
+                    continue
+                }
+                self.desktopApprovalMonitorLastError = nil
+                if self.desktopPendingApprovals != approvals {
+                    let newRequestArrived = approvals.contains { next in
+                        !self.desktopPendingApprovals.contains { $0.requestKey == next.requestKey }
+                    }
+                    self.desktopPendingApprovals = approvals
+                    if newRequestArrived { self.localApprovalSoundHandler() }
+                    self.publishRemoteState()
+                }
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }
@@ -344,9 +401,10 @@ final class CodexAppServerClient {
                     requestID: requestID,
                     title: Self.remoteApprovalTitle(for: method),
                     detail: Self.remoteApprovalDetail(from: params),
-                    responseKind: method.lowercased().contains("permissions") ? .permissions : .decision,
+                    responseKind: Self.remoteApprovalResponseKind(for: method),
                     requestedPermissions: params["permissions"] as? [String: Any]
                 )
+                localApprovalSoundHandler()
                 if Self.shouldResetDesktopActivity(
                     for: .waitingForApproval,
                     desktopActivity: desktopActivity,
@@ -429,33 +487,67 @@ final class CodexAppServerClient {
         }
     }
 
-    func respondToRemoteApproval(decision: String) -> (success: Bool, message: String) {
+    func respondToRemoteApproval(
+        decision: String,
+        requestKey: String? = nil
+    ) async -> (success: Bool, message: String) {
         let normalizedDecision = decision.trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["accept", "acceptForSession", "decline", "cancel"].contains(normalizedDecision) else {
             return (false, "지원하지 않는 승인 응답입니다.")
         }
-        guard isConnected, let pendingApproval = pendingRemoteApproval else {
+        let requestCount = desktopPendingApprovals.count + (pendingRemoteApproval == nil ? 0 : 1)
+        guard requestCount == 1 else {
             return (false, "현재 대기 중인 Codex 승인 요청이 없습니다.")
         }
 
-        pendingRemoteApproval = nil
-        let result: [String: Any]
-        switch pendingApproval.responseKind {
-        case .decision:
-            result = ["decision": normalizedDecision]
-        case .permissions:
-            let approved = normalizedDecision == "accept" || normalizedDecision == "acceptForSession"
-            result = [
-                "scope": normalizedDecision == "acceptForSession" ? "session" : "turn",
-                "permissions": approved ? (pendingApproval.requestedPermissions ?? [:]) : [:]
-            ]
+        if let pendingApproval = pendingRemoteApproval {
+            guard pendingApproval.canRespond else {
+                return (false, "이 확인 요청은 Mac의 Codex 화면에서 응답해 주세요.")
+            }
+            let currentKey = "appServer:\(pendingApproval.requestID)"
+            guard requestKey == currentKey else {
+                return (false, "승인 요청이 바뀌었습니다. 현재 요청을 다시 확인해 주세요.")
+            }
+            guard isConnected else { return (false, "Codex App Server 연결이 끊겼습니다.") }
+            pendingRemoteApproval = nil
+            let result: [String: Any]
+            switch pendingApproval.responseKind {
+            case .decision:
+                result = ["decision": normalizedDecision]
+            case .permissions:
+                let approved = normalizedDecision == "accept" || normalizedDecision == "acceptForSession"
+                result = [
+                    "scope": normalizedDecision == "acceptForSession" ? "session" : "turn",
+                    "permissions": approved ? (pendingApproval.requestedPermissions ?? [:]) : [:]
+                ]
+            case .unsupported:
+                return (false, "이 확인 요청은 Mac의 Codex 화면에서 응답해 주세요.")
+            }
+            write(["id": pendingApproval.requestID, "result": result])
+            activity = .running
+            message = normalizedDecision == "accept" || normalizedDecision == "acceptForSession"
+                ? "Codex 승인을 전송했습니다."
+                : "Codex 거부를 전송했습니다."
+            return (true, message)
         }
-        write(["id": pendingApproval.requestID, "result": result])
-        activity = .running
-        message = normalizedDecision == "accept" || normalizedDecision == "acceptForSession"
-            ? "Codex 승인을 전송했습니다."
-            : "Codex 거부를 전송했습니다."
-        return (true, message)
+
+        guard let requestKey,
+              let pendingApproval = desktopPendingApprovals.first,
+              pendingApproval.requestKey == requestKey,
+              desktopApprovalResponseInFlightKey == nil else {
+            return (false, "승인 요청이 바뀌었거나 LinkDeck에서 처리할 수 없습니다.")
+        }
+        desktopApprovalResponseInFlightKey = requestKey
+        let response = await Task.detached(priority: .userInitiated) {
+            CodexDesktopApprovalIPC.respond(requestKey: requestKey, decision: normalizedDecision)
+        }.value
+        desktopApprovalResponseInFlightKey = nil
+        if response.success {
+            desktopPendingApprovals.removeAll { $0.requestKey == requestKey }
+            message = response.message
+            publishRemoteState()
+        }
+        return response
     }
 
     private func consumeDiagnostic(_ text: String) {
@@ -526,12 +618,25 @@ final class CodexAppServerClient {
         refreshed ?? existing
     }
 
-    private static func isRemoteApprovalRequest(_ method: String) -> Bool {
+    static func isRemoteApprovalRequest(_ method: String) -> Bool {
         let normalized = method.lowercased()
-        return normalized.contains("requestapproval") || normalized.contains("confirmation")
+        return normalized.contains("requestapproval")
+            || normalized.contains("confirmation")
+            || normalized == "mcpserver/elicitation/request"
     }
 
-    private static func remoteApprovalTitle(for method: String) -> String {
+    private static func remoteApprovalResponseKind(for method: String) -> PendingRemoteApproval.ResponseKind {
+        switch method.lowercased() {
+        case "item/commandexecution/requestapproval", "item/filechange/requestapproval":
+            return .decision
+        case "item/permissions/requestapproval":
+            return .permissions
+        default:
+            return .unsupported
+        }
+    }
+
+    static func remoteApprovalTitle(for method: String) -> String {
         let normalized = method.lowercased()
         if normalized.contains("filechange") {
             return "파일 변경 승인 필요"
@@ -539,11 +644,20 @@ final class CodexAppServerClient {
         if normalized.contains("permission") {
             return "권한 승인 필요"
         }
+        if normalized == "mcpserver/elicitation/request" {
+            return "Codex 확인 필요"
+        }
         return "Codex 승인 필요"
     }
 
-    private static func remoteApprovalDetail(from params: [String: Any]) -> String {
+    static func remoteApprovalDetail(from params: [String: Any]) -> String {
         var parts = [String]()
+        if let message = params["message"] as? String, !message.isEmpty {
+            parts.append(message)
+        }
+        if let serverName = params["serverName"] as? String, !serverName.isEmpty {
+            parts.append("MCP 서버: \(serverName)")
+        }
         if let reason = params["reason"] as? String, !reason.isEmpty {
             parts.append(reason)
         }
@@ -559,10 +673,11 @@ final class CodexAppServerClient {
     func publishRemoteState() {
         let smartphonePages = remoteSmartphonePagesProvider()
         let completionSound = remoteCompletionSoundProvider()
+        let approvalSound = remoteApprovalSoundProvider()
         let remoteActivity = Self.remoteActivity(
             desktopActivity: desktopActivity,
             appServerActivity: activity,
-            hasPendingApproval: pendingRemoteApproval != nil
+            hasPendingApproval: pendingRemoteApproval != nil || !desktopPendingApprovals.isEmpty
         )
         let remoteMessage = Self.remoteMessage(
             for: remoteActivity,
@@ -578,15 +693,48 @@ final class CodexAppServerClient {
             fiveHourUsage: fiveHourUsage,
             smartphonePages: smartphonePages,
             smartphoneIconAssets: SmartphoneIconAssetProvider.assets(for: smartphonePages),
-            approval: pendingRemoteApproval.map {
-                CodexRemoteApproval(requestID: $0.requestID, title: $0.title, detail: $0.detail)
-            },
+            approval: remoteApprovalForPhone,
             completionEventID: remoteCompletionEventID,
             activeSessionCount: remoteActiveSessionCount,
             completionSoundVolumePercent: completionSound.volumePercent,
-            codexPhoneTheme: remoteCodexPhoneThemeProvider()
+            approvalSoundVolumePercent: approvalSound.volumePercent,
+            codexPhoneTheme: remoteCodexPhoneThemeProvider(),
+            macSleepStatus: MacSleepStatus.current()
         )
-        remoteBridge.publish(state, completionSound: completionSound)
+        remoteBridge.publish(state, completionSound: completionSound, approvalSound: approvalSound)
+    }
+
+    private var remoteApprovalForPhone: CodexRemoteApproval? {
+        var approvals = desktopPendingApprovals.map {
+            CodexRemoteApproval(
+                requestID: $0.numericRequestID,
+                title: $0.title,
+                detail: $0.detail,
+                requestKey: $0.requestKey,
+                source: "desktop",
+                canRespond: $0.canRespond
+            )
+        }
+        if let appServerApproval = pendingRemoteApproval {
+            approvals.append(CodexRemoteApproval(
+                requestID: appServerApproval.requestID,
+                title: appServerApproval.title,
+                detail: appServerApproval.detail,
+                requestKey: "appServer:\(appServerApproval.requestID)",
+                source: "appServer",
+                canRespond: appServerApproval.canRespond
+            ))
+        }
+        guard !approvals.isEmpty else { return nil }
+        guard approvals.count == 1 else {
+            return CodexRemoteApproval(
+                title: "승인 요청 여러 건",
+                detail: "Codex에 대기 중인 승인 요청이 \(approvals.count)건 있습니다. Mac에서 확인해 주세요.",
+                source: "multiple",
+                canRespond: false
+            )
+        }
+        return approvals[0]
     }
 
     static func remoteActivity(

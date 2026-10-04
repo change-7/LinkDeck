@@ -16,6 +16,33 @@ enum CodexCompletionSoundOutputTarget: String, CaseIterable, Codable, Identifiab
     }
 }
 
+enum CodexApprovalSoundOutputTarget: String, CaseIterable, Codable, Identifiable, Sendable {
+    case phone
+    case mac
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .phone: "휴대폰"
+        case .mac: "Mac"
+        }
+    }
+
+    var playsOnMac: Bool { self == .mac }
+    var playsOnPhone: Bool { self == .phone }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self)
+        if value == "both" { self = .phone; return }
+        guard let target = Self(rawValue: value) else {
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unknown approval sound output target")
+        }
+        self = target
+    }
+}
+
 struct CodexCompletionSoundOption: Identifiable, Equatable, Sendable {
     let id: String
     let title: String
@@ -55,15 +82,25 @@ final class CodexCompletionSoundLibrary {
     private let storageDirectory: URL
     private let recordsKey = "linkdeck.codex-completion-sounds"
     private let selectedSoundKey = "linkdeck.codex-completion-sound"
+    private let selectedApprovalSoundKey = "linkdeck.codex-approval-sound"
+    private let approvalSoundConfiguredKey = "linkdeck.codex-approval-sound-configured"
+    private let approvalSoundOutputTargetKey = "linkdeck.codex-approval-sound-output-target"
     private let outputTargetKey = "linkdeck.codex-completion-sound-output-target"
     private let volumePercentKey = "linkdeck.codex-completion-sound-volume-percent"
+    private let approvalVolumePercentKey = "linkdeck.codex-approval-sound-volume-percent"
     private var importedSounds: [ImportedSound]
     @ObservationIgnored private var completionPlayer: AVAudioPlayer?
+    @ObservationIgnored private var approvalPlayer: AVAudioPlayer?
 
     private(set) var selectedSoundID: String
     private(set) var outputTarget: CodexCompletionSoundOutputTarget
     private(set) var volumePercent: Int
     private(set) var remoteSelection: CodexRemoteCompletionSound
+    private(set) var selectedApprovalSoundID: String
+    private(set) var approvalSoundConfigured: Bool
+    private(set) var approvalSoundOutputTarget: CodexApprovalSoundOutputTarget
+    private(set) var approvalVolumePercent: Int
+    private(set) var remoteApprovalSelection: CodexRemoteApprovalSound
 
     init(
         preferences: UserDefaults = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard,
@@ -84,12 +121,25 @@ final class CodexCompletionSoundLibrary {
         let savedID = preferences.string(forKey: selectedSoundKey)
         selectedSoundID = savedID.flatMap { availableIDs.contains($0) ? $0 : nil }
             ?? (bundledVoiceExists ? Self.bundledVoiceID : Self.builtInID)
+        let savedApprovalID = preferences.string(forKey: selectedApprovalSoundKey)
+        selectedApprovalSoundID = savedApprovalID.flatMap { availableIDs.contains($0) ? $0 : nil }
+            ?? Self.builtInID
+        approvalSoundConfigured = preferences.bool(forKey: approvalSoundConfiguredKey)
+        approvalSoundOutputTarget = CodexApprovalSoundOutputTarget(
+            rawValue: preferences.string(forKey: approvalSoundOutputTargetKey) ?? ""
+        ) ?? .phone
+        if preferences.string(forKey: approvalSoundOutputTargetKey) == "both" {
+            preferences.set("phone", forKey: approvalSoundOutputTargetKey)
+        }
+        approvalVolumePercent = min(max(preferences.object(forKey: approvalVolumePercentKey) as? Int ?? 100, 0), 100)
         outputTarget = CodexCompletionSoundOutputTarget(
             rawValue: preferences.string(forKey: outputTargetKey) ?? ""
         ) ?? .phone
         volumePercent = min(max(preferences.object(forKey: volumePercentKey) as? Int ?? 100, 0), 100)
         remoteSelection = .builtIn
+        remoteApprovalSelection = .builtIn
         remoteSelection = makeRemoteSelection()
+        remoteApprovalSelection = makeApprovalRemoteSelection()
     }
 
     var options: [CodexCompletionSoundOption] {
@@ -126,6 +176,35 @@ final class CodexCompletionSoundLibrary {
         remoteSelection = makeRemoteSelection()
     }
 
+    func selectApprovalSound(_ id: String) {
+        guard options.contains(where: { $0.id == id }) else { return }
+        selectedApprovalSoundID = id
+        approvalSoundConfigured = true
+        preferences.set(id, forKey: selectedApprovalSoundKey)
+        preferences.set(true, forKey: approvalSoundConfiguredKey)
+        remoteApprovalSelection = makeApprovalRemoteSelection()
+    }
+
+    func setApprovalSoundOutputTarget(_ target: CodexApprovalSoundOutputTarget) {
+        guard approvalSoundOutputTarget != target else { return }
+        approvalSoundOutputTarget = target
+        preferences.set(target.rawValue, forKey: approvalSoundOutputTargetKey)
+        if target == .phone {
+            approvalPlayer?.stop()
+            approvalPlayer = nil
+        }
+        remoteApprovalSelection = makeApprovalRemoteSelection()
+    }
+
+    func setApprovalVolumePercent(_ value: Int) {
+        let nextValue = min(max(value, 0), 100)
+        guard approvalVolumePercent != nextValue else { return }
+        approvalVolumePercent = nextValue
+        preferences.set(nextValue, forKey: approvalVolumePercentKey)
+        approvalPlayer?.volume = Float(nextValue) / 100
+        remoteApprovalSelection = makeApprovalRemoteSelection()
+    }
+
     func setOutputTarget(_ target: CodexCompletionSoundOutputTarget) {
         guard outputTarget != target else { return }
         outputTarget = target
@@ -135,6 +214,11 @@ final class CodexCompletionSoundLibrary {
             completionPlayer = nil
         }
         remoteSelection = makeRemoteSelection()
+    }
+
+    func setNotificationSoundOutputTarget(_ target: CodexCompletionSoundOutputTarget) {
+        setOutputTarget(target)
+        setApprovalSoundOutputTarget(target == .mac ? .mac : .phone)
     }
 
     func setVolumePercent(_ value: Int) {
@@ -156,6 +240,16 @@ final class CodexCompletionSoundLibrary {
         player.play()
     }
 
+    func playSelectedApprovalSoundOnMac() {
+        guard approvalSoundOutputTarget.playsOnMac else { return }
+        guard let url = previewURL(for: selectedApprovalSoundID),
+              let player = try? AVAudioPlayer(contentsOf: url) else { return }
+        approvalPlayer?.stop()
+        approvalPlayer = player
+        player.volume = Float(approvalVolumePercent) / 100
+        player.play()
+    }
+
     func previewURL(for id: String) -> URL? {
         if id == Self.builtInID {
             return Bundle.module.url(forResource: "codex_completion_chime", withExtension: "mp3")
@@ -165,7 +259,8 @@ final class CodexCompletionSoundLibrary {
         return storageDirectory.appendingPathComponent(imported.fileName)
     }
 
-    func importSound(from sourceURL: URL) throws {
+    @discardableResult
+    func importSound(from sourceURL: URL, selectForCompletion: Bool = true) throws -> String {
         let fileExtension = sourceURL.pathExtension.lowercased()
         let mimeType: String
         switch fileExtension {
@@ -197,7 +292,8 @@ final class CodexCompletionSoundLibrary {
         if let encoded = try? JSONEncoder().encode(importedSounds) {
             preferences.set(encoded, forKey: recordsKey)
         }
-        select(id)
+        if selectForCompletion { select(id) }
+        return id
     }
 
     private func makeRemoteSelection() -> CodexRemoteCompletionSound {
@@ -237,6 +333,65 @@ final class CodexCompletionSoundLibrary {
             data: data.base64EncodedString(),
             outputTarget: .phone,
             volumePercent: volumePercent
+        )
+    }
+
+    private func makeApprovalRemoteSelection() -> CodexRemoteApprovalSound {
+        guard approvalSoundConfigured else {
+            return CodexRemoteApprovalSound(
+                id: Self.builtInID,
+                configured: false,
+                outputTarget: approvalSoundOutputTarget,
+                volumePercent: approvalVolumePercent
+            )
+        }
+        guard selectedApprovalSoundID != Self.builtInID else {
+            return CodexRemoteApprovalSound(
+                id: Self.builtInID,
+                configured: true,
+                outputTarget: approvalSoundOutputTarget,
+                volumePercent: approvalVolumePercent
+            )
+        }
+
+        let fileURL: URL
+        let fileName: String
+        let mimeType: String
+        let title = options.first(where: { $0.id == selectedApprovalSoundID })?.title
+        if selectedApprovalSoundID == Self.bundledVoiceID, let bundledURL = Self.bundledVoiceURL {
+            fileURL = bundledURL
+            fileName = bundledURL.lastPathComponent
+            mimeType = "audio/wav"
+        } else if let imported = importedSounds.first(where: { $0.id == selectedApprovalSoundID }) {
+            fileURL = storageDirectory.appendingPathComponent(imported.fileName)
+            fileName = imported.fileName
+            mimeType = imported.mimeType
+        } else {
+            return CodexRemoteApprovalSound(
+                id: Self.builtInID,
+                configured: true,
+                outputTarget: approvalSoundOutputTarget,
+                volumePercent: approvalVolumePercent
+            )
+        }
+
+        guard let data = try? Data(contentsOf: fileURL), data.count <= 10 * 1_024 * 1_024 else {
+            return CodexRemoteApprovalSound(
+                id: Self.builtInID,
+                configured: true,
+                outputTarget: approvalSoundOutputTarget,
+                volumePercent: approvalVolumePercent
+            )
+        }
+        return CodexRemoteApprovalSound(
+            id: selectedApprovalSoundID,
+            title: title,
+            fileName: fileName,
+            mimeType: mimeType,
+            data: data.base64EncodedString(),
+            configured: true,
+            outputTarget: approvalSoundOutputTarget,
+            volumePercent: approvalVolumePercent
         )
     }
 

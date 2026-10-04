@@ -12,6 +12,6 @@
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>LSMultipleInstancesProhibited</key><true/>
 <key>NSHighResolutionCapable</key><true/>
-<key>NSAppleEventsUsageDescription</key><string>LinkDeck이 버튼에 등록된 터미널 명령을 실행하기 위해 Terminal을 제어합니다.</string>
+<key>NSAppleEventsUsageDescription</key><string>LinkDeck이 등록된 터미널 명령을 실행하거나 브라우저의 현재 탭에서 웹페이지를 열기 위해 앱을 제어합니다.</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>

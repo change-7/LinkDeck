@@ -10,6 +10,8 @@ struct CodexConnectionView: View {
         case presets
         case theme
         case completionSound
+        case approvalSound
+        case chatGPTTunnel
 
         var id: Self { self }
 
@@ -20,6 +22,8 @@ struct CodexConnectionView: View {
             case .presets: "모션 프리셋"
             case .theme: "휴대폰 스킨"
             case .completionSound: "완료 사운드"
+            case .approvalSound: "승인 사운드"
+            case .chatGPTTunnel: "ChatGPT 연결"
             }
         }
 
@@ -30,6 +34,8 @@ struct CodexConnectionView: View {
             case .presets: "square.grid.3x3"
             case .theme: "paintpalette"
             case .completionSound: "speaker.wave.2"
+            case .approvalSound: "bell.badge.waveform"
+            case .chatGPTTunnel: "network"
             }
         }
     }
@@ -39,11 +45,13 @@ struct CodexConnectionView: View {
     @Bindable var store: LaunchpadStore
     let midi: LaunchpadMIDIManager
     let codex: CodexAppServerClient
+    let chatGPTTunnel: ChatGPTTunnelController
 
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
     @State private var selectedTab: Tab = .display
-    @State private var showingCompletionSoundError = false
-    @State private var completionSoundError = ""
+    @State private var showingSoundError = false
+    @State private var soundError = ""
     @State private var previewPlayer: AVAudioPlayer?
     @State private var previewingSoundID: String?
     @State private var previewMonitor: Task<Void, Never>?
@@ -80,6 +88,10 @@ struct CodexConnectionView: View {
                     phoneThemePane
                 case .completionSound:
                     completionSoundPane
+                case .approvalSound:
+                    approvalSoundPane
+                case .chatGPTTunnel:
+                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -137,6 +149,14 @@ struct CodexConnectionView: View {
 
     private var displayPane: some View {
         Form {
+            Section("Mac 화면 모드") {
+                Picker("화면 모드", selection: $macDarkModeEnabled) {
+                    Text("다크 모드").tag(true)
+                    Text("라이트 모드").tag(false)
+                }
+                .pickerStyle(.segmented)
+            }
+
             Section("Codex 연결") {
                 connectionCard
             }
@@ -295,7 +315,7 @@ struct CodexConnectionView: View {
                             .accessibilityIdentifier("completion-sound-select-\(option.id)")
 
                             Button {
-                                toggleCompletionSoundPreview(option.id)
+                                toggleSoundPreview(option.id)
                             } label: {
                                 Image(systemName: previewingSoundID == option.id ? "stop.fill" : "play.fill")
                                     .frame(width: 30, height: 30)
@@ -309,7 +329,7 @@ struct CodexConnectionView: View {
                     }
                 }
 
-                Button(action: importCompletionSound) {
+                Button { importCompletionSound() } label: {
                     Label("음성 파일 추가…", systemImage: "plus")
                 }
                 Text("WAV, MP3, M4A, OGG 파일을 추가할 수 있습니다. 휴대폰을 선택하면 연결된 휴대폰으로 소리를 전송합니다. (파일당 최대 10MB)")
@@ -320,10 +340,10 @@ struct CodexConnectionView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(20)
         }
-        .alert("완료 사운드 오류", isPresented: $showingCompletionSoundError) {
+        .alert("사운드 오류", isPresented: $showingSoundError) {
             Button("확인", role: .cancel) {}
         } message: {
-            Text(completionSoundError)
+            Text(soundError)
         }
         .onDisappear {
             previewMonitor?.cancel()
@@ -333,7 +353,114 @@ struct CodexConnectionView: View {
         }
     }
 
-    private func toggleCompletionSoundPreview(_ id: String) {
+    private var approvalSoundPane: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("승인·확인 요청이 오면 선택한 위치에서 사운드를 재생합니다. 미리듣기는 Mac에서 재생됩니다.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Picker("재생 기기", selection: Binding(
+                    get: { store.codexCompletionSounds.approvalSoundOutputTarget },
+                    set: { target in
+                        store.codexCompletionSounds.setApprovalSoundOutputTarget(target)
+                        codex.publishRemoteState()
+                    }
+                )) {
+                    ForEach(CodexApprovalSoundOutputTarget.allCases) { target in
+                        Text(target.title).tag(target)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("approval-sound-output-target")
+
+                HStack(spacing: 12) {
+                    Text("볼륨")
+                    Slider(value: Binding(
+                        get: { Double(store.codexCompletionSounds.approvalVolumePercent) },
+                        set: { value in
+                            store.codexCompletionSounds.setApprovalVolumePercent(Int(value.rounded()))
+                            codex.publishRemoteState()
+                        }
+                    ), in: 0...100, step: 1)
+                    .accessibilityLabel("승인음 볼륨")
+                    .accessibilityIdentifier("approval-sound-volume-slider")
+                    Text("\(store.codexCompletionSounds.approvalVolumePercent)%")
+                        .monospacedDigit()
+                        .frame(width: 44, alignment: .trailing)
+                        .foregroundStyle(.secondary)
+                }
+                .onChange(of: store.codexCompletionSounds.approvalVolumePercent) { _, value in
+                    previewPlayer?.volume = Float(value) / 100
+                }
+
+                VStack(spacing: 8) {
+                    ForEach(store.codexCompletionSounds.options) { option in
+                        HStack(spacing: 8) {
+                            Button {
+                                store.codexCompletionSounds.selectApprovalSound(option.id)
+                                codex.publishRemoteState()
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: store.codexCompletionSounds.selectedApprovalSoundID == option.id
+                                        ? "largecircle.fill.circle"
+                                        : "circle")
+                                        .foregroundStyle(store.codexCompletionSounds.selectedApprovalSoundID == option.id
+                                            ? Color.accentColor
+                                            : Color.secondary)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(approvalSoundTitle(for: option)).font(.headline)
+                                        Text(option.detail)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("approval-sound-select-\(option.id)")
+
+                            Button {
+                                toggleSoundPreview(option.id)
+                            } label: {
+                                Image(systemName: previewingSoundID == option.id ? "stop.fill" : "play.fill")
+                                    .frame(width: 30, height: 30)
+                            }
+                            .buttonStyle(.bordered)
+                            .accessibilityLabel(previewingSoundID == option.id ? "미리듣기 중지" : "\(approvalSoundTitle(for: option)) 미리듣기")
+                            .accessibilityIdentifier("approval-sound-preview-\(option.id)")
+                        }
+                        .padding(8)
+                        .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                }
+
+                Button { importCompletionSound(selectForApproval: true) } label: {
+                    Label("승인 사운드 파일 추가…", systemImage: "plus")
+                }
+                Text("WAV, MP3, M4A, OGG 파일을 선택할 수 있습니다. 기본음을 선택하면 휴대폰은 기본 승인 알림음을 사용합니다. (파일당 최대 10MB)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .alert("사운드 오류", isPresented: $showingSoundError) {
+            Button("확인", role: .cancel) {}
+        } message: {
+            Text(soundError)
+        }
+        .onDisappear {
+            previewMonitor?.cancel()
+            previewPlayer?.stop()
+            previewPlayer = nil
+            previewingSoundID = nil
+        }
+    }
+
+    private func toggleSoundPreview(_ id: String) {
         if previewingSoundID == id {
             previewMonitor?.cancel()
             previewPlayer?.stop()
@@ -347,21 +474,23 @@ struct CodexConnectionView: View {
         previewPlayer = nil
         previewingSoundID = nil
         guard let url = store.codexCompletionSounds.previewURL(for: id) else {
-            completionSoundError = "미리 들을 수 있는 오디오 파일을 찾지 못했습니다."
-            showingCompletionSoundError = true
+            soundError = "미리 들을 수 있는 오디오 파일을 찾지 못했습니다."
+            showingSoundError = true
             return
         }
 
         do {
             let player = try AVAudioPlayer(contentsOf: url)
-            player.volume = Float(store.codexCompletionSounds.volumePercent) / 100
+            player.volume = Float(selectedTab == .approvalSound
+                ? store.codexCompletionSounds.approvalVolumePercent
+                : store.codexCompletionSounds.volumePercent) / 100
             previewPlayer = player
             previewingSoundID = id
             guard player.play() else {
                 previewPlayer = nil
                 previewingSoundID = nil
-                completionSoundError = "이 오디오 파일을 재생할 수 없습니다."
-                showingCompletionSoundError = true
+                soundError = "이 오디오 파일을 재생할 수 없습니다."
+                showingSoundError = true
                 return
             }
             previewMonitor = Task { @MainActor in
@@ -373,23 +502,33 @@ struct CodexConnectionView: View {
                 previewingSoundID = nil
             }
         } catch {
-            completionSoundError = error.localizedDescription
-            showingCompletionSoundError = true
+            soundError = error.localizedDescription
+            showingSoundError = true
         }
     }
 
-    private func importCompletionSound() {
+    private func approvalSoundTitle(for option: CodexCompletionSoundOption) -> String {
+        if option.id == CodexCompletionSoundLibrary.builtInID { return "기본 알림음" }
+        if option.id == CodexCompletionSoundLibrary.bundledVoiceID { return "완료 음성" }
+        return option.title
+    }
+
+    private func importCompletionSound(selectForApproval: Bool = false) {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
-            try store.codexCompletionSounds.importSound(from: url)
+            let importedID = try store.codexCompletionSounds.importSound(
+                from: url,
+                selectForCompletion: !selectForApproval
+            )
+            if selectForApproval { store.codexCompletionSounds.selectApprovalSound(importedID) }
             codex.publishRemoteState()
         } catch {
-            completionSoundError = error.localizedDescription
-            showingCompletionSoundError = true
+            soundError = error.localizedDescription
+            showingSoundError = true
         }
     }
 

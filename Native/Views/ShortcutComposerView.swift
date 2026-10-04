@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct ShortcutComposerView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Binding var value: String
     @Binding var targetAppBundleIdentifier: String
     @Binding var launchTargetAppIfNeeded: Bool
@@ -22,11 +24,11 @@ struct ShortcutComposerView: View {
 
             HStack {
                 if let windowAction = MacWindowAction(rawValue: draft) {
-                    MacShortcutGlyphs(action: windowAction, tint: .orange)
+                    MacShortcutGlyphs(action: windowAction, tint: theme.accent)
                 } else {
                     Text(previewLabel)
                         .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundStyle(draft.isEmpty ? Color.secondary : Color.orange)
+                        .foregroundStyle(draft.isEmpty ? Color.secondary : theme.accent)
                 }
                 Spacer()
                 if recorder.isRecording {
@@ -35,7 +37,7 @@ struct ShortcutComposerView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 7))
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 7))
 
             HStack(spacing: 8) {
                 Button("삭제") {
@@ -46,8 +48,8 @@ struct ShortcutComposerView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
-                .foregroundStyle(.white.opacity(0.82))
-                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(theme.foreground.opacity(0.82))
+                .background(theme.foreground.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
                 .buttonStyle(.plain)
                 .help("현재 등록된 단축키를 지웁니다.")
 
@@ -58,8 +60,8 @@ struct ShortcutComposerView: View {
                 .font(.system(size: 12, weight: .bold))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 9)
-                .foregroundStyle(draft.isEmpty ? Color.secondary : Color.black)
-                .background(draft.isEmpty ? .white.opacity(0.07) : Color.orange, in: RoundedRectangle(cornerRadius: 8))
+                .foregroundStyle(draft.isEmpty ? Color.secondary : theme.accentForeground)
+                .background(draft.isEmpty ? theme.foreground.opacity(0.07) : theme.accent, in: RoundedRectangle(cornerRadius: 8))
                 .buttonStyle(.plain)
                 .disabled(draft.isEmpty)
                 .help("현재 입력된 키 조합을 이 버튼에 저장합니다.")
@@ -104,7 +106,7 @@ struct ShortcutComposerView: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: selectedWindowAction?.symbol ?? "macwindow")
-                    .foregroundStyle(selectedWindowAction == nil ? Color.secondary : Color.orange)
+                    .foregroundStyle(selectedWindowAction == nil ? Color.secondary : theme.accent)
                 if let selectedWindowAction {
                     Text(selectedWindowAction.title)
                         .font(.system(size: 12, weight: .semibold))
@@ -122,8 +124,8 @@ struct ShortcutComposerView: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .foregroundStyle(.white)
-            .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+            .foregroundStyle(theme.foreground)
+            .background(theme.foreground.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
         }
         .menuStyle(.borderlessButton)
         .help("직접 입력한 단축키 대신 맥 창 배치 동작을 선택합니다.")
@@ -137,8 +139,8 @@ struct ShortcutComposerView: View {
         .font(.system(size: 12, weight: .semibold))
         .frame(maxWidth: .infinity)
         .padding(.vertical, 9)
-        .foregroundStyle(.white)
-        .background(.white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(theme.foreground)
+        .background(theme.foreground.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
         .buttonStyle(.plain)
         .help("단축키를 보낼 macOS 앱을 선택합니다. 선택하지 않으면 현재 활성 앱에 보냅니다.")
     }
@@ -150,8 +152,8 @@ struct ShortcutComposerView: View {
         .font(.system(size: 12, weight: .semibold))
         .frame(maxWidth: .infinity)
         .padding(.vertical, 9)
-        .foregroundStyle(recorder.isRecording ? Color.black : Color.white)
-        .background(recorder.isRecording ? Color.yellow : .white.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
+        .foregroundStyle(recorder.isRecording ? Color.black : theme.foreground)
+        .background(recorder.isRecording ? Color.yellow : theme.foreground.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
         .buttonStyle(.plain)
         .help("누른 순서대로 단축키를 기록합니다. 예: ⌘ → ⌃ → ⇧ → 4. Esc는 취소입니다.")
     }
@@ -170,11 +172,11 @@ struct ShortcutComposerView: View {
                         } else {
                             Image(systemName: "app.fill")
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(theme.accent)
                         }
                         Text(targetApplicationDescription)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.78))
+                            .foregroundStyle(theme.foreground.opacity(0.78))
                             .lineLimit(1)
                         Spacer()
                         Button("해제") {

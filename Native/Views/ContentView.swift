@@ -24,18 +24,15 @@ final class CodexMotionActivityRouter {
     }
 }
 
-private enum MainScreen: Hashable {
-    case launchpadMini
-    case smartphoneButtons
-}
-
 struct ContentView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: LaunchpadStore
     let runner: MacActionRunner
     let midi: LaunchpadMIDIManager
     let codex: CodexAppServerClient
     let codexActivity: CodexActivityController
     let launchpadLEDBubble: LaunchpadLEDStatusBubble
+    let chatGPTTunnel: ChatGPTTunnelController
     @State private var editedPad = Pad(id: "grid_0_0")
     @State private var showingPermissionAlert = false
     @State private var selectedPageLEDIndex: Int?
@@ -56,7 +53,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color(red: 0.035, green: 0.035, blue: 0.045).ignoresSafeArea()
+            MacAppearance(scheme: colorScheme).canvas.ignoresSafeArea()
             launchpadContent
         }
         .frame(minWidth: 1100, minHeight: 640)
@@ -72,11 +69,13 @@ struct ContentView: View {
             codex.setRemoteSmartphonePagesProvider { SmartphoneDefaults.persistedPages() }
             codex.setRemoteCodexPhoneThemeProvider { store.codexPhoneTheme }
             codex.setRemoteCompletionSoundProvider { store.codexCompletionSounds.remoteSelection }
-            codex.onRemoteCompletionSoundTarget = { target in
-                store.codexCompletionSounds.setOutputTarget(target)
+            codex.setRemoteApprovalSoundProvider { store.codexCompletionSounds.remoteApprovalSelection }
+            codex.onRemoteSoundOutputTarget = { target in
+                store.codexCompletionSounds.setNotificationSoundOutputTarget(target)
                 codex.publishRemoteState()
             }
             codex.setLocalCompletionSoundHandler { store.codexCompletionSounds.playSelectedSoundOnMac() }
+            codex.setLocalApprovalSoundHandler { store.codexCompletionSounds.playSelectedApprovalSoundOnMac() }
             synchronizeSelection()
             midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
             synchronizeWeeklyUsageDisplay()
@@ -144,7 +143,8 @@ struct ContentView: View {
             CodexConnectionView(
                 store: store,
                 midi: midi,
-                codex: codex
+                codex: codex,
+                chatGPTTunnel: chatGPTTunnel
             )
         }
         .sheet(isPresented: $showingBackupRestore) {
@@ -153,13 +153,20 @@ struct ContentView: View {
     }
 
     private var launchpadContent: some View {
-        VStack(spacing: 10) {
-            launchpadToolbar
+        Group {
             switch selectedMainScreen {
             case .launchpadMini:
                 launchpadMiniContent
             case .smartphoneButtons:
-                SmartphoneSettingsView(store: store, runner: runner)
+                SmartphoneSettingsView(
+                    store: store,
+                    runner: runner,
+                    selectedMainScreen: $selectedMainScreen,
+                    codexIsConnected: codex.isConnected,
+                    midiIsConnected: midi.isConnected,
+                    onOpenBackupRestore: { showingBackupRestore = true },
+                    onOpenCodexSettings: { showingCodexConnection = true }
+                )
                     .frame(minWidth: 900, minHeight: 520)
             }
         }
@@ -173,7 +180,12 @@ struct ContentView: View {
                 InspectorView(
                     pad: $editedPad,
                     pages: store.pages,
+                    selectedMainScreen: $selectedMainScreen,
                     selectedPageLEDIndex: selectedPageLEDIndex,
+                    codexIsConnected: codex.isConnected,
+                    midiIsConnected: midi.isConnected,
+                    onOpenBackupRestore: { showingBackupRestore = true },
+                    onOpenCodexSettings: { showingCodexConnection = true },
                     onSelectPageLED: { selectedPageLEDIndex = $0 },
                     onUpdatePageColor: { index, color, selected in
                         store.updatePageColor(color, selected: selected, at: index)
@@ -215,90 +227,9 @@ struct ContentView: View {
         }
     }
 
-    private var launchpadToolbar: some View {
-        ZStack {
-            HStack(spacing: 2) {
-                mainScreenToggleButton(
-                    .smartphoneButtons,
-                    title: "휴대폰",
-                    systemImage: "iphone"
-                )
-                mainScreenToggleButton(
-                    .launchpadMini,
-                    title: "런치패드 미니",
-                    systemImage: "square.grid.3x3"
-                )
-            }
-            .frame(width: 250, height: 30)
-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(.white.opacity(0.14)))
-            .shadow(color: .black.opacity(0.24), radius: 8, y: 3)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("화면 모드 선택")
-
-            HStack(spacing: 9) {
-                Spacer()
-                Button { showingBackupRestore = true } label: {
-                    Image(systemName: "externaldrive")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 32, height: 28)
-                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("설정·버튼 백업 및 복구")
-                .help("Mac 버튼, 스마트폰 버튼, Codex 모션 설정을 백업하거나 복구합니다.")
-                Button { showingCodexConnection = true } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 32, height: 28)
-                        .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Codex 설정")
-                Circle().fill(codex.isConnected ? .green : .gray).frame(width: 7, height: 7)
-                Circle().fill(midi.isConnected ? .green : .gray).frame(width: 7, height: 7)
-            }
-        }
-        .frame(maxWidth: 1120)
-        .foregroundStyle(.white)
-        .offset(y: -24)
-    }
-
-    private func mainScreenToggleButton(
-        _ screen: MainScreen,
-        title: String,
-        systemImage: String
-    ) -> some View {
-        let isAvailable = screen != .launchpadMini || midi.isConnected
-        return Button {
-            guard isAvailable else { return }
-            selectedMainScreen = screen
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: systemImage)
-                Text(title)
-            }
-            .font(.system(size: 12, weight: .semibold))
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .contentShape(RoundedRectangle(cornerRadius: 7))
-            .foregroundStyle(selectedMainScreen == screen ? .white : .white.opacity(0.65))
-            .overlay(
-                RoundedRectangle(cornerRadius: 7)
-                    .stroke(selectedMainScreen == screen ? Color.orange.opacity(0.86) : .clear, lineWidth: 1)
-            )
-        }
-        .buttonStyle(.plain)
-        .disabled(!isAvailable)
-        .opacity(isAvailable ? 1 : 0.38)
-        .focusable(false)
-        .focusEffectDisabled()
-        .accessibilityLabel(title)
-        .accessibilityHint(isAvailable ? "" : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
-        .help(isAvailable ? title : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
-    }
-
     private var footer: some View {
         HStack {
-            HStack(spacing: 7) { Circle().fill(midi.isConnected ? .green : .gray).frame(width: 7, height: 7); Text(store.statusMessage) }
+            Text(store.statusMessage)
             Spacer()
             Button("단축키 권한") { showingPermissionAlert = true }
         }
@@ -306,7 +237,7 @@ struct ContentView: View {
         .foregroundStyle(.secondary)
         .padding(.horizontal, 26)
         .frame(height: 34)
-        .background(Color(red: 0.035, green: 0.035, blue: 0.045))
+        .background(MacAppearance(scheme: colorScheme).canvas)
     }
 
     private func selectPage(_ index: Int) {
