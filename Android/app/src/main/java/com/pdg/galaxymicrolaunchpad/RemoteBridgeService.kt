@@ -24,7 +24,8 @@ import java.util.Calendar
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
-internal fun remoteBridgeServiceStartMode(): Int = Service.START_STICKY
+internal fun remoteBridgeServiceStartMode(keepRunningInBackground: Boolean = true): Int =
+    if (keepRunningInBackground) Service.START_STICKY else Service.START_NOT_STICKY
 
 /** Keeps the Mac bridge alive independently of the Compose activity lifecycle. */
 class RemoteBridgeService : Service() {
@@ -81,7 +82,7 @@ class RemoteBridgeService : Service() {
                 setMicrophoneForeground(false)
             }
         }
-        return remoteBridgeServiceStartMode()
+        return remoteBridgeServiceStartMode(preferences.keepRunningInBackground)
     }
 
     override fun onDestroy() {

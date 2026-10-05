@@ -328,10 +328,6 @@ class MainActivity : ComponentActivity() {
         remoteBridge.onCodexCompletion = ::wakeForCodexCompletion
         remoteBridge.onCodexRunning = ::wakeForCodexRunning
         remoteBridge.onCodexApproval = ::wakeForCodexApproval
-        ContextCompat.startForegroundService(
-            this,
-            Intent(this, RemoteBridgeService::class.java).setAction(RemoteBridgeService.ACTION_START)
-        )
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
@@ -354,6 +350,21 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         isActivityResumed = true
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ContextCompat.startForegroundService(
+            this,
+            Intent(this, RemoteBridgeService::class.java).setAction(RemoteBridgeService.ACTION_START)
+        )
+    }
+
+    override fun onStop() {
+        if (!RemoteBridgePreferences(this).keepRunningInBackground) {
+            stopService(Intent(this, RemoteBridgeService::class.java))
+        }
+        super.onStop()
     }
 
     override fun onPause() {
@@ -1190,6 +1201,7 @@ private fun BridgeConnectionSettingsDialog(
     val context = LocalContext.current
     val preferences = remember { RemoteBridgePreferences(context) }
     var draftMacBridgeHost by remember { mutableStateOf(preferences.macBridgeHost) }
+    var keepRunningInBackground by remember { mutableStateOf(preferences.keepRunningInBackground) }
     var selectedKey by remember { mutableStateOf(preferences.screenOffOptionKey) }
     var sleepWindowEnabled by remember { mutableStateOf(preferences.sleepWindowEnabled) }
     var sleepWindowStart by remember { mutableStateOf(preferences.sleepWindowStartMinutes) }
@@ -1232,6 +1244,30 @@ private fun BridgeConnectionSettingsDialog(
                     },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("백그라운드 연결 유지", color = TextPrimary, fontSize = 14.sp)
+                    Spacer(Modifier.weight(1f))
+                    Switch(
+                        checked = keepRunningInBackground,
+                        onCheckedChange = { keepRunningInBackground = it },
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = Black,
+                            checkedTrackColor = Green,
+                            checkedBorderColor = Green,
+                            uncheckedThumbColor = TextMuted,
+                            uncheckedTrackColor = Tile,
+                            uncheckedBorderColor = TextMuted
+                        )
+                    )
+                }
+                Text(
+                    "끄면 앱을 벗어나거나 화면이 꺼질 때 Mac 연결을 중지합니다.",
+                    color = TextMuted,
+                    fontSize = 12.sp
                 )
                 Row(
                     modifier = Modifier
@@ -1483,6 +1519,7 @@ private fun BridgeConnectionSettingsDialog(
                     val nextMacBridgeHost = draftMacBridgeHost.trim()
                     val macBridgeHostChanged = preferences.macBridgeHost != nextMacBridgeHost
                     preferences.macBridgeHost = nextMacBridgeHost
+                    preferences.keepRunningInBackground = keepRunningInBackground
                     preferences.screenOffOptionKey = selectedKey
                     preferences.idleBlackoutEnabled = draftIdleBlackoutEnabled
                     preferences.displayKeepAwakeMinutes = draftDisplayKeepAwakeMinutes

@@ -78,6 +78,10 @@ internal class RemoteBridgePreferences(context: Context) {
             }
         }
 
+    var keepRunningInBackground: Boolean
+        get() = preferences.getBoolean(KEY_KEEP_RUNNING_IN_BACKGROUND, true)
+        set(value) { preferences.edit().putBoolean(KEY_KEEP_RUNNING_IN_BACKGROUND, value).apply() }
+
     var codexPhoneTheme: String
         get() = normalizeCodexPhoneTheme(
             preferences.getString(KEY_CODEX_PHONE_THEME, DefaultCodexPhoneTheme) ?: DefaultCodexPhoneTheme
@@ -177,6 +181,7 @@ internal class RemoteBridgePreferences(context: Context) {
     companion object {
         private const val PREFERENCES_NAME = "remote_bridge_preferences"
         private const val KEY_SCREEN_OFF_OPTION = "screen_off_option"
+        private const val KEY_KEEP_RUNNING_IN_BACKGROUND = "keep_running_in_background"
         private const val KEY_CODEX_PHONE_THEME = "codex_phone_theme"
         private const val KEY_MAC_BRIDGE_HOST = "mac_bridge_host"
         private const val KEY_APPROVAL_SOUND_NAME = "approval_sound_name"

@@ -133,6 +133,7 @@ class MainActivityTest {
     @Test
     fun remoteBridgeService_isStickyAcrossBackgroundProcessReclaim() {
         assertEquals(Service.START_STICKY, remoteBridgeServiceStartMode())
+        assertEquals(Service.START_NOT_STICKY, remoteBridgeServiceStartMode(keepRunningInBackground = false))
     }
 
     @Test
