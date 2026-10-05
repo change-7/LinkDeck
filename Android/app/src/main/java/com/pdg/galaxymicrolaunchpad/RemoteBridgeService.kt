@@ -56,7 +56,7 @@ class RemoteBridgeService : Service() {
         preferences = RemoteBridgePreferences(this)
         notificationManager = getSystemService(NotificationManager::class.java)
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, buildNotification())
+        setMicrophoneForeground(false)
         RemoteBridgeRuntime.client(this).apply {
             onMicrophoneStopped = { setMicrophoneForeground(false) }
             onCodexApprovalChanged = ::updateApprovalNotification
