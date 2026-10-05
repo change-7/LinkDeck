@@ -106,6 +106,7 @@ class RemoteBridgeClient(context: Context) {
         private const val CONNECT_TIMEOUT_MS = 2_000
         private const val READ_TIMEOUT_MS = 5_000
         private const val RETRY_DELAY_MS = 3_000L
+        private const val LOCAL_DISCOVERY_TIMEOUT_MS = 5_000L
         private const val MAX_COMPLETION_SOUND_BYTES = 10 * 1024 * 1024
         private const val MAX_APPROVAL_SOUND_BYTES = 10 * 1024 * 1024
     }
@@ -122,6 +123,7 @@ class RemoteBridgeClient(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val resetScheduler = CodexResetScheduler(appContext)
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var discoveryFallback: Runnable? = null
     @Volatile private var socket: Socket? = null
     @Volatile private var microphoneRecorder: AudioRecord? = null
     @Volatile private var microphoneCaptureRequested = false
@@ -225,10 +227,7 @@ class RemoteBridgeClient(context: Context) {
         hasReceivedRemoteState = false
         forceCodexRevealAfterReconnect = false
         started = false
-        discoveryListener?.let { listener ->
-            runCatching { nsdManager.stopServiceDiscovery(listener) }
-        }
-        discoveryListener = null
+        stopWirelessDiscovery()
         runCatching { socket?.close() }
         socket = null
         writer = null
@@ -244,30 +243,20 @@ class RemoteBridgeClient(context: Context) {
 
     private fun discoverWireless() {
         if (!started) return
+        stopWirelessDiscovery()
         val configuredHost = bridgePreferences.macBridgeHost
-        if (configuredHost.isNotEmpty()) {
-            connect(configuredHost, BRIDGE_PORT)
-            return
-        }
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(serviceType: String) = Unit
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                val foundListener = this
                 nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
                     override fun onServiceResolved(resolved: NsdServiceInfo) {
-                        if (started && bridgePreferences.macBridgeHost.isEmpty() &&
-                            connectionState != RemoteConnectionState.Connected
-                        ) {
-                            discoveryListener?.let { listener ->
-                                runCatching { nsdManager.stopServiceDiscovery(listener) }
-                            }
-                            val hostAddress = resolved.host.hostAddress
-                            if (hostAddress == null) {
-                                retryDiscovery()
-                                return
-                            }
-                            connect(hostAddress, resolved.port)
-                        }
+                        if (!started || discoveryListener !== foundListener ||
+                            connectionState == RemoteConnectionState.Connected) return
+                        val hostAddress = resolved.host?.hostAddress ?: return
+                        stopWirelessDiscovery()
+                        connect(hostAddress, resolved.port, fallbackHost = configuredHost.takeIf { it.isNotEmpty() })
                     }
 
                     override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) = Unit
@@ -277,8 +266,7 @@ class RemoteBridgeClient(context: Context) {
             override fun onServiceLost(serviceInfo: NsdServiceInfo) = Unit
             override fun onDiscoveryStopped(serviceType: String) = Unit
             override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                setConnection(RemoteConnectionState.Disconnected)
-                retryDiscovery()
+                if (discoveryListener === this) useConfiguredHostOrRetry(configuredHost)
             }
 
             override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
@@ -287,18 +275,46 @@ class RemoteBridgeClient(context: Context) {
         runCatching {
             nsdManager.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
         }.onFailure {
-            discoveryListener = null
+            useConfiguredHostOrRetry(configuredHost)
+        }
+        if (discoveryListener === listener && configuredHost.isNotEmpty()) {
+            discoveryFallback = Runnable {
+                if (started && discoveryListener === listener) useConfiguredHostOrRetry(configuredHost)
+            }.also { mainHandler.postDelayed(it, LOCAL_DISCOVERY_TIMEOUT_MS) }
+        }
+    }
+
+    private fun stopWirelessDiscovery() {
+        discoveryFallback?.let(mainHandler::removeCallbacks)
+        discoveryFallback = null
+        discoveryListener?.let { listener ->
+            runCatching { nsdManager.stopServiceDiscovery(listener) }
+        }
+        discoveryListener = null
+    }
+
+    private fun useConfiguredHostOrRetry(configuredHost: String) {
+        stopWirelessDiscovery()
+        if (configuredHost.isNotEmpty()) connect(configuredHost, BRIDGE_PORT)
+        else {
             setConnection(RemoteConnectionState.Disconnected)
             retryDiscovery()
         }
     }
 
-    private fun connect(host: String, port: Int, fallbackToWireless: Boolean = false) {
+    private fun connect(
+        host: String,
+        port: Int,
+        fallbackToWireless: Boolean = false,
+        fallbackHost: String? = null
+    ) {
         setConnection(RemoteConnectionState.Connecting)
         executor.execute {
+            var didConnect = false
             try {
                 val target = Socket()
                 target.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                didConnect = true
                 target.soTimeout = READ_TIMEOUT_MS
                 socket = target
                 writer = OutputStreamWriter(target.getOutputStream(), Charsets.UTF_8)
@@ -330,6 +346,8 @@ class RemoteBridgeClient(context: Context) {
                     setConnection(RemoteConnectionState.Disconnected)
                     if (fallbackToWireless) {
                         mainHandler.post { discoverWireless() }
+                    } else if (!didConnect && fallbackHost != null) {
+                        connect(fallbackHost, BRIDGE_PORT)
                     } else {
                         retryDiscovery()
                     }

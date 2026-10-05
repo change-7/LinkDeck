@@ -1240,7 +1240,7 @@ private fun BridgeConnectionSettingsDialog(
                     label = { Text("맥의 Tailscale 주소") },
                     placeholder = { Text("100.x.x.x") },
                     supportingText = {
-                        Text("비워 두면 기존 자동 검색을 사용합니다. Tailscale IP만 입력하세요.")
+                        Text("같은 Wi-Fi의 Mac을 먼저 찾고, 찾지 못하면 이 주소로 연결합니다.")
                     },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
