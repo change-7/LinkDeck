@@ -50,9 +50,74 @@ enum LinkDeckMCPHandler {
 
     static func response(to data: Data, buttons: [LinkDeckMCPButton],
                          sleepStatus: () -> MacSleepStatus = MacSleepStatus.current,
+                         folderSyncStore: FolderPairStore? = nil,
                          execute: (LinkDeckMCPButton) throws -> String) -> (status: Int, body: Data) {
         func encoded(_ object: [String: Any]) -> Data {
             (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
+        }
+        func toolText(_ text: String, isError: Bool = false) -> [String: Any] {
+            var response: [String: Any] = ["content": [["type": "text", "text": text]]]
+            if isError { response["isError"] = true }
+            return response
+        }
+        func jsonText(_ object: [String: Any]) -> String {
+            String(decoding: encoded(object), as: UTF8.self)
+        }
+        func pairForSyncTool(_ arguments: [String: Any], store: FolderPairStore) -> (FolderPair?, String?) {
+            guard arguments.keys.allSatisfy({ $0 == "pair_id" }) else {
+                return (nil, "지원하지 않는 인수가 있습니다.")
+            }
+            let pairID: UUID?
+            if let value = arguments["pair_id"] {
+                guard let string = value as? String, let parsedID = UUID(uuidString: string) else {
+                    return (nil, "pair_id는 목록 도구에서 받은 UUID여야 합니다.")
+                }
+                pairID = parsedID
+            } else {
+                pairID = store.selectedPairID
+            }
+            guard let pairID else {
+                return (nil, "선택된 동기화 목록이 없습니다. 목록을 조회한 뒤 pair_id를 지정하세요.")
+            }
+            guard let pair = store.pairs.first(where: { $0.id == pairID }) else {
+                return (nil, "해당 동기화 목록을 찾을 수 없습니다. 목록을 다시 조회하세요.")
+            }
+            return (pair, nil)
+        }
+        func direction(_ pair: FolderPair) -> String {
+            switch pair.syncMode {
+            case .aToB: "A → B"
+            case .bToA: "B → A"
+            case .twoWay: "양방향"
+            }
+        }
+        func syncStatus(_ state: SyncState) -> String {
+            switch state {
+            case .idle: "idle"
+            case .syncing: "syncing"
+            case .waitingForFolder: "waiting_for_folder"
+            case .succeeded: "completed"
+            case .failed: "failed"
+            }
+        }
+        func syncStatusPayload(_ pair: FolderPair, selected: Bool? = nil, store: FolderPairStore) -> [String: Any] {
+            let state = store.state(for: pair)
+            var payload: [String: Any] = [
+                "pair_id": pair.id.uuidString,
+                "name": pair.name,
+                "selected": selected ?? (store.selectedPairID == pair.id),
+                "enabled": pair.isEnabled,
+                "direction": direction(pair),
+                "endpoint_a": pair.githubSync?.endpointSide == .a ? "GitHub" : "local_folder",
+                "endpoint_b": pair.githubSync?.endpointSide == .b ? "GitHub" : "local_folder",
+                "delete_extra_files": pair.options.deleteExtraFiles,
+                "status": syncStatus(state)
+            ]
+            if let lastSyncedAt = pair.lastSyncedAt {
+                payload["last_synced_at"] = ISO8601DateFormatter().string(from: lastSyncedAt)
+            }
+            if case .failed(let message) = state { payload["error"] = message }
+            return payload
         }
         guard let request = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
             return (200, encoded(["jsonrpc": "2.0", "id": NSNull(), "error": ["code": -32700, "message": "Parse error"]]))
@@ -78,7 +143,7 @@ enum LinkDeckMCPHandler {
             result = ["protocolVersion": protocolVersions.contains(requested) ? requested : "2025-06-18",
                       "capabilities": ["tools": ["listChanged": false]],
                       "serverInfo": ["name": "LinkDeck", "version": "1.0.0"],
-                      "instructions": "List saved LinkDeck buttons first. Execute a button only when the user asks for that action. Buttons can launch apps, send shortcuts or run saved terminal commands on the user's Mac."]
+                      "instructions": "List saved LinkDeck buttons before executing them. For FolderSync, list sync pairs first, then start a sync only when the user asks. A sync uses the saved direction and options and may overwrite or delete destination files. Start returns immediately; check sync status to confirm completion. Buttons can launch apps, send shortcuts or run saved terminal commands on the user's Mac."]
         case "ping": result = [:]
         case "tools/list":
             result = ["tools": [
@@ -90,6 +155,15 @@ enum LinkDeckMCPHandler {
                  "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]],
                 ["name": "linkdeck_press_button", "description": "Execute an existing LinkDeck button on the user's Mac. Use an ID from linkdeck_list_buttons. May launch apps, send shortcuts, change web pages or run saved terminal commands. Ask the user before executing actions they have not requested.",
                  "inputSchema": ["type": "object", "properties": ["button_id": ["type": "string"]], "required": ["button_id"], "additionalProperties": false],
+                 "annotations": ["readOnlyHint": false, "destructiveHint": true, "openWorldHint": true, "idempotentHint": false]],
+                ["name": "linkdeck_folder_sync_list", "description": "List saved FolderSync pairs, selected pair, direction, status, and whether extra destination files may be deleted. Does not expose local paths.",
+                 "inputSchema": ["type": "object", "properties": [:], "additionalProperties": false],
+                 "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]],
+                ["name": "linkdeck_folder_sync_status", "description": "Read the state and last completion time of a FolderSync pair. Omit pair_id to use the selected pair.",
+                 "inputSchema": ["type": "object", "properties": ["pair_id": ["type": "string"]], "additionalProperties": false],
+                 "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]],
+                ["name": "linkdeck_folder_sync_start", "description": "Start a saved FolderSync pair using its configured direction and options. Call only when the user explicitly asks to sync. The operation can overwrite or delete files. Use linkdeck_folder_sync_list to find pair_id; omit pair_id to use the selected pair. Returns immediately; check status for completion.",
+                 "inputSchema": ["type": "object", "properties": ["pair_id": ["type": "string"]], "additionalProperties": false],
                  "annotations": ["readOnlyHint": false, "destructiveHint": true, "openWorldHint": true, "idempotentHint": false]]
             ]]
         case "tools/call":
@@ -118,6 +192,55 @@ enum LinkDeckMCPHandler {
                     result = ["content": [["type": "text", "text": try execute(button)]]]
                 } catch {
                     result = ["isError": true, "content": [["type": "text", "text": error.localizedDescription]]]
+                }
+            case "linkdeck_folder_sync_list":
+                guard arguments.isEmpty else { return failure(-32602, "Unexpected arguments") }
+                guard let folderSyncStore else {
+                    result = toolText("FolderSync를 사용할 수 없습니다.", isError: true)
+                    break
+                }
+                let pairs = folderSyncStore.pairs.map { syncStatusPayload($0, store: folderSyncStore) }
+                result = toolText(jsonText(["sync_pairs": pairs]))
+            case "linkdeck_folder_sync_status":
+                guard let folderSyncStore else {
+                    result = toolText("FolderSync를 사용할 수 없습니다.", isError: true)
+                    break
+                }
+                let (pair, error) = pairForSyncTool(arguments, store: folderSyncStore)
+                if let error {
+                    result = toolText(error, isError: true)
+                } else if let pair {
+                    result = toolText(jsonText(syncStatusPayload(pair, store: folderSyncStore)))
+                } else {
+                    result = toolText("동기화 목록을 찾을 수 없습니다.", isError: true)
+                }
+            case "linkdeck_folder_sync_start":
+                guard let folderSyncStore else {
+                    result = toolText("FolderSync를 사용할 수 없습니다.", isError: true)
+                    break
+                }
+                let (selectedPair, selectionError) = pairForSyncTool(arguments, store: folderSyncStore)
+                if let selectionError {
+                    result = toolText(selectionError, isError: true)
+                    break
+                }
+                guard let selectedPair else {
+                    result = toolText("동기화 목록을 찾을 수 없습니다.", isError: true)
+                    break
+                }
+                let (pair, startError) = folderSyncStore.startSyncFromMCP(selectedPair.id)
+                if let startError {
+                    result = toolText(startError, isError: true)
+                } else if let pair {
+                    result = toolText(jsonText([
+                        "pair_id": pair.id.uuidString,
+                        "name": pair.name,
+                        "direction": direction(pair),
+                        "status": "started",
+                        "next_step": "Call linkdeck_folder_sync_status to confirm completion."
+                    ]))
+                } else {
+                    result = toolText("동기화를 시작하지 못했습니다.", isError: true)
                 }
             default: return failure(-32602, "Unknown tool")
             }

@@ -146,6 +146,7 @@ struct ContentView: View {
         .sheet(isPresented: $showingCodexConnection) {
             CodexConnectionView(
                 store: store,
+                folderSyncStore: folderSyncStore,
                 midi: midi,
                 codex: codex,
                 chatGPTTunnel: chatGPTTunnel

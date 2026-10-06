@@ -310,6 +310,36 @@ final class FolderPairStore {
         return state(for: pair)
     }
 
+    func startSyncFromMCP(_ requestedID: UUID?) -> (pair: FolderPair?, error: String?) {
+        guard let pairID = requestedID ?? selectedPairID else {
+            return (nil, "선택된 동기화 목록이 없습니다. 목록을 조회하고 pair_id를 지정하세요.")
+        }
+        guard let pair = pairs.first(where: { $0.id == pairID }) else {
+            return (nil, "해당 동기화 목록을 찾을 수 없습니다. 목록을 다시 조회하세요.")
+        }
+        guard pair.isEnabled else { return (nil, "이 동기화 목록은 비활성화되어 있습니다.") }
+        guard !pair.syncMode.isTwoWay else {
+            return (nil, "양방향 동기화는 충돌 처리 없이 실행할 수 없습니다. 방향을 A → B 또는 B → A로 설정하세요.")
+        }
+        guard state(for: pair) != .syncing else { return (nil, "이 동기화 목록은 이미 실행 중입니다.") }
+        if let configuration = pair.githubSync {
+            let localFolder = configuration.endpointSide == .a ? pair.folderB : pair.folderA
+            guard localFolder != nil else { return (nil, "GitHub 동기화에 필요한 로컬 폴더를 지정하세요.") }
+        } else if pair.folderA == nil || pair.folderB == nil {
+            return (nil, "Folder A와 Folder B를 모두 지정하세요.")
+        }
+
+        Task { [weak self] in
+            guard let self, let currentPair = self.pairs.first(where: { $0.id == pairID }) else { return }
+            if currentPair.githubSync == nil {
+                await self.sync(currentPair)
+            } else {
+                await self.syncToGitHub(currentPair)
+            }
+        }
+        return (pair, nil)
+    }
+
     func refreshGitHubStatus(_ pair: FolderPair) async {
         guard pair.githubSync != nil else { return }
         do {

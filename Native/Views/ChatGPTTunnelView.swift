@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatGPTTunnelView: View {
     @Bindable var tunnel: ChatGPTTunnelController
     let store: LaunchpadStore
+    let folderSyncStore: FolderPairStore
     private let runner = MacActionRunner()
 
     var body: some View {
@@ -25,7 +26,7 @@ struct ChatGPTTunnelView: View {
                 .disabled(tunnel.isActive)
                 Button(tunnel.isActive ? "연결 해제" : "터널 연결") {
                     if tunnel.isActive { tunnel.disconnect() }
-                    else { tunnel.connect(store: store, runner: runner) }
+                    else { tunnel.connect(store: store, folderSyncStore: folderSyncStore, runner: runner) }
                 }
                 .buttonStyle(.borderedProminent)
                 if !tunnel.lastAction.isEmpty {
@@ -40,7 +41,7 @@ struct ChatGPTTunnelView: View {
                     Link("키 발급", destination: URL(string: "https://platform.openai.com/settings/organization/api-keys")!)
                     Link("ChatGPT 앱 설정", destination: URL(string: "https://chatgpt.com/#settings/Connectors")!)
                 }
-                Text("ChatGPT에 “LinkDeck 버튼 목록 보여줘”, “LinkDeck의 잠자기 방지 버튼 실행해줘”처럼 요청하세요. 등록된 버튼만 실행하며, 연결을 해제하면 제어도 중단됩니다.")
+                Text("ChatGPT에 “LinkDeck 버튼 목록 보여줘”, “선택한 폴더싱크를 시작해줘”, “동기화 상태를 확인해줘”처럼 요청하세요. 폴더싱크는 설정된 방향과 옵션을 사용하고, 연결을 해제하면 제어도 중단됩니다.")
                     .font(.callout)
                 if ChatGPTTunnelController.executable == nil {
                     Text("터미널에서 한 번 설치하세요:").font(.caption)

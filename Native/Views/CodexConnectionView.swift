@@ -43,6 +43,7 @@ struct CodexConnectionView: View {
     static var availableTabTitles: [String] { Tab.allCases.map(\.title) }
 
     @Bindable var store: LaunchpadStore
+    let folderSyncStore: FolderPairStore
     let midi: LaunchpadMIDIManager
     let codex: CodexAppServerClient
     let chatGPTTunnel: ChatGPTTunnelController
@@ -91,7 +92,7 @@ struct CodexConnectionView: View {
                 case .approvalSound:
                     approvalSoundPane
                 case .chatGPTTunnel:
-                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store)
+                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, folderSyncStore: folderSyncStore)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -325,7 +325,7 @@ private struct EndpointSummaryCard: View {
         .background(theme.control, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(summary.isLatest ? theme.accent : theme.border, lineWidth: summary.isLatest ? 2 : 1)
+                .stroke(theme.border, lineWidth: 1)
         }
         .accessibilityElement(children: .combine)
     }
