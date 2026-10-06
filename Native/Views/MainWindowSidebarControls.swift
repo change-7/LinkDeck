@@ -10,6 +10,7 @@ struct MainScreenSidebarNavigation: View {
     private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Binding var selection: MainScreen
     let midiIsConnected: Bool
+    var onSelectScreen: ((MainScreen) -> Void)? = nil
     var compact = false
 
     var body: some View {
@@ -35,7 +36,11 @@ struct MainScreenSidebarNavigation: View {
         let isAvailable = screen != .launchpadMini || midiIsConnected
         return Button {
             guard isAvailable else { return }
-            selection = screen
+            if let onSelectScreen {
+                onSelectScreen(screen)
+            } else {
+                selection = screen
+            }
         } label: {
             Group {
                 if compact {

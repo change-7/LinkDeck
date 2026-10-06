@@ -27,6 +27,7 @@ final class CodexMotionActivityRouter {
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Bindable var store: LaunchpadStore
+    let folderSyncStore: FolderPairStore
     let runner: MacActionRunner
     let midi: LaunchpadMIDIManager
     let codex: CodexAppServerClient
@@ -38,7 +39,9 @@ struct ContentView: View {
     @State private var selectedPageLEDIndex: Int?
     @State private var showingCodexConnection = false
     @State private var showingBackupRestore = false
+    @State private var showingFolderSyncSettings = false
     @State private var selectedMainScreen: MainScreen = .smartphoneButtons
+    @AppStorage(AppAppearanceMode.storageKey) private var appearanceMode = AppAppearanceMode.system.rawValue
     private let launchpadPanelHeight: CGFloat = 620
     @State private var virtualPreviewEnabled = true
     @State private var virtualMotion = VirtualMotionPlayer()
@@ -57,6 +60,7 @@ struct ContentView: View {
             launchpadContent
         }
         .frame(minWidth: 1100, minHeight: 640)
+        .preferredColorScheme(AppAppearanceMode(rawValue: appearanceMode)?.colorScheme)
         .onAppear {
             midi.onPagePressed = { index in
                 recordLaunchpadOrCodexActivity()
@@ -150,6 +154,9 @@ struct ContentView: View {
         .sheet(isPresented: $showingBackupRestore) {
             BackupRestoreView(store: store)
         }
+        .sheet(isPresented: $showingFolderSyncSettings) {
+            AppSettingsView(store: folderSyncStore)
+        }
     }
 
     private var launchpadContent: some View {
@@ -161,11 +168,13 @@ struct ContentView: View {
                 SmartphoneSettingsView(
                     store: store,
                     runner: runner,
+                    folderSyncStore: folderSyncStore,
                     selectedMainScreen: $selectedMainScreen,
                     codexIsConnected: codex.isConnected,
                     midiIsConnected: midi.isConnected,
                     onOpenBackupRestore: { showingBackupRestore = true },
-                    onOpenCodexSettings: { showingCodexConnection = true }
+                    onOpenCodexSettings: { showingCodexConnection = true },
+                    onOpenFolderSyncSettings: { showingFolderSyncSettings = true }
                 )
                     .frame(minWidth: 900, minHeight: 520)
             }

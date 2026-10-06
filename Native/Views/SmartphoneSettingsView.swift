@@ -11,11 +11,13 @@ struct SmartphoneSettingsView: View {
 
     @Bindable var store: LaunchpadStore
     let runner: MacActionRunner
+    let folderSyncStore: FolderPairStore
     @Binding var selectedMainScreen: MainScreen
     let codexIsConnected: Bool
     let midiIsConnected: Bool
     let onOpenBackupRestore: () -> Void
     let onOpenCodexSettings: () -> Void
+    let onOpenFolderSyncSettings: () -> Void
     @State private var pageIndex = 0
     @State private var buttonIndex = 0
     @State private var dropTargetButtonID: String?
@@ -28,6 +30,7 @@ struct SmartphoneSettingsView: View {
     @State private var customIconError = ""
     @State private var isSymbolPickerPresented = false
     @State private var symbolSearchText = ""
+    @State private var showingFolderSync = false
 
     private let symbolChoices = [
         // 아이콘 없음
@@ -93,18 +96,27 @@ struct SmartphoneSettingsView: View {
         GeometryReader { geometry in
             HStack(alignment: .top, spacing: 12) {
                 pageList
-                buttonGrids
-                ScrollView(.vertical) {
-                    editor
+                if showingFolderSync {
+                    FolderSyncWorkspaceView(
+                        store: folderSyncStore,
+                        showSettings: onOpenFolderSyncSettings
+                    )
+                    .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    buttonGrids
+                    ScrollView(.vertical) {
+                        editor
+                    }
+                    .frame(width: editorPanelWidth, height: max(0, geometry.size.height - 28))
+                    .scrollIndicators(.visible)
                 }
-                .frame(width: editorPanelWidth, height: max(0, geometry.size.height - 28))
-                .scrollIndicators(.visible)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(14)
         }
         .foregroundStyle(theme.foreground)
         .background(theme.canvas)
+        .focusEffectDisabled()
         .overlay {
             if let folderButtonID {
                 ZStack {
@@ -135,19 +147,24 @@ struct SmartphoneSettingsView: View {
         VStack(alignment: .leading, spacing: 9) {
             MainScreenSidebarNavigation(
                 selection: $selectedMainScreen,
-                midiIsConnected: midiIsConnected
+                midiIsConnected: midiIsConnected,
+                onSelectScreen: { screen in
+                    selectedMainScreen = screen
+                    if screen == .smartphoneButtons {
+                        showingFolderSync = false
+                    }
+                }
             )
             .padding(.bottom, 5)
             Text("스마트폰 페이지").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
-            Text("현재 페이지 이름")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(theme.foreground.opacity(0.72))
-            DarkTextField(text: pageNameBinding, placeholder: "페이지 이름")
             ForEach(Array(store.smartphonePages.enumerated()), id: \.element.id) { index, page in
                 VStack(spacing: 0) {
                     Button {
-                        pageIndex = index
-                        buttonIndex = 0
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            pageIndex = index
+                            buttonIndex = 0
+                            showingFolderSync = false
+                        }
                     } label: {
                         VStack(alignment: .leading, spacing: 5) {
                             Text("PAGE \(String(format: "%02d", index + 1))")
@@ -184,6 +201,27 @@ struct SmartphoneSettingsView: View {
                 .help("버튼을 든 채 이 페이지 이름 위에 올리면 페이지가 열립니다. 원하는 버튼 칸에 놓으세요.")
             }
             Spacer(minLength: 8)
+            Button {
+                folderButtonID = nil
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    showingFolderSync = true
+                }
+            } label: {
+                Label("폴더 싱크", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    .padding(.horizontal, 9)
+                    .foregroundStyle(showingFolderSync ? theme.accentForeground : theme.foreground.opacity(0.78))
+                    .background(
+                        showingFolderSync ? theme.accent : theme.control,
+                        in: RoundedRectangle(cornerRadius: 8)
+                    )
+                    .contentShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .focusEffectDisabled()
+            .accessibilityIdentifier("folder-sync-navigation-button")
+            .accessibilityHint("동기화 목록과 폴더 동기화 화면을 엽니다.")
             MainSidebarFooter(
                 codexIsConnected: codexIsConnected,
                 midiIsConnected: midiIsConnected,
@@ -333,6 +371,10 @@ struct SmartphoneSettingsView: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 12) {
+            field("페이지 이름") {
+                DarkTextField(text: pageNameBinding, placeholder: "페이지 이름")
+            }
+            Divider().overlay(theme.foreground.opacity(0.16))
             HStack {
                 Text("버튼 편집").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
                 Spacer()

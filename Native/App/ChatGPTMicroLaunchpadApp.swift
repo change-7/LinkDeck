@@ -6,6 +6,7 @@ import SwiftUI
 struct ChatGPTMicroLaunchpadApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = LaunchpadStore()
+    @State private var folderSyncStore = FolderPairStore()
     @State private var midi = LaunchpadMIDIManager()
     @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
     private let runner = MacActionRunner()
@@ -14,6 +15,7 @@ struct ChatGPTMicroLaunchpadApp: App {
         WindowGroup {
             ContentView(
                 store: store,
+                folderSyncStore: folderSyncStore,
                 runner: runner,
                 midi: midi,
                 codex: appDelegate.codex,
