@@ -258,7 +258,10 @@ internal data class ControlAction(
     val iconBitmap: ImageBitmap? = null,
     val isPlaceholder: Boolean = false,
     val isIconless: Boolean = false,
-    val longPressAction: ControlAction? = null
+    val longPressAction: ControlAction? = null,
+    val hasSecondAction: Boolean = false,
+    val isSecondActionActive: Boolean = false,
+    val nextActionKind: String? = null
 )
 
 internal data class ButtonPage(
@@ -1887,7 +1890,12 @@ private fun ControlsPageContent(
                                 action = action,
                                 tileHeight = tileHeight,
                                 onClick = {
-                                    if (action.actionKind == "appFolder") onOpenFolder(action) else onAction(action)
+                                    if (action.hasSecondAction && action.nextActionKind == "appFolder") {
+                                        onOpenFolder(action.copy(actionKind = "appFolder"))
+                                    }
+                                    else if (action.hasSecondAction) onAction(action)
+                                    else if (action.actionKind == "appFolder") onOpenFolder(action)
+                                    else onAction(action)
                                 },
                                 onLongClick = action.longPressAction?.let { longAction ->
                                     { if (longAction.actionKind == "appFolder") onOpenFolder(longAction) else onAction(longAction) }
@@ -2045,7 +2053,9 @@ private fun ActionTile(
     val controlCabinet = phoneTheme == ControlCabinetCodexPhoneTheme
     val skin = phoneSkinStyle(phoneTheme)
     val themed = skin.themed
-    val hasShortPressAction = !action.isPlaceholder && (action.command != "smartphoneButton" || action.actionKind != "none")
+    val hasShortPressAction = !action.isPlaceholder && (
+        action.command != "smartphoneButton" || action.actionKind != "none" || action.hasSecondAction
+    )
     val hasLongPressAction = !action.isPlaceholder && action.longPressAction != null && onLongClick != null
     val hapticFeedback = LocalHapticFeedback.current
     val context = LocalContext.current
@@ -2118,7 +2128,14 @@ private fun ActionTile(
                 onClick = { if (hasShortPressAction) onClick() }
             )
             .semantics {
-                if (hasLongPressAction) {
+                if (action.hasSecondAction) {
+                    val toggleDescription = "A/B 전환, 현재 ${if (action.isSecondActionActive) "B" else "A"}"
+                    stateDescription = if (hasLongPressAction) {
+                        "$toggleDescription, 길게 누르기 동작도 지정됨"
+                    } else {
+                        toggleDescription
+                    }
+                } else if (hasLongPressAction) {
                     stateDescription = if (hasShortPressAction) "짧게 누르기와 길게 누르기에 각각 동작 지정됨" else "길게 눌러 실행"
                 }
             }
@@ -2182,16 +2199,30 @@ private fun ActionTile(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                if (hasLongPressAction) {
-                    Text(
-                        if (hasShortPressAction) "짧게 / 길게" else "길게",
-                        color = if (themed) accent else TextMuted,
-                        fontSize = 10.sp,
+                if (hasLongPressAction || action.hasSecondAction) {
+                    Row(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .padding(top = 3.dp, end = 12.dp)
-                            .clearAndSetSemantics { }
-                    )
+                            .clearAndSetSemantics { },
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        if (action.hasSecondAction) {
+                            Text(
+                                if (action.isSecondActionActive) "B" else "A",
+                                color = if (themed) accent else TextMuted,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (hasLongPressAction) {
+                            Text(
+                                if (hasShortPressAction) "짧게 / 길게" else "길게",
+                                color = if (themed) accent else TextMuted,
+                                fontSize = 10.sp
+                            )
+                        }
+                    }
                 }
             }
             if (hasLongPressAction) {

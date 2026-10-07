@@ -70,6 +70,7 @@ enum CodexCompletionSoundImportError: LocalizedError {
 final class CodexCompletionSoundLibrary {
     static let builtInID = "built-in"
     static let bundledVoiceID = "completion-voice"
+    static let noSoundID = "none"
 
     private struct ImportedSound: Codable, Equatable, Identifiable, Sendable {
         let id: String
@@ -117,7 +118,7 @@ final class CodexCompletionSoundLibrary {
         importedSounds = availableImportedSounds
 
         let bundledVoiceExists = Self.bundledVoiceURL != nil
-        let availableIDs = Set(availableImportedSounds.map(\.id) + [Self.builtInID] + (bundledVoiceExists ? [Self.bundledVoiceID] : []))
+        let availableIDs = Set(availableImportedSounds.map(\.id) + [Self.builtInID, Self.noSoundID] + (bundledVoiceExists ? [Self.bundledVoiceID] : []))
         let savedID = preferences.string(forKey: selectedSoundKey)
         selectedSoundID = savedID.flatMap { availableIDs.contains($0) ? $0 : nil }
             ?? (bundledVoiceExists ? Self.bundledVoiceID : Self.builtInID)
@@ -144,6 +145,11 @@ final class CodexCompletionSoundLibrary {
 
     var options: [CodexCompletionSoundOption] {
         var result = [
+            CodexCompletionSoundOption(
+                id: Self.noSoundID,
+                title: "소리 없음",
+                detail: "효과음을 재생하지 않음"
+            ),
             CodexCompletionSoundOption(
                 id: Self.builtInID,
                 title: "기존 완료음",
@@ -232,6 +238,7 @@ final class CodexCompletionSoundLibrary {
 
     func playSelectedSoundOnMac() {
         guard outputTarget == .mac,
+              selectedSoundID != Self.noSoundID,
               let url = previewURL(for: selectedSoundID),
               let player = try? AVAudioPlayer(contentsOf: url) else { return }
         completionPlayer?.stop()
@@ -241,7 +248,8 @@ final class CodexCompletionSoundLibrary {
     }
 
     func playSelectedApprovalSoundOnMac() {
-        guard approvalSoundOutputTarget.playsOnMac else { return }
+        guard approvalSoundOutputTarget.playsOnMac,
+              selectedApprovalSoundID != Self.noSoundID else { return }
         guard let url = previewURL(for: selectedApprovalSoundID),
               let player = try? AVAudioPlayer(contentsOf: url) else { return }
         approvalPlayer?.stop()
@@ -297,15 +305,19 @@ final class CodexCompletionSoundLibrary {
     }
 
     private func makeRemoteSelection() -> CodexRemoteCompletionSound {
+        let selectedVolume = selectedSoundID == Self.noSoundID ? 0 : volumePercent
         if outputTarget == .mac {
             return CodexRemoteCompletionSound(
                 id: selectedSoundID,
                 outputTarget: .mac,
-                volumePercent: volumePercent
+                volumePercent: selectedVolume
             )
         }
         if selectedSoundID == Self.builtInID {
-            return CodexRemoteCompletionSound(id: selectedSoundID, volumePercent: volumePercent)
+            return CodexRemoteCompletionSound(id: selectedSoundID, volumePercent: selectedVolume)
+        }
+        if selectedSoundID == Self.noSoundID {
+            return CodexRemoteCompletionSound(id: selectedSoundID, volumePercent: 0)
         }
 
         let fileURL: URL
@@ -320,11 +332,11 @@ final class CodexCompletionSoundLibrary {
             fileName = imported.fileName
             mimeType = imported.mimeType
         } else {
-            return CodexRemoteCompletionSound(id: Self.builtInID, volumePercent: volumePercent)
+            return CodexRemoteCompletionSound(id: Self.builtInID, volumePercent: selectedVolume)
         }
 
         guard let data = try? Data(contentsOf: fileURL), data.count <= 10 * 1_024 * 1_024 else {
-            return CodexRemoteCompletionSound(id: Self.builtInID, volumePercent: volumePercent)
+            return CodexRemoteCompletionSound(id: Self.builtInID, volumePercent: selectedVolume)
         }
         return CodexRemoteCompletionSound(
             id: selectedSoundID,
@@ -332,7 +344,7 @@ final class CodexCompletionSoundLibrary {
             mimeType: mimeType,
             data: data.base64EncodedString(),
             outputTarget: .phone,
-            volumePercent: volumePercent
+            volumePercent: selectedVolume
         )
     }
 
@@ -345,12 +357,14 @@ final class CodexCompletionSoundLibrary {
                 volumePercent: approvalVolumePercent
             )
         }
-        guard selectedApprovalSoundID != Self.builtInID else {
+        let selectedVolume = selectedApprovalSoundID == Self.noSoundID ? 0 : approvalVolumePercent
+        guard selectedApprovalSoundID != Self.builtInID,
+              selectedApprovalSoundID != Self.noSoundID else {
             return CodexRemoteApprovalSound(
-                id: Self.builtInID,
+                id: selectedApprovalSoundID,
                 configured: true,
                 outputTarget: approvalSoundOutputTarget,
-                volumePercent: approvalVolumePercent
+                volumePercent: selectedVolume
             )
         }
 
@@ -371,7 +385,7 @@ final class CodexCompletionSoundLibrary {
                 id: Self.builtInID,
                 configured: true,
                 outputTarget: approvalSoundOutputTarget,
-                volumePercent: approvalVolumePercent
+                volumePercent: selectedVolume
             )
         }
 
@@ -380,7 +394,7 @@ final class CodexCompletionSoundLibrary {
                 id: Self.builtInID,
                 configured: true,
                 outputTarget: approvalSoundOutputTarget,
-                volumePercent: approvalVolumePercent
+                volumePercent: selectedVolume
             )
         }
         return CodexRemoteApprovalSound(
@@ -391,7 +405,7 @@ final class CodexCompletionSoundLibrary {
             data: data.base64EncodedString(),
             configured: true,
             outputTarget: approvalSoundOutputTarget,
-            volumePercent: approvalVolumePercent
+            volumePercent: selectedVolume
         )
     }
 

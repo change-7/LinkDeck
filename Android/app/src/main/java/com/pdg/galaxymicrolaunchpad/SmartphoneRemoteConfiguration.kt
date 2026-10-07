@@ -72,34 +72,39 @@ internal fun parseSmartphonePages(
             val buttons = buildList {
                 for (buttonIndex in 0 until buttonArray.length()) {
                     val buttonObject = buttonArray.optJSONObject(buttonIndex) ?: continue
-                    val title = buttonObject.optString("title", "")
+                    val title = smartphoneButtonTitle(buttonObject)
                     val isPlaceholder = isSmartphoneButtonPlaceholder(title)
                     val buttonID = buttonObject.optString("id", "smartphone_page_${pageIndex}_button_${buttonIndex}")
+                    val buttonUsesSecondAction = buttonObject.optJSONObject("secondAction") != null &&
+                        buttonObject.optBoolean("isSecondActionActive", false)
+                    val activeButtonSymbol = smartphoneIconSymbol(buttonObject)
                     val folderActions = buildList {
                         val shortcutArray = buttonObject.optJSONArray("folderShortcuts") ?: return@buildList
                         for (shortcutIndex in 0 until shortcutArray.length()) {
                             val shortcutObject = shortcutArray.optJSONObject(shortcutIndex) ?: continue
-                            val shortcutTitle = shortcutObject.optString("title", "")
+                            val shortcutTitle = smartphoneButtonTitle(shortcutObject)
                             val shortcutID = shortcutObject.optString(
                                 "id",
                                 "${buttonID}_folder_$shortcutIndex"
                             )
-                            val shortcutSymbol = shortcutObject.optString("symbol", "command")
+                            val shortcutUsesSecondAction = shortcutObject.optJSONObject("secondAction") != null &&
+                                shortcutObject.optBoolean("isSecondActionActive", false)
+                            val activeShortcutSymbol = smartphoneIconSymbol(shortcutObject)
                             val iconBitmap = if (isSmartphoneButtonPlaceholder(shortcutTitle)) {
                                 null
                             } else {
-                                parseSmartphoneIconAsset(state, shortcutID, iconBitmapCache, iconAssets)
+                                parseSmartphoneIconAsset(state, shortcutID, iconBitmapCache, iconAssets, shortcutUsesSecondAction)
                             }
                             add(
                                 ControlAction(
                                     label = shortcutTitle,
-                                    icon = iconForSymbol(shortcutSymbol),
+                                    icon = iconForSymbol(activeShortcutSymbol),
                                     command = "smartphoneButton",
                                     accent = Color.White,
                                     id = shortcutID,
                                     iconBitmap = iconBitmap,
                                     isPlaceholder = isSmartphoneButtonPlaceholder(shortcutTitle),
-                                    isIconless = isIconlessSymbol(shortcutSymbol) && iconBitmap == null
+                                    isIconless = isIconlessSymbol(activeShortcutSymbol) && iconBitmap == null
                                 ).let { parseSmartphonePressActions(shortcutObject, it) }
                             )
                         }
@@ -107,14 +112,20 @@ internal fun parseSmartphonePages(
                     add(
                         ControlAction(
                             label = title,
-                            icon = iconForSymbol(buttonObject.optString("symbol", "")),
+                            icon = iconForSymbol(activeButtonSymbol),
                             command = "smartphoneButton",
                             accent = Color.White,
                             id = buttonID,
                             folderActions = folderActions,
-                            iconBitmap = if (isPlaceholder) null else parseSmartphoneIconAsset(state, buttonID, iconBitmapCache, iconAssets),
+                            iconBitmap = if (isPlaceholder) null else parseSmartphoneIconAsset(
+                                state,
+                                buttonID,
+                                iconBitmapCache,
+                                iconAssets,
+                                buttonUsesSecondAction
+                            ),
                             isPlaceholder = isPlaceholder,
-                            isIconless = isIconlessSymbol(buttonObject.optString("symbol", ""))
+                            isIconless = isIconlessSymbol(activeButtonSymbol)
                         ).let { parseSmartphonePressActions(buttonObject, it) }
                     )
                 }
@@ -135,10 +146,21 @@ internal fun parseSmartphonePages(
 
 internal fun isSmartphoneButtonPlaceholder(title: String): Boolean = title.isBlank()
 
+private fun smartphoneButtonTitle(button: JSONObject): String {
+    val isSecondActionActive = button.optJSONObject("secondAction") != null &&
+        button.optBoolean("isSecondActionActive", false)
+    val secondTitle = button.optString("secondTitle", "")
+    return if (isSecondActionActive && secondTitle.isNotBlank()) secondTitle else button.optString("title", "")
+}
+
 private fun parseSmartphonePressActions(button: JSONObject, base: ControlAction): ControlAction {
     val legacyLongPress = !button.has("longPressAction") && button.optBoolean("requiresLongPress", false)
     val shortAction = if (legacyLongPress) null else button.optJSONObject("action")
     val longAction = if (legacyLongPress) button.optJSONObject("action") else button.optJSONObject("longPressAction")
+    val secondAction = button.optJSONObject("secondAction")
+    val isSecondActionActive = secondAction != null && button.optBoolean("isSecondActionActive", false)
+    val primaryActionKind = shortAction?.optString("kind", "none") ?: "none"
+    val secondActionKind = secondAction?.optString("kind", "none")
     fun configuredAction(action: JSONObject?, command: String): ControlAction = base.copy(
         command = command,
         actionKind = action?.optString("kind", "none") ?: "none",
@@ -146,19 +168,46 @@ private fun parseSmartphonePressActions(button: JSONObject, base: ControlAction)
         targetAppBundleIdentifier = action?.optString("targetAppBundleIdentifier", "") ?: "",
         launchTargetAppIfNeeded = action?.optBoolean("launchTargetAppIfNeeded", true) ?: true
     )
-    return configuredAction(shortAction, "smartphoneButton").copy(
+    val activeShortAction = resolveSmartphoneShortPressAction(shortAction, secondAction, isSecondActionActive)
+    return configuredAction(activeShortAction, "smartphoneButton").copy(
+        hasSecondAction = secondAction != null,
+        isSecondActionActive = isSecondActionActive,
+        nextActionKind = if (secondAction == null) null else resolveSmartphoneShortPressAction(
+            primaryActionKind,
+            secondActionKind,
+            !isSecondActionActive
+        ),
         longPressAction = longAction?.takeIf { it.optString("kind", "none") != "none" }
             ?.let { configuredAction(it, "smartphoneButtonLongPress") }
     )
+}
+
+internal fun <T> resolveSmartphoneShortPressAction(
+    primaryAction: T?,
+    secondAction: T?,
+    isSecondActionActive: Boolean
+): T? = if (secondAction != null && isSecondActionActive) secondAction else primaryAction
+
+private fun smartphoneIconSymbol(button: JSONObject): String {
+    val isSecondActionActive = button.optJSONObject("secondAction") != null &&
+        button.optBoolean("isSecondActionActive", false)
+    return if (isSecondActionActive && button.has("secondSymbol")) {
+        button.optString("secondSymbol", "")
+    } else {
+        button.optString("symbol", "")
+    }
 }
 
 private fun parseSmartphoneIconAsset(
     state: JSONObject,
     buttonID: String,
     iconBitmapCache: MutableMap<String, DecodedSmartphoneIcon>,
-    iconAssetsOverride: JSONObject?
+    iconAssetsOverride: JSONObject?,
+    isSecondActionActive: Boolean
 ): ImageBitmap? {
-    val asset = (iconAssetsOverride ?: state.optJSONObject("smartphoneIconAssets"))?.optJSONObject(buttonID) ?: return null
+    val assets = iconAssetsOverride ?: state.optJSONObject("smartphoneIconAssets")
+    val stateKey = "${buttonID}__${if (isSecondActionActive) "B" else "A"}"
+    val asset = assets?.optJSONObject(stateKey) ?: assets?.optJSONObject(buttonID) ?: return null
     if (asset.optString("mimeType", "image/png") != "image/png") return null
     val encoded = asset.optString("data", "")
     if (encoded.isEmpty()) return null

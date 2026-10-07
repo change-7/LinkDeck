@@ -15,9 +15,28 @@ struct InspectorView: View {
     let onUpdatePageColor: (Int, String, Bool) -> Void
     let onUpdatePageName: (Int, String) -> Void
     let onReset: () -> Void
-    let onRun: () -> Void
+    let onRun: (PadAction) -> Void
     @State private var registrationError = ""
     @State private var appRegistrationRequestID = UUID()
+    @State private var editingSecondAction = false
+
+    private var selectedAction: PadAction {
+        editingSecondAction ? (pad.secondAction ?? PadAction()) : pad.action
+    }
+
+    private var selectedSymbolBinding: Binding<String> {
+        Binding(
+            get: { editingSecondAction ? pad.secondSymbol ?? pad.symbol : pad.symbol },
+            set: { if editingSecondAction { pad.secondSymbol = $0 } else { pad.symbol = $0 } }
+        )
+    }
+
+    private var selectedTitleBinding: Binding<String> {
+        Binding(
+            get: { editingSecondAction ? pad.secondTitle ?? "" : pad.title },
+            set: { if editingSecondAction { pad.secondTitle = $0.isEmpty ? nil : $0 } else { pad.title = $0 } }
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -67,16 +86,8 @@ struct InspectorView: View {
                     }
                 }
             } else {
-                HStack(alignment: .top, spacing: 10) {
-                    fieldSection("버튼 라벨") {
-                        DarkTextField(text: $pad.title)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    fieldSection("아이콘") {
-                        LaunchpadIconPicker(selection: $pad.symbol, isSideButton: pad.id.hasPrefix("side_"))
-                    }
-                    .frame(width: 128, alignment: .leading)
+                fieldSection(pad.secondAction == nil ? "버튼 라벨" : "버튼 라벨 \(editingSecondAction ? "B" : "A")") {
+                    DarkTextField(text: selectedTitleBinding, placeholder: editingSecondAction ? "B 이름" : "A 이름")
                 }
 
                 sectionDivider
@@ -85,16 +96,46 @@ struct InspectorView: View {
                     sectionDivider
                 }
                 fieldSection("할당할 동작") {
+                    Toggle("A/B 동작 전환", isOn: Binding(
+                        get: { pad.secondAction != nil },
+                        set: { enabled in
+                            if enabled {
+                                if pad.secondAction == nil {
+                                    pad.secondAction = PadAction()
+                                    pad.isSecondActionActive = false
+                                }
+                            } else {
+                                pad.secondAction = nil
+                                pad.isSecondActionActive = false
+                                editingSecondAction = false
+                            }
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    if pad.secondAction != nil {
+                        HStack(spacing: 8) {
+                            Picker("편집 동작", selection: $editingSecondAction) {
+                                Text("A").tag(false)
+                                Text("B").tag(true)
+                            }
+                            .pickerStyle(.segmented)
+                            Text("현재 \(pad.isSecondActionActive ? "B" : "A")")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(theme.accent)
+                        }
+                    }
+                    fieldSection("아이콘 \(editingSecondAction ? "B" : "A")") {
+                        LaunchpadIconPicker(selection: selectedSymbolBinding, isSideButton: pad.id.hasPrefix("side_"))
+                    }
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
                         actionButton(.app)
                         actionButton(.shortcut)
                         actionButton(.terminalCommand)
                         actionButton(.url)
-                        actionButton(.clipboardText)
                     }
-                    if pad.action.kind != .none {
+                    if selectedAction.kind != .none {
                         actionRegistration
-                        Button("이 동작 실행", action: onRun)
+                        Button("이 동작 실행") { onRun(selectedAction) }
                             .font(.system(size: 12, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 9)
@@ -127,6 +168,10 @@ struct InspectorView: View {
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.foreground.opacity(0.11)))
         .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
         .onChange(of: pad.id) { _, _ in
+            appRegistrationRequestID = UUID()
+            editingSecondAction = false
+        }
+        .onChange(of: editingSecondAction) { _, _ in
             appRegistrationRequestID = UUID()
         }
     }
@@ -195,24 +240,26 @@ struct InspectorView: View {
 
     private func actionButton(_ kind: ActionKind) -> some View {
         Button {
-            let changedKind = pad.action.kind != kind
+            let changedKind = selectedAction.kind != kind
             if changedKind {
                 appRegistrationRequestID = UUID()
             }
-            pad.action.kind = kind
-            if changedKind || pad.action.value.isEmpty { pad.action.value = defaultValue(for: kind) }
+            updateSelectedAction {
+                $0.kind = kind
+                if changedKind || $0.value.isEmpty { $0.value = defaultValue(for: kind) }
+            }
         } label: {
             Text(kind.title).font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 12)
-                .foregroundStyle(pad.action.kind == kind ? theme.accentForeground : theme.foreground.opacity(0.72))
-                .background(pad.action.kind == kind ? theme.accent : theme.foreground.opacity(0.075), in: RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(pad.action.kind == kind ? theme.accent : theme.foreground.opacity(0.22)))
+                .foregroundStyle(selectedAction.kind == kind ? theme.accentForeground : theme.foreground.opacity(0.72))
+                .background(selectedAction.kind == kind ? theme.accent : theme.foreground.opacity(0.075), in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedAction.kind == kind ? theme.accent : theme.foreground.opacity(0.22)))
                 .frame(minHeight: 42)
         }
         .buttonStyle(.plain)
     }
 
     @ViewBuilder private var actionRegistration: some View {
-        switch pad.action.kind {
+        switch selectedAction.kind {
         case .app, .appFolder:
             VStack(alignment: .leading, spacing: 8) {
                 Button("앱 등록") { registerApplication() }
@@ -223,25 +270,25 @@ struct InspectorView: View {
                     .background(theme.foreground.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
                     .buttonStyle(.plain)
                 registrationValue(
-                    title: pad.action.value.isEmpty ? "등록된 앱 없음" : (AppRegistrationService.displayName(for: pad.action.value) ?? "등록된 앱"),
-                    detail: pad.action.value
+                    title: selectedAction.value.isEmpty ? "등록된 앱 없음" : (AppRegistrationService.displayName(for: selectedAction.value) ?? "등록된 앱"),
+                    detail: selectedAction.value
                 )
             }
         case .shortcut:
             ShortcutComposerView(
-                value: $pad.action.value,
-                targetAppBundleIdentifier: $pad.action.targetAppBundleIdentifier,
-                launchTargetAppIfNeeded: $pad.action.launchTargetAppIfNeeded
+                value: selectedActionBinding(for: \.value),
+                targetAppBundleIdentifier: selectedActionBinding(for: \.targetAppBundleIdentifier),
+                launchTargetAppIfNeeded: selectedActionBinding(for: \.launchTargetAppIfNeeded)
             )
         case .terminalCommand:
-            DarkTextField(text: $pad.action.value, placeholder: "예: open -a Safari")
-            Toggle("터미널 창 표시", isOn: $pad.action.showTerminalWindow)
+            DarkTextField(text: selectedActionBinding(for: \.value), placeholder: "예: open -a Safari")
+            Toggle("터미널 창 표시", isOn: selectedActionBinding(for: \.showTerminalWindow))
                 .toggleStyle(.checkbox)
         case .url:
-            DarkTextField(text: $pad.action.value, placeholder: "https://example.com")
-            URLTabPicker(openInCurrentTab: $pad.action.openURLInCurrentTab)
+            DarkTextField(text: selectedActionBinding(for: \.value), placeholder: "https://example.com")
+            URLTabPicker(openInCurrentTab: selectedActionBinding(for: \.openURLInCurrentTab))
         case .clipboardText:
-            TextEditor(text: $pad.action.value)
+            TextEditor(text: selectedActionBinding(for: \.value))
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(theme.foreground)
                 .scrollContentBackground(.hidden)
@@ -269,18 +316,43 @@ struct InspectorView: View {
     private func registerApplication() {
         registrationError = ""
         let targetPadID = pad.id
+        let targetEditsSecondAction = editingSecondAction
         let requestID = UUID()
         appRegistrationRequestID = requestID
         AppRegistrationService.chooseApplication { result in
-            guard appRegistrationRequestID == requestID, pad.id == targetPadID, pad.action.kind == .app else { return }
+            guard appRegistrationRequestID == requestID,
+                  pad.id == targetPadID,
+                  editingSecondAction == targetEditsSecondAction,
+                  selectedAction.kind == .app else { return }
             switch result {
             case .success(let application):
-                pad.action.value = application.bundleIdentifier
-                if pad.title.isEmpty { pad.title = application.name }
+                updateSelectedAction { $0.value = application.bundleIdentifier }
+                if editingSecondAction {
+                    if pad.secondTitle?.isEmpty ?? true { pad.secondTitle = application.name }
+                } else if pad.title.isEmpty {
+                    pad.title = application.name
+                }
             case .failure(let error):
                 registrationError = error.localizedDescription
             }
         }
+    }
+
+    private func updateSelectedAction(_ update: (inout PadAction) -> Void) {
+        if editingSecondAction {
+            var action = pad.secondAction ?? PadAction()
+            update(&action)
+            pad.secondAction = action
+        } else {
+            update(&pad.action)
+        }
+    }
+
+    private func selectedActionBinding<Value>(for keyPath: WritableKeyPath<PadAction, Value>) -> Binding<Value> {
+        Binding(
+            get: { selectedAction[keyPath: keyPath] },
+            set: { value in updateSelectedAction { $0[keyPath: keyPath] = value } }
+        )
     }
 
     private func palette(title: String, selection: Binding<String>) -> some View {
@@ -479,6 +551,7 @@ private struct LaunchpadIconPicker: View {
         default: icon
         }
     }
+
 }
 
 struct DarkTextField: View {

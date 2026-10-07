@@ -389,12 +389,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 message = "완료·승인 사운드 재생 기기를 \(target.title)(으)로 변경했습니다."
             case "smartphoneButton", "smartphoneButtonLongPress":
                 let longPress = command.command == "smartphoneButtonLongPress"
-                guard let buttonID = command.buttonID,
-                      let action = SmartphoneDefaults.action(
-                        id: buttonID,
-                        in: SmartphoneDefaults.persistedPages(),
-                        longPress: longPress
-                      ) else {
+                guard let buttonID = command.buttonID else {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: "스마트폰 버튼 설정을 찾을 수 없습니다.")
+                }
+                var pages = SmartphoneDefaults.persistedPages()
+                let action: PadAction?
+                if longPress {
+                    action = SmartphoneDefaults.action(id: buttonID, in: pages, longPress: true)
+                } else {
+                    let previousPages = pages
+                    action = SmartphoneDefaults.toggleAction(id: buttonID, in: &pages)
+                    if pages != previousPages {
+                        SmartphoneDefaults.persist(pages)
+                        codex.remoteSmartphonePagesDidChange(pages)
+                        codex.publishRemoteState()
+                    }
+                }
+                guard let action else {
                     return CodexRemoteCommandResult(id: command.id, success: false, message: "스마트폰 버튼 설정을 찾을 수 없습니다.")
                 }
                 let commandFileID = longPress ? buttonID + "_long_press" : buttonID

@@ -134,7 +134,9 @@ class RemoteBridgeClient(context: Context) {
     @Volatile private var lastActivity: String? = null
     @Volatile private var lastCompletionEventId: Int? = null
     @Volatile private var completionSoundOutputTarget = "phone"
+    @Volatile private var completionSoundEnabled = true
     @Volatile private var completionSoundVolume = 1f
+    @Volatile private var approvalSoundEnabled = true
     @Volatile private var approvalSoundVolume = 1f
     @Volatile private var hasReceivedRemoteState = false
     /** Set when a reconnect may replay the same active state without a transition. */
@@ -159,6 +161,8 @@ class RemoteBridgeClient(context: Context) {
         get() = completionSoundVolume
     internal val selectedApprovalSoundVolume: Float
         get() = approvalSoundVolume
+    internal val isApprovalSoundEnabled: Boolean
+        get() = approvalSoundEnabled
 
     /** Called on the main thread when a Codex task completion is observed. */
     var onCodexCompletion: ((playSound: Boolean) -> Unit)? = null
@@ -463,7 +467,7 @@ class RemoteBridgeClient(context: Context) {
                 previousCompletionEventId = lastCompletionEventId,
                 currentCompletionEventId = nextCompletionEventId
             )
-            val playCompletionSound = shouldPlayCodexCompletionSound(
+            val playCompletionSound = completionSoundEnabled && shouldPlayCodexCompletionSound(
                 previousActivity = lastActivity,
                 currentActivity = nextActivity,
                 previousCompletionEventId = lastCompletionEventId,
@@ -530,6 +534,7 @@ class RemoteBridgeClient(context: Context) {
     }
 
     private fun receiveCompletionSound(payload: JSONObject) {
+        completionSoundEnabled = payload.optString("id") != "none"
         completionSoundOutputTarget = payload.optString("outputTarget", "phone")
         mainHandler.post { completionSoundTarget = completionSoundOutputTarget }
         completionSoundVolume = normalizeCompletionSoundVolumePercent(payload.optInt("volumePercent", 100))
@@ -561,6 +566,7 @@ class RemoteBridgeClient(context: Context) {
     }
 
     private fun receiveApprovalSound(payload: JSONObject) {
+        approvalSoundEnabled = payload.optString("id") != "none"
         approvalSoundVolume = normalizeCompletionSoundVolumePercent(payload.optInt("volumePercent", 100))
         val outputTarget = payload.optString("outputTarget", "phone")
             .takeIf { it in setOf("phone", "mac") } ?: "phone"

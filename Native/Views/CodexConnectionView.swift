@@ -315,15 +315,17 @@ struct CodexConnectionView: View {
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("completion-sound-select-\(option.id)")
 
-                            Button {
-                                toggleSoundPreview(option.id)
-                            } label: {
-                                Image(systemName: previewingSoundID == option.id ? "stop.fill" : "play.fill")
-                                    .frame(width: 30, height: 30)
+                            if option.id != CodexCompletionSoundLibrary.noSoundID {
+                                Button {
+                                    toggleSoundPreview(option.id)
+                                } label: {
+                                    Image(systemName: previewingSoundID == option.id ? "stop.fill" : "play.fill")
+                                        .frame(width: 30, height: 30)
+                                }
+                                .buttonStyle(.bordered)
+                                .accessibilityLabel(previewingSoundID == option.id ? "미리듣기 중지" : "\(option.title) 미리듣기")
+                                .accessibilityIdentifier("completion-sound-preview-\(option.id)")
                             }
-                            .buttonStyle(.bordered)
-                            .accessibilityLabel(previewingSoundID == option.id ? "미리듣기 중지" : "\(option.title) 미리듣기")
-                            .accessibilityIdentifier("completion-sound-preview-\(option.id)")
                         }
                         .padding(8)
                         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
@@ -422,15 +424,17 @@ struct CodexConnectionView: View {
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("approval-sound-select-\(option.id)")
 
-                            Button {
-                                toggleSoundPreview(option.id)
-                            } label: {
-                                Image(systemName: previewingSoundID == option.id ? "stop.fill" : "play.fill")
-                                    .frame(width: 30, height: 30)
+                            if option.id != CodexCompletionSoundLibrary.noSoundID {
+                                Button {
+                                    toggleSoundPreview(option.id)
+                                } label: {
+                                    Image(systemName: previewingSoundID == option.id ? "stop.fill" : "play.fill")
+                                        .frame(width: 30, height: 30)
+                                }
+                                .buttonStyle(.bordered)
+                                .accessibilityLabel(previewingSoundID == option.id ? "미리듣기 중지" : "\(approvalSoundTitle(for: option)) 미리듣기")
+                                .accessibilityIdentifier("approval-sound-preview-\(option.id)")
                             }
-                            .buttonStyle(.bordered)
-                            .accessibilityLabel(previewingSoundID == option.id ? "미리듣기 중지" : "\(approvalSoundTitle(for: option)) 미리듣기")
-                            .accessibilityIdentifier("approval-sound-preview-\(option.id)")
                         }
                         .padding(8)
                         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))

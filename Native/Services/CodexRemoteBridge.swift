@@ -2,27 +2,29 @@ import Foundation
 import Network
 import Observation
 
+private func remoteSafeAction(_ action: PadAction) -> PadAction {
+    var action = action
+    if action.kind == .clipboardText { action.value = "" }
+    return action
+}
+
 private func smartphonePagesForRemote(_ pages: [SmartphonePage]) -> [SmartphonePage] {
     pages.map { page in
         var sanitizedPage = page
         sanitizedPage.buttons = page.buttons.map { button in
             var sanitizedButton = button
             sanitizedButton.customIconData = nil
-            if sanitizedButton.action.kind == .clipboardText {
-                sanitizedButton.action.value = ""
-            }
-            if sanitizedButton.longPressAction.kind == .clipboardText {
-                sanitizedButton.longPressAction.value = ""
-            }
+            sanitizedButton.secondCustomIconData = nil
+            sanitizedButton.action = remoteSafeAction(sanitizedButton.action)
+            sanitizedButton.longPressAction = remoteSafeAction(sanitizedButton.longPressAction)
+            sanitizedButton.secondAction = sanitizedButton.secondAction.map(remoteSafeAction)
             sanitizedButton.folderShortcuts = button.folderShortcuts.map { shortcut in
                 var sanitizedShortcut = shortcut
                 sanitizedShortcut.customIconData = nil
-                if sanitizedShortcut.action.kind == .clipboardText {
-                    sanitizedShortcut.action.value = ""
-                }
-                if sanitizedShortcut.longPressAction.kind == .clipboardText {
-                    sanitizedShortcut.longPressAction.value = ""
-                }
+                sanitizedShortcut.secondCustomIconData = nil
+                sanitizedShortcut.action = remoteSafeAction(sanitizedShortcut.action)
+                sanitizedShortcut.longPressAction = remoteSafeAction(sanitizedShortcut.longPressAction)
+                sanitizedShortcut.secondAction = sanitizedShortcut.secondAction.map(remoteSafeAction)
                 return sanitizedShortcut
             }
             return sanitizedButton

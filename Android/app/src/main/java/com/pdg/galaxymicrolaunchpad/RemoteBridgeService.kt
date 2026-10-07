@@ -241,7 +241,8 @@ class RemoteBridgeService : Service() {
             stopApprovalSound()
             return
         }
-        if (shouldPlayApprovalSoundOnPhone(RemoteBridgeRuntime.client(this).approvalSoundOutputTarget)) {
+        val client = RemoteBridgeRuntime.client(this)
+        if (client.isApprovalSoundEnabled && shouldPlayApprovalSoundOnPhone(client.approvalSoundOutputTarget)) {
             playApprovalSound()
         } else {
             stopApprovalSound()

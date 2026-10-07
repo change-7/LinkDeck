@@ -8,36 +8,91 @@ enum SmartphoneIconAssetProvider {
     static func assets(for pages: [SmartphonePage]) -> [String: SmartphoneIconAsset] {
         var assets: [String: SmartphoneIconAsset] = [:]
         for button in pages.flatMap(\.buttons) {
-            guard !button.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-            if let asset = asset(for: button) {
-                assets[button.id] = asset
+            guard !button.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !(button.secondTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            if let asset = asset(for: button, isSecondAction: false) {
+                assets[assetKey(for: button.id, isSecondAction: false)] = asset
+            }
+            if button.secondAction != nil,
+               let asset = asset(for: button, isSecondAction: true) {
+                assets[assetKey(for: button.id, isSecondAction: true)] = asset
+            }
+            if let activeAsset = asset(for: button, isSecondAction: button.isSecondActionActive) {
+                assets[button.id] = activeAsset
             }
 
             for shortcut in button.folderShortcuts {
-                guard !shortcut.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                let asset = shortcut.customIconData.flatMap { customAsset(for: shortcut.id, data: $0) }
-                    ?? symbolAsset(for: shortcut.symbol)
-                guard let asset else { continue }
-                assets[shortcut.id] = asset
+                guard !shortcut.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || !(shortcut.secondTitle ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                if let asset = asset(for: shortcut, isSecondAction: false) {
+                    assets[assetKey(for: shortcut.id, isSecondAction: false)] = asset
+                }
+                if shortcut.secondAction != nil,
+                   let asset = asset(for: shortcut, isSecondAction: true) {
+                    assets[assetKey(for: shortcut.id, isSecondAction: true)] = asset
+                }
+                if let activeAsset = asset(for: shortcut, isSecondAction: shortcut.isSecondActionActive) {
+                    assets[shortcut.id] = activeAsset
+                }
             }
         }
         return assets
     }
 
-    private static func asset(for button: SmartphoneButton) -> SmartphoneIconAsset? {
-        if let customIconData = button.customIconData,
-           let customAsset = customAsset(for: button.id, data: customIconData) {
+    static func assetKey(for id: String, isSecondAction: Bool) -> String {
+        "\(id)__\(isSecondAction ? "B" : "A")"
+    }
+
+    private static func asset(for button: SmartphoneButton, isSecondAction: Bool) -> SmartphoneIconAsset? {
+        let symbol = isSecondAction ? button.secondSymbol ?? button.symbol : button.symbol
+        let customData: Data?
+        if isSecondAction {
+            customData = button.secondCustomIconData
+                ?? (button.secondSymbol == nil ? button.customIconData : nil)
+        } else {
+            customData = button.customIconData
+        }
+        let configuredAction = isSecondAction ? button.secondAction ?? button.action : button.action
+        let action = configuredAction.kind == .none ? button.longPressAction : configuredAction
+        let usesActionIcon = isSecondAction
+            ? button.secondSymbol == nil && button.usesActionIconForSymbol
+            : button.usesActionIconForSymbol
+        return asset(for: button.id, symbol: symbol, customData: customData, action: action, usesActionIcon: usesActionIcon)
+    }
+
+    private static func asset(for shortcut: SmartphoneFolderShortcut, isSecondAction: Bool) -> SmartphoneIconAsset? {
+        let symbol = isSecondAction ? shortcut.secondSymbol ?? shortcut.symbol : shortcut.symbol
+        let customData: Data?
+        if isSecondAction {
+            customData = shortcut.secondCustomIconData
+                ?? (shortcut.secondSymbol == nil ? shortcut.customIconData : nil)
+        } else {
+            customData = shortcut.customIconData
+        }
+        return asset(
+            for: shortcut.id,
+            symbol: symbol,
+            customData: customData,
+            action: isSecondAction ? shortcut.secondAction ?? shortcut.action : shortcut.action,
+            usesActionIcon: false
+        )
+    }
+
+    private static func asset(for id: String, symbol: String, customData: Data?, action: PadAction, usesActionIcon: Bool) -> SmartphoneIconAsset? {
+        if let customData,
+           let customAsset = customAsset(for: id, data: customData) {
             return customAsset
         }
 
-        guard !button.symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        guard !symbol.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
 
-        if let bundleIdentifier = targetBundleIdentifier(for: button),
+        if usesActionIcon,
+           let bundleIdentifier = targetBundleIdentifier(for: action),
            !bundleIdentifier.isEmpty,
            let appAsset = appAsset(for: bundleIdentifier) {
             return appAsset
         }
-        return symbolAsset(for: button.symbol)
+        return symbolAsset(for: symbol)
     }
 
     private static func customAsset(for buttonID: String, data: Data) -> SmartphoneIconAsset? {
@@ -50,8 +105,7 @@ enum SmartphoneIconAssetProvider {
         return asset
     }
 
-    private static func targetBundleIdentifier(for button: SmartphoneButton) -> String? {
-        let action = button.action.kind == .none ? button.longPressAction : button.action
+    private static func targetBundleIdentifier(for action: PadAction) -> String? {
         switch action.kind {
         case .app, .appFolder:
             return action.value

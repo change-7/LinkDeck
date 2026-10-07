@@ -124,7 +124,7 @@ final class LaunchpadMIDIManager: @unchecked Sendable {
             for column in 0..<8 {
                 let pad = page.pads[row * 8 + column]
                 let gridIndex = row * 8 + column
-                let value = gridOverlay?[gridIndex] ?? color(for: pad.idleColor).midiValue
+                let value = gridOverlay?[gridIndex] ?? color(for: pad.stateColor).midiValue
                 messages.append(LaunchpadMIDIMessage(status: 0x90, number: UInt8(row * 16 + column), value: value))
             }
 
@@ -313,14 +313,14 @@ final class LaunchpadMIDIManager: @unchecked Sendable {
         let page = latestPages[latestPageIndex]
         return (0..<64).map { index in
             guard page.pads.indices.contains(index) else { return .off }
-            return color(for: page.pads[index].idleColor)
+            return color(for: page.pads[index].stateColor)
         }
     }
 
     private func sideLEDValues(for page: LaunchPage) -> [UInt8] {
         (0..<8).map { row in
             let side = page.pads.first(where: { $0.id == "side_\(row)" })
-            return color(for: side?.idleColor ?? "off").midiValue
+            return color(for: side?.stateColor ?? "off").midiValue
         }
     }
 

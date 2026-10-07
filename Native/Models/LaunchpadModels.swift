@@ -86,32 +86,77 @@ struct PadAction: Codable, Hashable {
     }
 }
 
+private func nextConfiguredAction(
+    primary: PadAction,
+    secondary: PadAction?,
+    isSecondActionActive: inout Bool
+) -> PadAction {
+    guard let secondary else {
+        isSecondActionActive = false
+        return primary
+    }
+    isSecondActionActive.toggle()
+    return isSecondActionActive ? secondary : primary
+}
+
 struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
     let id: String
     var title = ""
+    var secondTitle: String?
     var symbol = "command"
+    var secondSymbol: String?
     var customIconData: Data?
+    var secondCustomIconData: Data?
     var action = PadAction(kind: .shortcut)
     var longPressAction = PadAction()
+    var secondAction: PadAction?
+    var isSecondActionActive = false
+
+    var activeTitle: String {
+        guard secondAction != nil, isSecondActionActive,
+              let secondTitle, !secondTitle.isEmpty else { return title }
+        return secondTitle
+    }
+
+    var activeSymbol: String {
+        secondAction != nil && isSecondActionActive ? secondSymbol ?? symbol : symbol
+    }
+
+    var activeCustomIconData: Data? {
+        guard secondAction != nil, isSecondActionActive else { return customIconData }
+        if let secondCustomIconData { return secondCustomIconData }
+        return secondSymbol == nil ? customIconData : nil
+    }
 
     init(
         id: String,
         title: String = "",
+        secondTitle: String? = nil,
         symbol: String = "command",
+        secondSymbol: String? = nil,
         customIconData: Data? = nil,
+        secondCustomIconData: Data? = nil,
         action: PadAction = PadAction(kind: .shortcut),
-        longPressAction: PadAction = PadAction()
+        longPressAction: PadAction = PadAction(),
+        secondAction: PadAction? = nil,
+        isSecondActionActive: Bool = false
     ) {
         self.id = id
         self.title = title
+        self.secondTitle = secondTitle
         self.symbol = symbol
+        self.secondSymbol = secondSymbol
         self.customIconData = customIconData
+        self.secondCustomIconData = secondCustomIconData
         self.action = action
         self.longPressAction = longPressAction
+        self.secondAction = secondAction
+        self.isSecondActionActive = isSecondActionActive
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, symbol, customIconData, action, longPressAction
+        case id, title, secondTitle, symbol, secondSymbol, customIconData, secondCustomIconData
+        case action, longPressAction, secondAction, isSecondActionActive
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -122,69 +167,187 @@ struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        secondTitle = try container.decodeIfPresent(String.self, forKey: .secondTitle)
         symbol = try container.decodeIfPresent(String.self, forKey: .symbol) ?? "command"
+        secondSymbol = try container.decodeIfPresent(String.self, forKey: .secondSymbol)
         customIconData = try container.decodeIfPresent(Data.self, forKey: .customIconData)
+        secondCustomIconData = try container.decodeIfPresent(Data.self, forKey: .secondCustomIconData)
         action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction(kind: .shortcut)
         let savedLongPressAction = try container.decodeIfPresent(PadAction.self, forKey: .longPressAction)
         longPressAction = savedLongPressAction ?? PadAction()
+        secondAction = try container.decodeIfPresent(PadAction.self, forKey: .secondAction)
+        isSecondActionActive = try container.decodeIfPresent(Bool.self, forKey: .isSecondActionActive) ?? false
         let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
         if savedLongPressAction == nil,
            try legacy.decodeIfPresent(Bool.self, forKey: .requiresLongPress) == true {
             longPressAction = action
             action = PadAction()
         }
+    }
+
+    mutating func actionForNextPress() -> PadAction {
+        nextConfiguredAction(
+            primary: action,
+            secondary: secondAction,
+            isSecondActionActive: &isSecondActionActive
+        )
     }
 }
 
 struct Pad: Identifiable, Codable, Hashable {
     let id: String
     var title = ""
+    var secondTitle: String?
     var symbol = ""
+    var secondSymbol: String?
     var idleColor = "off"
     var activeColor = "green"
     var action = PadAction()
+    var secondAction: PadAction?
+    var isSecondActionActive = false
+
+    var activeTitle: String {
+        guard secondAction != nil, isSecondActionActive,
+              let secondTitle, !secondTitle.isEmpty else { return title }
+        return secondTitle
+    }
+
+    var activeSymbol: String {
+        secondAction != nil && isSecondActionActive ? secondSymbol ?? symbol : symbol
+    }
+
+    var stateColor: String {
+        secondAction != nil && isSecondActionActive ? activeColor : idleColor
+    }
+
+    mutating func actionForNextPress() -> PadAction {
+        nextConfiguredAction(
+            primary: action,
+            secondary: secondAction,
+            isSecondActionActive: &isSecondActionActive
+        )
+    }
 
     func configuration(at id: String) -> Pad {
         Pad(
             id: id,
             title: title,
+            secondTitle: secondTitle,
             symbol: symbol,
+            secondSymbol: secondSymbol,
             idleColor: idleColor,
             activeColor: activeColor,
-            action: action
+            action: action,
+            secondAction: secondAction,
+            isSecondActionActive: isSecondActionActive
         )
+    }
+}
+
+extension Pad {
+    private enum CodingKeys: String, CodingKey {
+        case id, title, secondTitle, symbol, secondSymbol, idleColor, activeColor, action, secondAction, isSecondActionActive
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        secondTitle = try container.decodeIfPresent(String.self, forKey: .secondTitle)
+        symbol = try container.decodeIfPresent(String.self, forKey: .symbol) ?? ""
+        secondSymbol = try container.decodeIfPresent(String.self, forKey: .secondSymbol)
+        idleColor = try container.decodeIfPresent(String.self, forKey: .idleColor) ?? "off"
+        activeColor = try container.decodeIfPresent(String.self, forKey: .activeColor) ?? "green"
+        action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction()
+        secondAction = try container.decodeIfPresent(PadAction.self, forKey: .secondAction)
+        isSecondActionActive = try container.decodeIfPresent(Bool.self, forKey: .isSecondActionActive) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encodeIfPresent(secondTitle, forKey: .secondTitle)
+        try container.encode(symbol, forKey: .symbol)
+        try container.encodeIfPresent(secondSymbol, forKey: .secondSymbol)
+        try container.encode(idleColor, forKey: .idleColor)
+        try container.encode(activeColor, forKey: .activeColor)
+        try container.encode(action, forKey: .action)
+        try container.encodeIfPresent(secondAction, forKey: .secondAction)
+        try container.encode(isSecondActionActive, forKey: .isSecondActionActive)
     }
 }
 
 struct SmartphoneButton: Identifiable, Codable, Hashable {
     let id: String
     var title = ""
+    var secondTitle: String?
     var symbol = "square.grid.2x2"
+    var secondSymbol: String?
     var customIconData: Data?
+    var secondCustomIconData: Data?
     var action = PadAction()
     var folderShortcuts: [SmartphoneFolderShortcut] = []
     var longPressAction = PadAction()
+    var secondAction: PadAction?
+    var isSecondActionActive = false
+    var usesActionIconForSymbol = true
+
+    var activeTitle: String {
+        guard secondAction != nil, isSecondActionActive,
+              let secondTitle, !secondTitle.isEmpty else { return title }
+        return secondTitle
+    }
+
+    var activeSymbol: String {
+        secondAction != nil && isSecondActionActive ? secondSymbol ?? symbol : symbol
+    }
+
+    var activeCustomIconData: Data? {
+        guard secondAction != nil, isSecondActionActive else { return customIconData }
+        if let secondCustomIconData { return secondCustomIconData }
+        return secondSymbol == nil ? customIconData : nil
+    }
+
+    var activeUsesActionIconForSymbol: Bool {
+        secondAction != nil && isSecondActionActive
+            ? secondSymbol == nil && usesActionIconForSymbol
+            : usesActionIconForSymbol
+    }
 
     init(
         id: String,
         title: String = "",
+        secondTitle: String? = nil,
         symbol: String = "square.grid.2x2",
+        secondSymbol: String? = nil,
         customIconData: Data? = nil,
+        secondCustomIconData: Data? = nil,
         action: PadAction = PadAction(),
         folderShortcuts: [SmartphoneFolderShortcut] = [],
-        longPressAction: PadAction = PadAction()
+        longPressAction: PadAction = PadAction(),
+        secondAction: PadAction? = nil,
+        isSecondActionActive: Bool = false,
+        usesActionIconForSymbol: Bool = true
     ) {
         self.id = id
         self.title = title
+        self.secondTitle = secondTitle
         self.symbol = symbol
+        self.secondSymbol = secondSymbol
         self.customIconData = customIconData
+        self.secondCustomIconData = secondCustomIconData
         self.action = action
         self.folderShortcuts = folderShortcuts
         self.longPressAction = longPressAction
+        self.secondAction = secondAction
+        self.isSecondActionActive = isSecondActionActive
+        self.usesActionIconForSymbol = usesActionIconForSymbol
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, symbol, customIconData, action, folderShortcuts, longPressAction
+        case id, title, secondTitle, symbol, secondSymbol, customIconData, secondCustomIconData
+        case action, folderShortcuts, longPressAction, secondAction, isSecondActionActive, usesActionIconForSymbol
     }
 
     private enum LegacyCodingKeys: String, CodingKey {
@@ -195,12 +358,18 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(String.self, forKey: .id)
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
+        secondTitle = try container.decodeIfPresent(String.self, forKey: .secondTitle)
         symbol = try container.decodeIfPresent(String.self, forKey: .symbol) ?? "square.grid.2x2"
+        secondSymbol = try container.decodeIfPresent(String.self, forKey: .secondSymbol)
         customIconData = try container.decodeIfPresent(Data.self, forKey: .customIconData)
+        secondCustomIconData = try container.decodeIfPresent(Data.self, forKey: .secondCustomIconData)
         action = try container.decodeIfPresent(PadAction.self, forKey: .action) ?? PadAction()
         folderShortcuts = try container.decodeIfPresent([SmartphoneFolderShortcut].self, forKey: .folderShortcuts) ?? []
         let savedLongPressAction = try container.decodeIfPresent(PadAction.self, forKey: .longPressAction)
         longPressAction = savedLongPressAction ?? PadAction()
+        secondAction = try container.decodeIfPresent(PadAction.self, forKey: .secondAction)
+        isSecondActionActive = try container.decodeIfPresent(Bool.self, forKey: .isSecondActionActive) ?? false
+        usesActionIconForSymbol = try container.decodeIfPresent(Bool.self, forKey: .usesActionIconForSymbol) ?? true
         let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
         if savedLongPressAction == nil,
            try legacy.decodeIfPresent(Bool.self, forKey: .requiresLongPress) == true {
@@ -209,15 +378,29 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
         }
     }
 
+    mutating func actionForNextPress() -> PadAction {
+        nextConfiguredAction(
+            primary: action,
+            secondary: secondAction,
+            isSecondActionActive: &isSecondActionActive
+        )
+    }
+
     func configuration(at id: String) -> SmartphoneButton {
         SmartphoneButton(
             id: id,
             title: title,
+            secondTitle: secondTitle,
             symbol: symbol,
+            secondSymbol: secondSymbol,
             customIconData: customIconData,
+            secondCustomIconData: secondCustomIconData,
             action: action,
             folderShortcuts: folderShortcuts,
-            longPressAction: longPressAction
+            longPressAction: longPressAction,
+            secondAction: secondAction,
+            isSecondActionActive: isSecondActionActive,
+            usesActionIconForSymbol: usesActionIconForSymbol
         )
     }
 }

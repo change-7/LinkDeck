@@ -25,7 +25,9 @@ struct SmartphoneSettingsView: View {
     @State private var registrationError = ""
     @State private var folderButtonID: String?
     @State private var folderUsesLongPress = false
+    @State private var folderUsesSecondAction = false
     @State private var editingLongPress = false
+    @State private var editingSecondAction = false
     @State private var isCustomIconDropTargeted = false
     @State private var customIconError = ""
     @State private var isSymbolPickerPresented = false
@@ -87,7 +89,19 @@ struct SmartphoneSettingsView: View {
 
     private var page: SmartphonePage { store.smartphonePages[pageIndex] }
     private var selectedButton: SmartphoneButton { page.buttons[buttonIndex] }
-    private var selectedAction: PadAction { editingLongPress ? selectedButton.longPressAction : selectedButton.action }
+    private var selectedAction: PadAction {
+        if editingLongPress { return selectedButton.longPressAction }
+        return editingSecondAction ? (selectedButton.secondAction ?? PadAction()) : selectedButton.action
+    }
+    private var isEditingSecondIcon: Bool { !editingLongPress && editingSecondAction }
+    private var selectedIconSymbol: String {
+        isEditingSecondIcon ? selectedButton.secondSymbol ?? selectedButton.symbol : selectedButton.symbol
+    }
+    private var selectedCustomIconData: Data? {
+        guard isEditingSecondIcon else { return selectedButton.customIconData }
+        if let data = selectedButton.secondCustomIconData { return data }
+        return selectedButton.secondSymbol == nil ? selectedButton.customIconData : nil
+    }
     private var imageIconBacking: Color {
         colorScheme == .light ? Color(red: 0.54, green: 0.60, blue: 0.70) : .clear
     }
@@ -129,7 +143,8 @@ struct SmartphoneSettingsView: View {
                         store: store,
                         pageIndex: pageIndex,
                         folderButtonID: folderButtonID,
-                        folderUsesLongPress: folderUsesLongPress
+                        folderUsesLongPress: folderUsesLongPress,
+                        folderUsesSecondAction: folderUsesSecondAction
                     )
                     .contentShape(Rectangle())
                     .onTapGesture { }
@@ -277,6 +292,8 @@ struct SmartphoneSettingsView: View {
             Button {
                 pageIndex = buttonPageIndex
                 buttonIndex = index
+                editingSecondAction = false
+                folderUsesSecondAction = false
                 if button.action.kind == .appFolder || button.longPressAction.kind == .appFolder {
                     folderUsesLongPress = button.action.kind != .appFolder || (editingLongPress && button.longPressAction.kind == .appFolder)
                     folderButtonID = button.id
@@ -284,8 +301,8 @@ struct SmartphoneSettingsView: View {
             } label: {
                 VStack(spacing: 6) {
                     buttonIcon(for: button, isSelected: buttonPageIndex == pageIndex && index == buttonIndex)
-                    if !button.title.isEmpty {
-                        Text(button.title)
+                    if !button.activeTitle.isEmpty {
+                        Text(button.activeTitle)
                             .font(.system(size: 11, weight: .medium))
                             .lineLimit(1)
                     }
@@ -293,6 +310,11 @@ struct SmartphoneSettingsView: View {
                         Text(button.longPressAction.kind == .none ? button.action.kind.title : (button.action.kind == .none ? "길게 · \(button.longPressAction.kind.title)" : "짧게 / 길게"))
                             .font(.system(size: 9, design: .monospaced))
                             .foregroundStyle(.secondary)
+                    }
+                    if button.secondAction != nil {
+                        Text("A/B · 현재 \(button.isSecondActionActive ? "B" : "A")")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(theme.accent)
                     }
                 }
                 .frame(maxWidth: .infinity, minHeight: 78)
@@ -307,7 +329,7 @@ struct SmartphoneSettingsView: View {
             }
             .buttonStyle(.plain)
             .focusEffectDisabled()
-            .accessibilityLabel(button.title.isEmpty ? "비어 있는 스마트폰 버튼 슬롯" : button.title)
+            .accessibilityLabel(button.activeTitle.isEmpty ? "비어 있는 스마트폰 버튼 슬롯" : button.activeTitle)
             .accessibilityHint("선택하여 버튼을 편집합니다.")
 
             Image(systemName: "line.3.horizontal")
@@ -316,11 +338,11 @@ struct SmartphoneSettingsView: View {
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
                 .draggable("\(buttonPageIndex)|\(button.id)") {
-                    Label(button.title.isEmpty ? "빈 버튼" : button.title, systemImage: button.symbol.isEmpty ? "square" : button.symbol)
+                    Label(button.activeTitle.isEmpty ? "빈 버튼" : button.activeTitle, systemImage: button.activeSymbol.isEmpty ? "square" : button.activeSymbol)
                         .padding(8)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }
-                .accessibilityLabel("\(button.title.isEmpty ? "빈 버튼" : button.title) 이동")
+                .accessibilityLabel("\(button.activeTitle.isEmpty ? "빈 버튼" : button.activeTitle) 이동")
                 .accessibilityHint("같은 페이지 버튼에 놓거나, 다른 페이지 이름 위에 올려 페이지를 연 뒤 원하는 칸에 놓습니다.")
                 .help("이 손잡이를 같은 페이지 버튼 위로 드래그하거나, 다른 페이지 이름 위에 올려 페이지를 연 뒤 원하는 칸에 놓습니다.")
         }
@@ -384,9 +406,9 @@ struct SmartphoneSettingsView: View {
                 .buttonStyle(.plain)
                 .help("이 스마트폰 버튼의 이름, 아이콘, 기능을 비웁니다.")
             }
-            DarkTextField(text: buttonTextBinding, placeholder: "버튼 라벨")
-            field("아이콘 선택") { symbolPicker }
-            customIconPicker
+            field(selectedButton.secondAction == nil ? "버튼 라벨" : "버튼 라벨 \(editingSecondAction ? "B" : "A")") {
+                DarkTextField(text: buttonTextBinding, placeholder: "버튼 이름")
+            }
             Divider().overlay(theme.foreground.opacity(0.16))
             Picker("누르기 방식", selection: $editingLongPress) {
                 Text("짧게 누르기").tag(false)
@@ -394,14 +416,34 @@ struct SmartphoneSettingsView: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
-            .onChange(of: editingLongPress) { registrationError = "" }
+            .onChange(of: editingLongPress) { _, isLongPress in
+                registrationError = ""
+                if isLongPress { editingSecondAction = false }
+            }
+            if !editingLongPress {
+                Toggle("A/B 동작 전환", isOn: secondActionEnabledBinding)
+                    .toggleStyle(.checkbox)
+                if selectedButton.secondAction != nil {
+                    HStack(spacing: 8) {
+                        Picker("편집할 동작", selection: $editingSecondAction) {
+                            Text("A").tag(false)
+                            Text("B").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        Text("현재 \(selectedButton.isSecondActionActive ? "B" : "A")")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(theme.accent)
+                    }
+                }
+            }
+            field("아이콘 \(isEditingSecondIcon ? "B" : "A")") { symbolPicker }
+            customIconPicker
             field("실행 동작") {
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: actionGridSpacing) {
                     actionButton(.app)
                     actionButton(.shortcut)
                     actionButton(.terminalCommand)
                     actionButton(.url)
-                    actionButton(.clipboardText)
                     actionButton(.appFolder)
                 }
             }
@@ -429,9 +471,9 @@ struct SmartphoneSettingsView: View {
             isSymbolPickerPresented.toggle()
         } label: {
             HStack(spacing: 8) {
-                symbolGlyph(selectedButton.symbol, size: 15)
+                symbolGlyph(selectedIconSymbol, size: 15)
                     .frame(width: 22, height: 22)
-                Text(selectedButton.symbol.isEmpty ? "아이콘 없음" : selectedButton.symbol)
+                Text(selectedIconSymbol.isEmpty ? "아이콘 없음" : selectedIconSymbol)
                     .font(.system(size: 10, design: .monospaced))
                     .lineLimit(1)
                 Spacer(minLength: 4)
@@ -446,7 +488,7 @@ struct SmartphoneSettingsView: View {
             .overlay(RoundedRectangle(cornerRadius: 7).stroke(theme.foreground.opacity(0.18)))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("아이콘 선택: \(selectedButton.symbol.isEmpty ? "아이콘 없음" : selectedButton.symbol)")
+        .accessibilityLabel("아이콘 \(isEditingSecondIcon ? "B" : "A") 선택: \(selectedIconSymbol.isEmpty ? "아이콘 없음" : selectedIconSymbol)")
         .overlay(alignment: .topLeading) {
             if isSymbolPickerPresented {
                 symbolPopover
@@ -485,9 +527,9 @@ struct SmartphoneSettingsView: View {
     }
 
     private var filteredSymbolChoices: [String] {
-        let choices = symbolChoices.contains(selectedButton.symbol)
+        let choices = symbolChoices.contains(selectedIconSymbol)
             ? symbolChoices
-            : [selectedButton.symbol] + symbolChoices
+            : [selectedIconSymbol] + symbolChoices
         let query = symbolSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return choices }
         return choices.filter { symbol in
@@ -499,20 +541,27 @@ struct SmartphoneSettingsView: View {
     private func symbolChoiceButton(_ symbol: String) -> some View {
         Button {
             var button = selectedButton
-            button.symbol = symbol
+            if isEditingSecondIcon {
+                button.secondSymbol = symbol
+                button.secondCustomIconData = nil
+            } else {
+                button.symbol = symbol
+                button.customIconData = nil
+                button.usesActionIconForSymbol = false
+            }
             update(button)
             isSymbolPickerPresented = false
         } label: {
             symbolGlyph(symbol, size: 17)
                 .frame(maxWidth: .infinity, minHeight: 34)
-                .foregroundStyle(selectedButton.symbol == symbol ? theme.accentForeground : theme.foreground.opacity(0.78))
+                .foregroundStyle(selectedIconSymbol == symbol ? theme.accentForeground : theme.foreground.opacity(0.78))
                 .background(
-                    selectedButton.symbol == symbol ? theme.accent : theme.foreground.opacity(0.06),
+                    selectedIconSymbol == symbol ? theme.accent : theme.foreground.opacity(0.06),
                     in: RoundedRectangle(cornerRadius: 6)
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .stroke(selectedButton.symbol == symbol ? theme.accent : theme.foreground.opacity(0.2))
+                        .stroke(selectedIconSymbol == symbol ? theme.accent : theme.foreground.opacity(0.2))
                 )
         }
         .buttonStyle(.plain)
@@ -536,7 +585,7 @@ struct SmartphoneSettingsView: View {
     private var customIconPicker: some View {
         HStack(spacing: 8) {
             Group {
-                if let customIconData = selectedButton.customIconData,
+                if let customIconData = selectedCustomIconData,
                    let image = NSImage(data: customIconData) {
                     Image(nsImage: image)
                         .resizable()
@@ -557,7 +606,7 @@ struct SmartphoneSettingsView: View {
             )
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(selectedButton.customIconData == nil ? "PNG 없음" : "PNG 적용됨")
+                Text(selectedCustomIconData == nil ? "PNG 없음" : "PNG 적용됨")
                     .font(.system(size: 10, weight: .semibold))
                 Text("복사 후 붙여넣기 또는 드래그")
                     .font(.system(size: 9))
@@ -573,7 +622,7 @@ struct SmartphoneSettingsView: View {
                 .font(.system(size: 10, weight: .semibold))
                 .buttonStyle(.plain)
                 .foregroundStyle(theme.accent)
-            if selectedButton.customIconData != nil {
+            if selectedCustomIconData != nil {
                 Button("제거") { clearCustomIcon() }
                     .font(.system(size: 10, weight: .semibold))
                     .buttonStyle(.plain)
@@ -671,6 +720,7 @@ struct SmartphoneSettingsView: View {
                 .foregroundStyle(.secondary)
             Button("짧게·길게 동작 편집") {
                 folderUsesLongPress = editingLongPress
+                folderUsesSecondAction = editingSecondAction
                 folderButtonID = selectedButton.id
             }
             .buttonStyle(.plain)
@@ -683,14 +733,17 @@ struct SmartphoneSettingsView: View {
 
     @ViewBuilder
     private func buttonIcon(for button: SmartphoneButton, isSelected: Bool) -> some View {
-        let iconAction = button.action.kind == .none ? button.longPressAction : button.action
+        let configuredIconAction = button.secondAction != nil && button.isSecondActionActive
+            ? button.secondAction ?? button.action
+            : (button.action.kind == .none ? button.longPressAction : button.action)
+        let iconAction = configuredIconAction.kind == .none ? button.longPressAction : configuredIconAction
         let appBundleIdentifier: String? = switch iconAction.kind {
         case .app, .appFolder: iconAction.value
         case .shortcut: iconAction.targetAppBundleIdentifier
         case .terminalCommand, .url, .clipboardText, .none: nil
         }
 
-        if let customIconData = button.customIconData,
+        if let customIconData = button.activeCustomIconData,
            let customIcon = NSImage(data: customIconData) {
             Image(nsImage: customIcon)
                 .resizable()
@@ -699,10 +752,11 @@ struct SmartphoneSettingsView: View {
                 .frame(width: 24, height: 24)
                 .background(imageIconBacking, in: RoundedRectangle(cornerRadius: 5))
                 .opacity(isSelected ? 1 : 0.82)
-        } else if button.symbol.isEmpty {
+        } else if button.activeSymbol.isEmpty {
             Color.clear
                 .frame(width: 24, height: 24)
-        } else if let appBundleIdentifier,
+        } else if button.activeUsesActionIconForSymbol,
+           let appBundleIdentifier,
            !appBundleIdentifier.isEmpty,
            let appIcon = AppRegistrationService.icon(for: appBundleIdentifier) {
             Image(nsImage: appIcon)
@@ -713,7 +767,7 @@ struct SmartphoneSettingsView: View {
                 .background(imageIconBacking, in: RoundedRectangle(cornerRadius: 5))
                 .opacity(isSelected ? 1 : 0.82)
         } else {
-            Image(systemName: button.symbol)
+            Image(systemName: button.activeSymbol)
                 .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(isSelected ? theme.accent : theme.foreground.opacity(0.72))
         }
@@ -724,7 +778,7 @@ struct SmartphoneSettingsView: View {
             Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(theme.foreground.opacity(0.72))
             content()
         }
-        .zIndex(title == "아이콘 선택" && isSymbolPickerPresented ? 100 : 0)
+        .zIndex(title.hasPrefix("아이콘 ") && isSymbolPickerPresented ? 100 : 0)
     }
 
     private func actionButton(_ kind: ActionKind) -> some View {
@@ -738,8 +792,16 @@ struct SmartphoneSettingsView: View {
                 action.targetAppBundleIdentifier = ""
             }
             if kind != .shortcut { action.targetAppBundleIdentifier = "" }
-            if editingLongPress { button.longPressAction = action } else { button.action = action }
-            if button.action.kind != .appFolder && button.longPressAction.kind != .appFolder { button.folderShortcuts = [] }
+            if editingLongPress {
+                button.longPressAction = action
+            } else if editingSecondAction {
+                button.secondAction = action
+            } else {
+                button.action = action
+            }
+            if button.action.kind != .appFolder
+                && button.longPressAction.kind != .appFolder
+                && button.secondAction?.kind != .appFolder { button.folderShortcuts = [] }
             update(button)
         }
         .font(.system(size: 10, weight: .semibold))
@@ -771,7 +833,7 @@ struct SmartphoneSettingsView: View {
             }
         case .shortcut:
             ShortcutComposerView(value: actionValueBinding, targetAppBundleIdentifier: targetAppBinding, launchTargetAppIfNeeded: launchTargetBinding)
-                .id("\(selectedButton.id)-\(editingLongPress)")
+                .id("\(selectedButton.id)-\(editingLongPress)-\(editingSecondAction)")
         case .terminalCommand:
             DarkTextField(text: actionValueBinding, placeholder: "예: open -a Safari")
             Toggle("터미널 창 표시", isOn: selectedActionBinding.showTerminalWindow)
@@ -800,12 +862,47 @@ struct SmartphoneSettingsView: View {
         if !registrationError.isEmpty { Text(registrationError).font(.system(size: 10)).foregroundStyle(.red) }
     }
 
-    private var buttonTextBinding: Binding<String> { Binding(get: { selectedButton.title }, set: { var button = selectedButton; button.title = $0; update(button) }) }
+    private var buttonTextBinding: Binding<String> {
+        Binding(
+            get: { editingSecondAction ? selectedButton.secondTitle ?? "" : selectedButton.title },
+            set: { value in
+                var button = selectedButton
+                if editingSecondAction { button.secondTitle = value.isEmpty ? nil : value } else { button.title = value }
+                update(button)
+            }
+        )
+    }
     private var pageNameBinding: Binding<String> { Binding(get: { page.name }, set: { store.updateSmartphonePageName($0, at: pageIndex) }) }
+    private var secondActionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { selectedButton.secondAction != nil },
+            set: { enabled in
+                var button = selectedButton
+                if enabled {
+                    if button.secondAction == nil {
+                        button.secondAction = PadAction()
+                        button.isSecondActionActive = false
+                    }
+                } else {
+                    button.secondAction = nil
+                    button.isSecondActionActive = false
+                    editingSecondAction = false
+                }
+                update(button)
+            }
+        )
+    }
+
     private var selectedActionBinding: Binding<PadAction> {
         Binding(get: { selectedAction }, set: { action in
             var button = selectedButton
-            if editingLongPress { button.longPressAction = action } else { button.action = action }
+            if editingLongPress {
+                button.longPressAction = action
+            } else if editingSecondAction {
+                button.secondAction = action
+            } else {
+                button.action = action
+            }
             update(button)
         })
     }
@@ -897,14 +994,16 @@ struct SmartphoneSettingsView: View {
         let targetID = buttonID ?? selectedButton.id
         guard store.smartphonePages.indices.contains(targetPage),
               var button = store.smartphonePages[targetPage].buttons.first(where: { $0.id == targetID }) else { return }
-        button.customIconData = normalized
+        if isEditingSecondIcon { button.secondCustomIconData = normalized }
+        else { button.customIconData = normalized }
         store.updateSmartphoneButton(button, at: targetPage)
         customIconError = ""
     }
 
     private func clearCustomIcon() {
         var button = selectedButton
-        button.customIconData = nil
+        if isEditingSecondIcon { button.secondCustomIconData = nil }
+        else { button.customIconData = nil }
         update(button)
         customIconError = ""
     }
@@ -938,8 +1037,18 @@ struct SmartphoneSettingsView: View {
                 action.kind = kind
                 action.value = application.bundleIdentifier
                 action.targetAppBundleIdentifier = ""
-                if editingLongPress { button.longPressAction = action } else { button.action = action }
-                if button.title.isEmpty { button.title = application.name }
+                if editingLongPress {
+                    button.longPressAction = action
+                } else if editingSecondAction {
+                    button.secondAction = action
+                } else {
+                    button.action = action
+                }
+                if editingSecondAction {
+                    if button.secondTitle?.isEmpty ?? true { button.secondTitle = application.name }
+                } else if button.title.isEmpty {
+                    button.title = application.name
+                }
                 if kind == .appFolder {
                     button.folderShortcuts = button.folderShortcuts.map { shortcut in
                         var updatedShortcut = shortcut
@@ -951,7 +1060,9 @@ struct SmartphoneSettingsView: View {
                         }
                         return updatedShortcut
                     }
-                } else if button.action.kind != .appFolder && button.longPressAction.kind != .appFolder {
+                } else if button.action.kind != .appFolder
+                    && button.longPressAction.kind != .appFolder
+                    && button.secondAction?.kind != .appFolder {
                     button.folderShortcuts = []
                 }
                 update(button)

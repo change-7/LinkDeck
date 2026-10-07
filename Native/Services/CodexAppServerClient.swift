@@ -49,6 +49,7 @@ final class CodexAppServerClient {
     private var automaticReconnectCount = 0
     private var lastUsageRefreshAt: Date?
     private var remoteSmartphonePagesProvider: () -> [SmartphonePage] = SmartphoneDefaults.persistedPages
+    @ObservationIgnored private var remoteSmartphonePagesDidChangeHandler: (([SmartphonePage]) -> Void)?
     private var remoteCodexPhoneThemeProvider: () -> CodexPhoneTheme = { .classic }
     private var remoteCompletionSoundProvider: () -> CodexRemoteCompletionSound = { .builtIn }
     private var remoteApprovalSoundProvider: () -> CodexRemoteApprovalSound = { .builtIn }
@@ -98,6 +99,14 @@ final class CodexAppServerClient {
     func setRemoteSmartphonePagesProvider(_ provider: @escaping () -> [SmartphonePage]) {
         remoteSmartphonePagesProvider = provider
         publishRemoteState()
+    }
+
+    func setRemoteSmartphonePagesDidChangeHandler(_ handler: @escaping ([SmartphonePage]) -> Void) {
+        remoteSmartphonePagesDidChangeHandler = handler
+    }
+
+    func remoteSmartphonePagesDidChange(_ pages: [SmartphonePage]) {
+        remoteSmartphonePagesDidChangeHandler?(pages)
     }
 
     func setRemoteCodexPhoneThemeProvider(_ provider: @escaping () -> CodexPhoneTheme) {

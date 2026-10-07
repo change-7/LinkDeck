@@ -24,7 +24,7 @@ enum LinkDeckMCPHandler {
         for (pageIndex, page) in macPages.enumerated() {
             for pad in page.pads where pad.action.kind != .none {
                 entries.append(LinkDeckMCPButton(id: "mac:\(page.id):\(pad.id)",
-                    title: pad.title, page: page.name, device: "Mac", press: "short",
+                    title: pad.activeTitle, page: page.name, device: "Mac", press: "short",
                     action: pad.action, commandFileID: TerminalCommandFileStore.macButtonIdentifier(pageIndex: pageIndex, padID: pad.id)))
             }
         }
@@ -32,13 +32,13 @@ enum LinkDeckMCPHandler {
             for button in page.buttons {
                 for (press, action) in [("short", button.action), ("long", button.longPressAction)] where action.kind != .none {
                     entries.append(LinkDeckMCPButton(id: "phone:\(button.id):\(press)",
-                        title: button.title, page: page.name, device: "스마트폰", press: press,
+                        title: button.activeTitle, page: page.name, device: "스마트폰", press: press,
                         action: action, commandFileID: button.id + (press == "long" ? "_long_press" : "")))
                 }
                 for shortcut in button.folderShortcuts {
                     for (press, action) in [("short", shortcut.action), ("long", shortcut.longPressAction)] where action.kind != .none {
                         entries.append(LinkDeckMCPButton(id: "folder:\(button.id):\(shortcut.id):\(press)",
-                            title: shortcut.title, page: page.name + " / " + button.title,
+                            title: shortcut.activeTitle, page: page.name + " / " + button.activeTitle,
                             device: "스마트폰 폴더", press: press, action: action,
                             commandFileID: shortcut.id + (press == "long" ? "_long_press" : "")))
                     }

@@ -83,6 +83,33 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertFalse(wireText.contains("secret"))
     }
 
+    func testRemoteState_whenToggleBUsesClipboardText_omitsTextFromPhonePayload() throws {
+        var pages = SmartphoneDefaults.pages()
+        pages[0].buttons[0].secondAction = PadAction(kind: .clipboardText, value: "secret button B")
+        pages[0].buttons[0].folderShortcuts = [SmartphoneFolderShortcut(
+            id: "folder-shortcut",
+            title: "Private B",
+            action: PadAction(kind: .shortcut, value: "cmd+a"),
+            secondAction: PadAction(kind: .clipboardText, value: "secret folder B")
+        )]
+
+        let state = CodexRemoteState(
+            macConnected: true,
+            codexConnected: true,
+            activity: .idle,
+            message: "대기",
+            weeklyUsage: nil,
+            fiveHourUsage: nil,
+            smartphonePages: pages
+        )
+
+        XCTAssertEqual(state.smartphonePages[0].buttons[0].secondAction?.value, "")
+        XCTAssertEqual(state.smartphonePages[0].buttons[0].folderShortcuts[0].secondAction?.value, "")
+        let wireText = String(decoding: try JSONEncoder().encode(state), as: UTF8.self)
+        XCTAssertFalse(wireText.contains("secret button B"))
+        XCTAssertFalse(wireText.contains("secret folder B"))
+    }
+
     func testRemoteState_whenSmartphoneAppFolderHasShortcuts_roundTripsAndSanitizesNestedClipboard() throws {
         var pages = SmartphoneDefaults.pages()
         let parentID = pages[0].buttons[0].id

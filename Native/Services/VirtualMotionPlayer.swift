@@ -70,7 +70,7 @@ final class VirtualMotionPlayer {
         }
 
         var colors = (0..<64).map { index in
-            underlyingPage.pads.indices.contains(index) ? underlyingPage.pads[index].idleColor : "off"
+            underlyingPage.pads.indices.contains(index) ? underlyingPage.pads[index].stateColor : "off"
         }
         for pixel in motionFrame.pixels where (1...8).contains(pixel.row) && (1...8).contains(pixel.column) {
             colors[(pixel.row - 1) * 8 + pixel.column - 1] = pixel.color

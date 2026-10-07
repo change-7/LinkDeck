@@ -71,6 +71,7 @@ struct ContentView: View {
                 selectPage(index)
             }
             codex.setRemoteSmartphonePagesProvider { SmartphoneDefaults.persistedPages() }
+            codex.setRemoteSmartphonePagesDidChangeHandler { store.applyRemoteSmartphonePages($0) }
             codex.setRemoteCodexPhoneThemeProvider { store.codexPhoneTheme }
             codex.setRemoteCompletionSoundProvider { store.codexCompletionSounds.remoteSelection }
             codex.setRemoteApprovalSoundProvider { store.codexCompletionSounds.remoteApprovalSelection }
@@ -209,7 +210,7 @@ struct ContentView: View {
                             synchronizeSelection()
                         }
                     },
-                    onRun: { run(editedPad) }
+                    onRun: { runSelectedAction($0, for: editedPad) }
                 )
                 .frame(width: 360, height: launchpadPanelHeight)
 
@@ -225,7 +226,7 @@ struct ContentView: View {
                     onSelectPage: selectPage,
                     onSelectPageLED: { selectedPageLEDIndex = $0 },
                     onSelectPad: selectPad,
-                    onRunPad: run,
+                    onRunPad: { run($0) },
                     onVirtualPadPress: virtualPadPress,
                     onMoveGridPad: moveGridPad
                 )
@@ -284,9 +285,25 @@ struct ContentView: View {
         updateStatusBubble()
     }
 
-    private func run(_ pad: Pad) {
+    private func run(_ pad: Pad, flashHardwarePad: Bool = false) {
+        guard let action = store.actionForNextPress(on: pad.id) else { return }
+        synchronizeSelection()
+        midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
+        if flashHardwarePad,
+           let updatedPad = store.currentPage.pads.first(where: { $0.id == pad.id }) {
+            midi.flash(updatedPad)
+        }
+        execute(action, for: pad)
+    }
+
+    private func runSelectedAction(_ action: PadAction, for pad: Pad) {
+        guard action.kind != .none else { return }
+        execute(action, for: pad)
+    }
+
+    private func execute(_ action: PadAction, for pad: Pad) {
         let commandFileID = TerminalCommandFileStore.macButtonIdentifier(pageIndex: store.selectedPage, padID: pad.id)
-        do { store.statusMessage = try runner.execute(pad.action, commandFileID: commandFileID) }
+        do { store.statusMessage = try runner.execute(action, commandFileID: commandFileID) }
         catch MacActionError.accessibilityRequired {
             store.statusMessage = MacActionError.accessibilityRequired.localizedDescription
             showingPermissionAlert = true
@@ -301,8 +318,7 @@ struct ContentView: View {
         guard let pad = store.currentPage.pads.first(where: { $0.id == padID }) else { return }
         store.selectedPadID = padID
         synchronizeSelection()
-        midi.flash(pad)
-        run(pad)
+        run(pad, flashHardwarePad: true)
     }
 
     private func virtualPadPress(_ pad: Pad) {

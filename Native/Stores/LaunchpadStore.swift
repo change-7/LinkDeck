@@ -110,11 +110,24 @@ final class LaunchpadStore {
         save()
     }
 
+    func actionForNextPress(on padID: String) -> PadAction? {
+        guard pages.indices.contains(selectedPage),
+              let padIndex = pages[selectedPage].pads.firstIndex(where: { $0.id == padID }) else { return nil }
+        var pad = pages[selectedPage].pads[padIndex]
+        let action = pad.actionForNextPress()
+        update(pad)
+        return action
+    }
+
     func updateSmartphoneButton(_ button: SmartphoneButton, at pageIndex: Int) {
         guard smartphonePages.indices.contains(pageIndex),
               let buttonIndex = smartphonePages[pageIndex].buttons.firstIndex(where: { $0.id == button.id }) else { return }
         smartphonePages[pageIndex].buttons[buttonIndex] = button
         saveSmartphonePages()
+    }
+
+    func applyRemoteSmartphonePages(_ pages: [SmartphonePage]) {
+        smartphonePages = pages
     }
 
     @discardableResult
@@ -162,11 +175,14 @@ final class LaunchpadStore {
               smartphonePages[pageIndex].buttons.indices.contains(buttonIndex) else { return }
         var button = smartphonePages[pageIndex].buttons[buttonIndex]
         button.title = ""
+        button.secondTitle = nil
         button.symbol = ""
         button.customIconData = nil
         button.action = PadAction()
         button.folderShortcuts = []
         button.longPressAction = PadAction()
+        button.secondAction = nil
+        button.isSecondActionActive = false
         smartphonePages[pageIndex].buttons[buttonIndex] = button
         saveSmartphonePages()
     }

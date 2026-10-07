@@ -113,7 +113,7 @@ struct LaunchpadView: View {
         } else {
             button
                 .draggable(pad.id) {
-                    Label(pad.title.isEmpty ? "빈 버튼" : pad.title, systemImage: pad.symbol.isEmpty ? "square" : pad.symbol)
+                    Label(pad.activeTitle.isEmpty ? "빈 버튼" : pad.activeTitle, systemImage: pad.activeSymbol.isEmpty ? "square" : pad.activeSymbol)
                         .padding(8)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 }

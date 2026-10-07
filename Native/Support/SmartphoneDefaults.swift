@@ -76,6 +76,22 @@ enum SmartphoneDefaults {
         return nil
     }
 
+    static func toggleAction(id: String, in pages: inout [SmartphonePage]) -> PadAction? {
+        guard !id.isEmpty else { return nil }
+        for pageIndex in pages.indices {
+            for buttonIndex in pages[pageIndex].buttons.indices {
+                if pages[pageIndex].buttons[buttonIndex].id == id {
+                    return pages[pageIndex].buttons[buttonIndex].actionForNextPress()
+                }
+                guard let shortcutIndex = pages[pageIndex].buttons[buttonIndex]
+                    .folderShortcuts.firstIndex(where: { $0.id == id }) else { continue }
+                return pages[pageIndex].buttons[buttonIndex]
+                    .folderShortcuts[shortcutIndex].actionForNextPress()
+            }
+        }
+        return nil
+    }
+
     static func normalized(_ page: SmartphonePage, at pageIndex: Int) -> SmartphonePage {
         let defaults = pages()[pageIndex]
         var normalized = page
@@ -86,10 +102,12 @@ enum SmartphoneDefaults {
             var repaired = button
             repaired.action = repaired.action.repairedForPersistence
             repaired.longPressAction = repaired.longPressAction.repairedForPersistence
+            repaired.secondAction = repaired.secondAction?.repairedForPersistence
             repaired.folderShortcuts = repaired.folderShortcuts.map { shortcut in
                 var repairedShortcut = shortcut
                 repairedShortcut.action = repairedShortcut.action.repairedForPersistence
                 repairedShortcut.longPressAction = repairedShortcut.longPressAction.repairedForPersistence
+                repairedShortcut.secondAction = repairedShortcut.secondAction?.repairedForPersistence
                 return repairedShortcut
             }
             return repaired
@@ -130,5 +148,10 @@ enum SmartphoneDefaults {
         let directory = sharedStorageURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? data.write(to: sharedStorageURL, options: .atomic)
+    }
+
+    static func persist(_ pages: [SmartphonePage]) {
+        let preferences = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard
+        persist(pages, to: preferences)
     }
 }

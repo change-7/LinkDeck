@@ -38,6 +38,7 @@ struct SmartphoneFolderEditorView: View {
     let pageIndex: Int
     let folderButtonID: String
     var folderUsesLongPress = false
+    var folderUsesSecondAction = false
     @Environment(\.dismiss) private var dismiss
     @State private var selectedShortcutID: String?
     @State private var registrationError = ""
@@ -45,6 +46,7 @@ struct SmartphoneFolderEditorView: View {
     @State private var isCustomIconDropTargeted = false
     @State private var customIconError = ""
     @State private var editingLongPress = false
+    @State private var editingSecondAction = false
 
     private let shortcutSymbolChoices = [
         "", "app.fill", "folder.fill", "command", "play.fill", "terminal.fill",
@@ -64,12 +66,26 @@ struct SmartphoneFolderEditorView: View {
 
     private var folderAction: PadAction {
         guard let folderButton else { return PadAction() }
-        return folderUsesLongPress ? folderButton.longPressAction : folderButton.action
+        if folderUsesLongPress { return folderButton.longPressAction }
+        if folderUsesSecondAction { return folderButton.secondAction ?? PadAction() }
+        return folderButton.action
     }
 
     private var selectedAction: PadAction {
         guard let selectedShortcut else { return PadAction() }
-        return editingLongPress ? selectedShortcut.longPressAction : selectedShortcut.action
+        if editingLongPress { return selectedShortcut.longPressAction }
+        return editingSecondAction ? (selectedShortcut.secondAction ?? PadAction()) : selectedShortcut.action
+    }
+    private var isEditingSecondIcon: Bool { !editingLongPress && editingSecondAction }
+    private var selectedShortcutIconSymbol: String {
+        guard let selectedShortcut else { return "command" }
+        return isEditingSecondIcon ? selectedShortcut.secondSymbol ?? selectedShortcut.symbol : selectedShortcut.symbol
+    }
+    private var selectedShortcutIconData: Data? {
+        guard let selectedShortcut else { return nil }
+        guard isEditingSecondIcon else { return selectedShortcut.customIconData }
+        if let data = selectedShortcut.secondCustomIconData { return data }
+        return selectedShortcut.secondSymbol == nil ? selectedShortcut.customIconData : nil
     }
 
     var body: some View {
@@ -189,10 +205,14 @@ struct SmartphoneFolderEditorView: View {
             }
             .buttonStyle(.plain)
         } else if let shortcut = slot.shortcut {
-            Button { selectedShortcutID = shortcut.id } label: {
+            Button {
+                selectedShortcutID = shortcut.id
+                editingLongPress = false
+                editingSecondAction = false
+            } label: {
                 VStack(spacing: 6) {
                     shortcutIcon(shortcut, size: 24)
-                    Text(shortcut.title.isEmpty ? "이름 없음" : shortcut.title)
+                    Text(shortcut.activeTitle.isEmpty ? "이름 없음" : shortcut.activeTitle)
                         .font(.system(size: 11, weight: .medium))
                         .lineLimit(1)
                     VStack(spacing: 2) {
@@ -202,8 +222,11 @@ struct SmartphoneFolderEditorView: View {
                         if shortcut.longPressAction.kind != .none {
                             Text("길게 · \(shortcut.longPressAction.kind.title)")
                         }
-                        if shortcut.action.kind == .none && shortcut.longPressAction.kind == .none {
+                        if shortcut.action.kind == .none && shortcut.longPressAction.kind == .none && shortcut.secondAction == nil {
                             Text("동작 없음")
+                        }
+                        if shortcut.secondAction != nil {
+                            Text("A/B · 현재 \(shortcut.isSecondActionActive ? "B" : "A")")
                         }
                     }
                     .font(.system(size: 9, design: .monospaced))
@@ -252,10 +275,34 @@ struct SmartphoneFolderEditorView: View {
                     }
                 }
                 if let selectedShortcut {
-                    TextField("버튼 라벨", text: shortcutTitleBinding)
+                    TextField("버튼 라벨 \(selectedShortcut.secondAction == nil ? "" : (editingSecondAction ? "B" : "A"))", text: shortcutTitleBinding)
                         .textFieldStyle(.roundedBorder)
+                    Picker("누르기 동작", selection: $editingLongPress) {
+                        Text("짧게 누르기").tag(false)
+                        Text("길게 누르기").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: editingLongPress) { _, isLongPress in
+                        if isLongPress { editingSecondAction = false }
+                    }
+                    if !editingLongPress {
+                        Toggle("A/B 동작 전환", isOn: secondActionEnabledBinding)
+                            .toggleStyle(.checkbox)
+                        if selectedShortcut.secondAction != nil {
+                            HStack(spacing: 8) {
+                                Picker("편집할 동작", selection: $editingSecondAction) {
+                                    Text("A").tag(false)
+                                    Text("B").tag(true)
+                                }
+                                .pickerStyle(.segmented)
+                                Text("현재 \(selectedShortcut.isSecondActionActive ? "B" : "A")")
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(theme.accent)
+                            }
+                        }
+                    }
                     HStack(spacing: 6) {
-                        TextField("SF Symbol", text: shortcutSymbolBinding)
+                        TextField("SF Symbol · 아이콘 \(isEditingSecondIcon ? "B" : "A")", text: shortcutSymbolBinding)
                             .textFieldStyle(.roundedBorder)
                         Button {
                             isShortcutSymbolPickerPresented.toggle()
@@ -271,13 +318,8 @@ struct SmartphoneFolderEditorView: View {
                         }
                     }
                     shortcutPNGEditor(for: selectedShortcut)
-                    Picker("누르기 동작", selection: $editingLongPress) {
-                        Text("짧게 누르기").tag(false)
-                        Text("길게 누르기").tag(true)
-                    }
-                    .pickerStyle(.segmented)
                     Picker("동작", selection: shortcutKindBinding) {
-                        ForEach([ActionKind.none, .shortcut, .app, .terminalCommand, .url, .clipboardText]) { kind in
+                        ForEach([ActionKind.none, .shortcut, .app, .terminalCommand, .url]) { kind in
                             Text(kind.title).tag(kind)
                         }
                     }
@@ -311,7 +353,7 @@ struct SmartphoneFolderEditorView: View {
                 targetAppBundleIdentifier: shortcutTargetBinding,
                 launchTargetAppIfNeeded: shortcutLaunchBinding
             )
-            .id("\(selectedShortcutID ?? "")_\(editingLongPress)")
+            .id("\(selectedShortcutID ?? "")_\(editingLongPress)_\(editingSecondAction)")
         case .app:
             Button(selectedAction.value.isEmpty ? "앱 등록" : "앱 변경") {
                 registerShortcutApplication()
@@ -375,15 +417,27 @@ struct SmartphoneFolderEditorView: View {
 
     private var shortcutTitleBinding: Binding<String> {
         Binding(
-            get: { selectedShortcut?.title ?? "" },
-            set: { newValue in updateSelectedShortcut { $0.title = newValue } }
+            get: { editingSecondAction ? selectedShortcut?.secondTitle ?? "" : selectedShortcut?.title ?? "" },
+            set: { newValue in updateSelectedShortcut { shortcut in
+                if editingSecondAction { shortcut.secondTitle = newValue.isEmpty ? nil : newValue } else { shortcut.title = newValue }
+            } }
         )
     }
 
     private var shortcutSymbolBinding: Binding<String> {
         Binding(
-            get: { selectedShortcut?.symbol ?? "command" },
-            set: { newValue in updateSelectedShortcut { $0.symbol = newValue } }
+            get: { selectedShortcutIconSymbol },
+            set: { newValue in
+                updateSelectedShortcut { shortcut in
+                    if isEditingSecondIcon {
+                        shortcut.secondSymbol = newValue
+                        shortcut.secondCustomIconData = nil
+                    } else {
+                        shortcut.symbol = newValue
+                        shortcut.customIconData = nil
+                    }
+                }
+            }
         )
     }
 
@@ -424,10 +478,34 @@ struct SmartphoneFolderEditorView: View {
         )
     }
 
+    private var secondActionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { selectedShortcut?.secondAction != nil },
+            set: { enabled in
+                updateSelectedShortcut { shortcut in
+                    if enabled {
+                        if shortcut.secondAction == nil {
+                            shortcut.secondAction = PadAction()
+                            shortcut.isSecondActionActive = false
+                        }
+                    } else {
+                        shortcut.secondAction = nil
+                        shortcut.isSecondActionActive = false
+                        editingSecondAction = false
+                    }
+                }
+            }
+        )
+    }
+
     private func updateSelectedAction(_ change: (inout PadAction) -> Void) {
         updateSelectedShortcut { shortcut in
             if editingLongPress {
                 change(&shortcut.longPressAction)
+            } else if editingSecondAction {
+                var action = shortcut.secondAction ?? PadAction()
+                change(&action)
+                shortcut.secondAction = action
             } else {
                 change(&shortcut.action)
             }
@@ -460,15 +538,23 @@ struct SmartphoneFolderEditorView: View {
         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 5), count: 5), spacing: 5) {
             ForEach(shortcutSymbolChoices, id: \.self) { symbol in
                 Button {
-                    updateShortcut(id: shortcut.id) { $0.symbol = symbol }
+                    updateShortcut(id: shortcut.id) { item in
+                        if isEditingSecondIcon {
+                            item.secondSymbol = symbol
+                            item.secondCustomIconData = nil
+                        } else {
+                            item.symbol = symbol
+                            item.customIconData = nil
+                        }
+                    }
                     isShortcutSymbolPickerPresented = false
                 } label: {
                     Image(systemName: symbol.isEmpty ? "circle.slash" : symbol)
                         .font(.system(size: 16, weight: .medium))
                         .frame(width: 34, height: 34)
-                        .foregroundStyle(shortcut.symbol == symbol ? theme.accent : .primary)
+                        .foregroundStyle(selectedShortcutIconSymbol == symbol ? theme.accent : .primary)
                         .background(
-                            shortcut.symbol == symbol ? theme.accent.opacity(0.14) : Color.primary.opacity(0.06),
+                            selectedShortcutIconSymbol == symbol ? theme.accent.opacity(0.14) : Color.primary.opacity(0.06),
                             in: RoundedRectangle(cornerRadius: 6)
                         )
                 }
@@ -482,14 +568,14 @@ struct SmartphoneFolderEditorView: View {
 
     @ViewBuilder
     private func shortcutIcon(_ shortcut: SmartphoneFolderShortcut, size: CGFloat) -> some View {
-        if let data = shortcut.customIconData, let image = NSImage(data: data) {
+        if let data = shortcut.activeCustomIconData, let image = NSImage(data: data) {
             Image(nsImage: image)
                 .resizable()
                 .interpolation(.high)
                 .scaledToFit()
                 .frame(width: size, height: size)
         } else {
-            Image(systemName: shortcut.symbol.isEmpty ? "command" : shortcut.symbol)
+            Image(systemName: shortcut.activeSymbol.isEmpty ? "command" : shortcut.activeSymbol)
                 .font(.system(size: size, weight: .medium))
                 .frame(width: size, height: size)
         }
@@ -502,7 +588,7 @@ struct SmartphoneFolderEditorView: View {
                 .foregroundStyle(.secondary)
             HStack(spacing: 7) {
                 Group {
-                    if let data = shortcut.customIconData, let image = NSImage(data: data) {
+                    if let data = selectedShortcutIconData, let image = NSImage(data: data) {
                         Image(nsImage: image)
                             .resizable()
                             .interpolation(.high)
@@ -518,7 +604,7 @@ struct SmartphoneFolderEditorView: View {
                 .background(theme.input, in: RoundedRectangle(cornerRadius: 6))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(shortcut.customIconData == nil ? "PNG 없음" : "PNG 적용됨")
+                    Text(selectedShortcutIconData == nil ? "PNG 없음" : "PNG 적용됨")
                         .font(.system(size: 10, weight: .semibold))
                     Text("파일 선택·붙여넣기·드래그")
                         .font(.system(size: 9))
@@ -534,7 +620,7 @@ struct SmartphoneFolderEditorView: View {
                     .font(.system(size: 10, weight: .semibold))
                     .buttonStyle(.plain)
                     .foregroundStyle(theme.accent)
-                if shortcut.customIconData != nil {
+                if selectedShortcutIconData != nil {
                     Button {
                         clearShortcutPNG(for: shortcut.id)
                     } label: {
@@ -633,12 +719,18 @@ struct SmartphoneFolderEditorView: View {
             customIconError = "유효한 PNG 이미지만 추가할 수 있습니다."
             return
         }
-        updateShortcut(id: shortcutID) { $0.customIconData = normalizedData }
+        updateShortcut(id: shortcutID) { shortcut in
+            if isEditingSecondIcon { shortcut.secondCustomIconData = normalizedData }
+            else { shortcut.customIconData = normalizedData }
+        }
         customIconError = ""
     }
 
     private func clearShortcutPNG(for shortcutID: String) {
-        updateShortcut(id: shortcutID) { $0.customIconData = nil }
+        updateShortcut(id: shortcutID) { shortcut in
+            if isEditingSecondIcon { shortcut.secondCustomIconData = nil }
+            else { shortcut.customIconData = nil }
+        }
         customIconError = ""
     }
 
@@ -674,6 +766,8 @@ struct SmartphoneFolderEditorView: View {
                 updateFolderButton { button in
                     if folderUsesLongPress {
                         button.longPressAction.value = application.bundleIdentifier
+                    } else if folderUsesSecondAction {
+                        button.secondAction?.value = application.bundleIdentifier
                     } else {
                         button.action.value = application.bundleIdentifier
                     }
