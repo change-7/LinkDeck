@@ -527,6 +527,14 @@ class MainActivityTest {
     }
 
     @Test
+    fun remoteBridgeResume_keepsFreshConnectionsAndRestartsStaleSessions() {
+        assertFalse(shouldRestartRemoteConnection(0))
+        assertFalse(shouldRestartRemoteConnection(9_999))
+        assertTrue(shouldRestartRemoteConnection(10_000))
+        assertTrue(shouldRestartRemoteConnection(30 * 60 * 1_000L))
+    }
+
+    @Test
     fun usageMeterValues_areExpectedToBeDisplayedAsRemainingPercent() {
         assertEquals(80, clampUsagePercent(80))
         assertEquals(0, clampUsagePercent(-4))

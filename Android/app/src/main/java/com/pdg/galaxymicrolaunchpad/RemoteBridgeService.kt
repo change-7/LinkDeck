@@ -119,7 +119,7 @@ class RemoteBridgeService : Service() {
         screenOffDisconnectRunnable = null
         preferences.screenOffStartedAtMillis = null
         acquireNetworkLocks()
-        RemoteBridgeRuntime.client(this).start()
+        RemoteBridgeRuntime.client(this).resume()
         updateNotification("Mac bridge active")
     }
 

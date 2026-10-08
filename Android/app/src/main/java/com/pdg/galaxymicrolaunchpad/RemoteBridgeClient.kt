@@ -8,6 +8,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Base64
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,8 @@ enum class RemoteConnectionState {
 }
 
 internal fun shouldDisconnectAfterReadTimeout(consecutiveTimeouts: Int): Boolean = consecutiveTimeouts >= 2
+
+internal fun shouldRestartRemoteConnection(elapsedSinceResponseMillis: Long): Boolean = elapsedSinceResponseMillis >= 10_000L
 
 internal data class RemoteCommandPayload(
     val command: String,
@@ -130,7 +133,10 @@ class RemoteBridgeClient(context: Context) {
     @Volatile private var microphoneGeneration = 0
     private var microphoneStartCommandID: String? = null
     private var writer: OutputStreamWriter? = null
-    private var started = false
+    @Volatile private var started = false
+    @Volatile private var connectionGeneration = 0
+    @Volatile private var lastResponseAtMillis = 0L
+    private var discoveryRetry: Runnable? = null
     @Volatile private var lastActivity: String? = null
     @Volatile private var lastCompletionEventId: Int? = null
     @Volatile private var completionSoundOutputTarget = "phone"
@@ -222,15 +228,25 @@ class RemoteBridgeClient(context: Context) {
 
     fun start() {
         if (started) return
+        connectionGeneration += 1
+        lastResponseAtMillis = SystemClock.elapsedRealtime()
         started = true
         discover()
     }
 
+    fun resume() {
+        if (started && shouldRestartRemoteConnection(SystemClock.elapsedRealtime() - lastResponseAtMillis)) stop()
+        start()
+    }
+
     fun stop() {
+        started = false
+        connectionGeneration += 1
+        discoveryRetry?.let(mainHandler::removeCallbacks)
+        discoveryRetry = null
         stopMicrophone(sendCommand = false)
         hasReceivedRemoteState = false
         forceCodexRevealAfterReconnect = false
-        started = false
         stopWirelessDiscovery()
         runCatching { socket?.close() }
         socket = null
@@ -241,8 +257,13 @@ class RemoteBridgeClient(context: Context) {
 
     private fun discover() {
         if (!started) return
+        discoveryRetry?.let(mainHandler::removeCallbacks)
+        discoveryRetry = null
+        stopWirelessDiscovery()
         setConnection(RemoteConnectionState.Searching)
-        connect("127.0.0.1", BRIDGE_PORT, fallbackToWireless = true)
+        val configuredHost = bridgePreferences.macBridgeHost
+        if (configuredHost.isNotEmpty()) connect(configuredHost, BRIDGE_PORT)
+        else connect("127.0.0.1", BRIDGE_PORT, fallbackToWireless = true)
     }
 
     private fun discoverWireless() {
@@ -312,60 +333,63 @@ class RemoteBridgeClient(context: Context) {
         fallbackToWireless: Boolean = false,
         fallbackHost: String? = null
     ) {
+        val generation = connectionGeneration
         setConnection(RemoteConnectionState.Connecting)
         executor.execute {
+            if (!started || generation != connectionGeneration) return@execute
             var didConnect = false
+            val target = Socket()
             try {
-                val target = Socket()
+                socket = target
                 target.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
+                if (!started || generation != connectionGeneration) return@execute
                 didConnect = true
                 target.soTimeout = READ_TIMEOUT_MS
-                socket = target
                 writer = OutputStreamWriter(target.getOutputStream(), Charsets.UTF_8)
                 writer?.append("{\"type\":\"hello\",\"protocolVersion\":1}\n")
                 writer?.flush()
-                setConnection(RemoteConnectionState.Connected)
-                readLoop(target)
+                setConnection(RemoteConnectionState.Connected, generation)
+                readLoop(target, generation)
             } catch (_: Exception) {
-                setConnection(RemoteConnectionState.Disconnected)
+                setConnection(RemoteConnectionState.Disconnected, generation)
             } finally {
-                mainHandler.post { stopMicrophone(sendCommand = false) }
-                runCatching { socket?.close() }
-                socket = null
-                writer = null
-                iconBitmapCache.clear()
-                smartphoneIconAssets = JSONObject()
-                lastStateObject = null
-                if (started && hasReceivedRemoteState) {
-                    // Make the first replayed active state reveal Codex again.
-                    forceCodexRevealAfterReconnect = true
-                }
-                lastApproval = null
-                // Keep an active Codex state across a transient bridge
-                // reconnect. Clearing it here makes the phone stop its
-                // running motion during a short read timeout, even though
-                // the Mac will replay the authoritative state on reconnect.
-                preserveActiveStateDuringReconnect()
-                if (started) {
-                    setConnection(RemoteConnectionState.Disconnected)
-                    if (fallbackToWireless) {
-                        mainHandler.post { discoverWireless() }
-                    } else if (!didConnect && fallbackHost != null) {
-                        connect(fallbackHost, BRIDGE_PORT)
-                    } else {
-                        retryDiscovery()
+                runCatching { target.close() }
+                mainHandler.post {
+                    if (generation != connectionGeneration) return@post
+                    stopMicrophone(sendCommand = false)
+                    socket = null
+                    writer = null
+                    iconBitmapCache.clear()
+                    smartphoneIconAssets = JSONObject()
+                    lastStateObject = null
+                    if (started && hasReceivedRemoteState) {
+                        forceCodexRevealAfterReconnect = true
+                    }
+                    lastApproval = null
+                    preserveActiveStateDuringReconnect()
+                    if (started) {
+                        setConnection(RemoteConnectionState.Disconnected, generation)
+                        if (fallbackToWireless) {
+                            discoverWireless()
+                        } else if (!didConnect && fallbackHost != null) {
+                            connect(fallbackHost, BRIDGE_PORT)
+                        } else {
+                            retryDiscovery()
+                        }
                     }
                 }
             }
         }
     }
 
-    private fun readLoop(target: Socket) {
+    private fun readLoop(target: Socket, generation: Int) {
         val reader = BufferedReader(InputStreamReader(target.getInputStream(), Charsets.UTF_8))
         var consecutiveTimeouts = 0
-        while (started && !target.isClosed) {
+        while (started && generation == connectionGeneration && !target.isClosed) {
             try {
                 val line = reader.readLine() ?: break
+                if (!started || generation != connectionGeneration) break
+                lastResponseAtMillis = SystemClock.elapsedRealtime()
                 consecutiveTimeouts = 0
                 parseState(line)
             } catch (_: SocketTimeoutException) {
@@ -744,8 +768,8 @@ class RemoteBridgeClient(context: Context) {
         }
     }
 
-    private fun setConnection(next: RemoteConnectionState) {
-        mainHandler.post { connectionState = next }
+    private fun setConnection(next: RemoteConnectionState, generation: Int = connectionGeneration) {
+        mainHandler.post { if (generation == connectionGeneration) connectionState = next }
     }
 
     private fun clearRemoteState(nextMessage: String = "Mac을 찾는 중…") {
@@ -788,6 +812,13 @@ class RemoteBridgeClient(context: Context) {
     }
 
     private fun retryDiscovery() {
-        mainHandler.postDelayed({ if (started && connectionState != RemoteConnectionState.Connected) discover() }, RETRY_DELAY_MS)
+        val generation = connectionGeneration
+        mainHandler.post {
+            if (!started || generation != connectionGeneration) return@post
+            discoveryRetry?.let(mainHandler::removeCallbacks)
+            discoveryRetry = Runnable {
+                if (started && generation == connectionGeneration && connectionState != RemoteConnectionState.Connected) discover()
+            }.also { mainHandler.postDelayed(it, RETRY_DELAY_MS) }
+        }
     }
 }

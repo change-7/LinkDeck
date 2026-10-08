@@ -352,6 +352,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        remoteBridge.resume()
         isActivityResumed = true
     }
 
@@ -1243,7 +1244,7 @@ private fun BridgeConnectionSettingsDialog(
                     label = { Text("맥의 Tailscale 주소") },
                     placeholder = { Text("100.x.x.x") },
                     supportingText = {
-                        Text("같은 Wi-Fi의 Mac을 먼저 찾고, 찾지 못하면 이 주소로 연결합니다.")
+                        Text("주소가 저장되어 있으면 바로 연결합니다. 비워 두면 USB 또는 같은 Wi-Fi의 Mac을 찾습니다.")
                     },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
