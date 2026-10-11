@@ -68,6 +68,13 @@
 "e.g. Downloads Backup" = "예: 다운로드 백업";
 "Cancel" = "취소";
 "Done" = "완료";
+"Close" = "닫기";
+"Before asking ChatGPT to work, select the FolderSync sync list you want to use. MCP can read and change files only inside that list's local folder; a GitHub endpoint is synchronized through the selected local folder." = "ChatGPT에 작업을 요청하기 전에 사용할 동기화 목록을 선택하세요. MCP는 해당 목록의 로컬 폴더 안에서만 파일을 읽고 변경할 수 있습니다. GitHub는 선택한 로컬 폴더를 통해 동기화됩니다.";
+"Create a Secure MCP Tunnel in OpenAI Platform and replace <TUNNEL_ID> in the setup command below." = "OpenAI 플랫폼에서 보안 MCP 터널을 만들고 아래 설정 명령의 <TUNNEL_ID>를 바꾸세요.";
+"In ChatGPT's developer-mode app registration screen, choose Connection → Tunnel instead of Server URL, select the same Tunnel, and scan the tools." = "ChatGPT 개발자 모드의 앱 등록 화면에서 연결 → 터널을 선택하고 같은 터널을 지정한 뒤 도구를 검색하세요.";
+"Run the Tunnel command below and keep tunnel-client running while ChatGPT scans or calls the tools." = "아래 터널 명령을 실행하고 ChatGPT가 도구를 검색하거나 호출하는 동안 tunnel-client를 실행 상태로 유지하세요.";
+"Set CONTROL_PLANE_API_KEY in Terminal, then run the Tunnel setup command. Never enter the API key in FolderSync." = "터미널에서 CONTROL_PLANE_API_KEY를 설정한 뒤 터널 설정 명령을 실행하세요. API 키를 폴더싱크에 입력하지 마세요.";
+"When ChatGPT finishes editing GitHub, ask it to call finalize_github_sync as the last step. Set the sync direction to GitHub → local so the completed source is pulled into the selected folder." = "ChatGPT가 GitHub 편집을 마치면 마지막 단계로 finalize_github_sync를 호출하도록 요청하세요. 동기화 방향을 GitHub → 로컬로 설정하면 완성된 소스를 선택한 폴더로 가져옵니다.";
 "Open FolderSync" = "FolderSync 열기";
 "Quit FolderSync" = "FolderSync 종료";
 "Idle" = "대기 중";

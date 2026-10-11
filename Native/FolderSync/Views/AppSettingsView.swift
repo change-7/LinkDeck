@@ -2,6 +2,7 @@ import SwiftUI
 
 struct AppSettingsView: View {
     let store: FolderPairStore
+    @Environment(\.dismiss) private var dismiss
     @AppStorage(AppAppearanceMode.storageKey) private var appearanceMode = AppAppearanceMode.system.rawValue
     @State private var selectedTab: SettingsTab = .general
 
@@ -9,6 +10,13 @@ struct AppSettingsView: View {
         VStack(spacing: 0) {
             settingsTabBar
             selectedContent
+            HStack {
+                Spacer()
+                Button(AppText.close) { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
         }
         .frame(width: 640, height: 700)
         .preferredColorScheme(selectedAppearance.colorScheme)

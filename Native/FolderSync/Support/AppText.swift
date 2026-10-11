@@ -64,6 +64,7 @@ enum AppText {
     static var namePrompt: String { value("e.g. Downloads Backup") }
     static var cancel: String { value("Cancel") }
     static var done: String { value("Done") }
+    static var close: String { value("Close") }
     static var openFolderSync: String { value("Open FolderSync") }
     static var quitFolderSync: String { value("Quit FolderSync") }
     static var syncDirection: String { value("Sync direction") }
@@ -326,11 +327,11 @@ enum AppText {
     }
 
     private static let localizationBundle: Bundle = {
-        .module
+        Bundle.module.path(forResource: "ko", ofType: "lproj").flatMap(Bundle.init(path:)) ?? .module
     }()
 
     private static func value(_ key: String) -> String {
-        String(localized: String.LocalizationValue(key), bundle: localizationBundle, locale: .current)
+        localizationBundle.localizedString(forKey: key, value: nil, table: nil)
     }
 
     private static func format(_ key: String, _ value: String) -> String {
