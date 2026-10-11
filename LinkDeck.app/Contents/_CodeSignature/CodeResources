@@ -28,7 +28,7 @@
 		<dict>
 			<key>hash</key>
 			<data>
-			UgDPInEYeeuQANI/QGLVc7rrMpI=
+			oyk3Az7XdTUFXp7NuS5EeNc79Eg=
 			</data>
 			<key>optional</key>
 			<true/>
@@ -41,14 +41,14 @@
 		<dict>
 			<key>hash</key>
 			<data>
-			XcsgMa/a1RwRbIwM15NUn8MCwZo=
+			zVT2/Q5PCD30FTm7WuTL3Y0dsg0=
 			</data>
 			<key>optional</key>
 			<true/>
 		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeDirectory</key>
 		<data>
-		NJlSq/UpUvA2VrBKV6F7W+rnvLo=
+		nvydO+5kml2eef3lCCMyrfcvq3Q=
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeRequirements</key>
 		<data>
@@ -56,7 +56,7 @@
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeResources</key>
 		<data>
-		PjsuGZLql8SeFx0EC4RnikKAcCo=
+		8gMbD+ZeXsdJc5hI7V0Mgdk0bfg=
 		</data>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeSignature</key>
 		<data>
@@ -108,7 +108,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			+yV8LPd2N9n4Dg0SOYbULCupJf9kaA3/qaO3JRgA+8c=
+			KfHd5BXZ6JrtWUhDtiVQ6xAlGt90qEmmd/WrpXRgwFw=
 			</data>
 			<key>optional</key>
 			<true/>
@@ -124,7 +124,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			MsUvtvpWLZnUsy+zMLbR7CbtaOZi2p6qym1rFxj+OGs=
+			55mNL5ag+wsupmPjT7/fXPC6H4pBwR2qg/3irHmfvYI=
 			</data>
 			<key>optional</key>
 			<true/>
@@ -133,7 +133,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			cYbek7+cBOYaT7acOsBqR0sElDJBpm/gAIdgYuPk6Qg=
+			HHBlqmpRrML8WK7bwJiaon9rQV6xp/zrJbLc2ofyvV0=
 			</data>
 		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeRequirements</key>
@@ -147,7 +147,7 @@
 		<dict>
 			<key>hash2</key>
 			<data>
-			FFnaDcnEYb930p1yZDYV7qxqk1uKZbM88tSDxHn3ioc=
+			kspmGCI6scf3VwdfxapjFEXdld68HsX6wiwAx00TxhE=
 			</data>
 		</dict>
 		<key>Resources/ChatGPTMicroLaunchpad_ChatGPTMicroLaunchpad.bundle/Contents/_CodeSignature/CodeSignature</key>
