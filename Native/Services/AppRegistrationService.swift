@@ -30,7 +30,7 @@ enum AppRegistrationService {
                 alert.informativeText = error.localizedDescription + "\n앱 실행 버튼은 등록됩니다."
                 alert.runModal()
             }
-            completion(.success(RegisteredApplication(name: name, bundleIdentifier: bundleIdentifier)))
+            completion(.success(RegisteredApplication(name: name, bundleIdentifier: bundleIdentifier, iconData: iconData(for: url))))
         }
     }
 
@@ -43,11 +43,40 @@ enum AppRegistrationService {
         guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) else { return nil }
         return NSWorkspace.shared.icon(forFile: url.path)
     }
+
+    static func iconData(for appURL: URL) -> Data? {
+        guard let tiff = NSWorkspace.shared.icon(forFile: appURL.path).tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
+        return SmartphoneIconData.normalizedPNGData(from: png)
+    }
 }
 
 struct RegisteredApplication {
     let name: String
     let bundleIdentifier: String
+    var iconData: Data? = nil
+
+    func applyIcon(to button: inout SmartphoneButton, isSecondAction: Bool) {
+        if isSecondAction {
+            button.secondCustomIconData = iconData
+            button.secondSymbol = "app"
+        } else {
+            button.customIconData = iconData
+            button.symbol = "app"
+            button.usesActionIconForSymbol = true
+        }
+    }
+
+    func applyIcon(to shortcut: inout SmartphoneFolderShortcut, isSecondAction: Bool) {
+        if isSecondAction {
+            shortcut.secondCustomIconData = iconData
+            shortcut.secondSymbol = "app"
+        } else {
+            shortcut.customIconData = iconData
+            shortcut.symbol = "app"
+        }
+    }
 }
 
 enum AppRegistrationError: LocalizedError {

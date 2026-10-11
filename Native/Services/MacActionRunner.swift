@@ -113,6 +113,9 @@ enum MacActionError: LocalizedError {
     case clipboardTextNotConfigured
     case clipboardWriteFailed
     case windowActionFailed
+    case invalidWorkflow
+    case workflowAlreadyRunning
+    case workflowStepFailed(Int, String)
 
     var errorDescription: String? {
         switch self {
@@ -127,6 +130,9 @@ enum MacActionError: LocalizedError {
         case .clipboardTextNotConfigured: "등록된 클립보드 텍스트가 없습니다."
         case .clipboardWriteFailed: "클립보드 텍스트를 저장하지 못했습니다."
         case .windowActionFailed: "활성 창을 이동하지 못했습니다."
+        case .invalidWorkflow: "동작 묶기의 각 동작과 대기 시간을 확인하세요."
+        case .workflowAlreadyRunning: "이 동작 묶기는 이미 실행 중입니다."
+        case .workflowStepFailed(let index, let message): "동작 \(index)에서 중단: \(message)"
         }
     }
 }
@@ -140,9 +146,23 @@ final class MacActionRunner {
     static let targetAppActivationRetryInterval: TimeInterval = 0.15
     private static var fillRestoreFrames: [String: CGRect] = [:]
     private static var backgroundProcesses: [UUID: Process] = [:]
+    private static var workflowTasks: [String: Task<Void, Never>] = [:]
+    static let workflowFinishedNotification = Notification.Name("LinkDeckWorkflowFinished")
 
     func execute(_ action: PadAction, commandFileID: String? = nil) throws -> String {
         switch action.kind {
+        case .workflow:
+            try validateWorkflow(action)
+            let key = commandFileID ?? UUID().uuidString
+            guard Self.workflowTasks[key] == nil else { throw MacActionError.workflowAlreadyRunning }
+            Self.workflowTasks[key] = Task { @MainActor in
+                defer { Self.workflowTasks[key] = nil }
+                let message: String
+                do { message = try await self.executeWorkflow(action) }
+                catch { message = error.localizedDescription }
+                NotificationCenter.default.post(name: Self.workflowFinishedNotification, object: message)
+            }
+            return "여러 동작 묶기를 실행 중입니다."
         case .app:
             guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: action.value) else { throw MacActionError.appNotFound }
             NSWorkspace.shared.openApplication(at: app, configuration: .init())
@@ -252,6 +272,67 @@ final class MacActionRunner {
             return "클립보드 텍스트를 붙여넣었습니다."
         case .none:
             return "동작이 지정되지 않았습니다."
+        }
+    }
+
+    func validateWorkflow(_ action: PadAction) throws {
+        guard action.kind == .workflow, !action.workflowSteps.isEmpty,
+              action.workflowSteps.count <= 6,
+              action.workflowSteps.allSatisfy({ step in
+                  [.app, .shortcut, .terminalCommand, .url].contains(step.action.kind)
+                      && !step.action.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                      && step.delayAfter.isFinite && (0...3600).contains(step.delayAfter)
+              }) else { throw MacActionError.invalidWorkflow }
+    }
+
+    func executeWorkflow(_ action: PadAction) async throws -> String {
+        try validateWorkflow(action)
+        for (index, step) in action.workflowSteps.enumerated() {
+            do {
+                try Task.checkCancellation()
+                try await executeWorkflowStep(step.action)
+                if index < action.workflowSteps.count - 1, step.delayAfter > 0 {
+                    try await Task.sleep(for: .seconds(step.delayAfter))
+                }
+            } catch {
+                throw MacActionError.workflowStepFailed(index + 1, error.localizedDescription)
+            }
+        }
+        return "여러 동작 묶기 \(action.workflowSteps.count)개를 실행했습니다."
+    }
+
+    private func executeWorkflowStep(_ action: PadAction) async throws {
+        if action.kind == .app {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: action.value) else {
+                throw MacActionError.appNotFound
+            }
+            _ = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+        } else if action.kind == .shortcut, !action.targetAppBundleIdentifier.isEmpty {
+            let target: NSRunningApplication
+            if let running = NSRunningApplication.runningApplications(withBundleIdentifier: action.targetAppBundleIdentifier).first {
+                target = running
+            } else {
+                guard action.launchTargetAppIfNeeded else { throw MacActionError.targetAppNotRunning }
+                guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: action.targetAppBundleIdentifier) else {
+                    throw MacActionError.appNotFound
+                }
+                target = try await NSWorkspace.shared.openApplication(at: url, configuration: .init())
+            }
+            Self.activateTargetApp(target)
+            for _ in 0..<Self.targetAppActivationRetryCount {
+                if target.isActive { break }
+                try await Task.sleep(for: .seconds(Self.targetAppActivationRetryInterval))
+                Self.activateTargetApp(target)
+            }
+            guard target.isActive else { throw MacActionError.targetAppNotRunning }
+            try await Task.sleep(for: .milliseconds(120))
+            if let windowAction = MacWindowAction(rawValue: action.value) {
+                try Self.moveActiveWindow(windowAction)
+            } else {
+                try Self.sendShortcut(Self.nativeShortcutValue(for: action.value))
+            }
+        } else {
+            _ = try execute(action)
         }
     }
 

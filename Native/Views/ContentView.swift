@@ -35,6 +35,7 @@ struct ContentView: View {
     let launchpadLEDBubble: LaunchpadLEDStatusBubble
     let chatGPTTunnel: ChatGPTTunnelController
     @State private var editedPad = Pad(id: "grid_0_0")
+    @State private var editingSecondPadAction = false
     @State private var showingPermissionAlert = false
     @State private var selectedPageLEDIndex: Int?
     @State private var showingCodexConnection = false
@@ -90,6 +91,9 @@ struct ContentView: View {
         }
         .onReceive(idleScreensaverTimer) { _ in evaluateIdleScreensaver() }
         .onReceive(weeklyUsageRefreshTimer) { _ in codex.refreshWeeklyUsage() }
+        .onReceive(NotificationCenter.default.publisher(for: MacActionRunner.workflowFinishedNotification)) { notification in
+            if let message = notification.object as? String { store.statusMessage = message }
+        }
         .onChange(of: editedPad) { _, pad in store.update(pad) }
         .onChange(of: store.selectedPage) { _, _ in
             midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
@@ -202,7 +206,6 @@ struct ContentView: View {
                     onUpdatePageColor: { index, color, selected in
                         store.updatePageColor(color, selected: selected, at: index)
                     },
-                    onUpdatePageName: { index, name in store.updatePageName(name, at: index) },
                     onReset: {
                         if editedPad.id.hasPrefix("grid_") {
                             deleteGridPad(editedPad.id)
@@ -211,11 +214,13 @@ struct ContentView: View {
                             synchronizeSelection()
                         }
                     },
-                    onRun: { runSelectedAction($0, for: editedPad) }
+                    onRun: { runSelectedAction($0, for: editedPad) },
+                    editingSecondAction: $editingSecondPadAction
                 )
                 .frame(width: 360, height: launchpadPanelHeight)
 
-                LaunchpadView(
+                VStack(spacing: 12) {
+                    LaunchpadView(
                     page: store.currentPage,
                     pages: store.pages,
                     activePage: store.selectedPage,
@@ -225,6 +230,7 @@ struct ContentView: View {
                     motionFrame: virtualMotion.frame,
                     gridOverlay: weeklyUsageGridColors,
                     onSelectPage: selectPage,
+                    onUpdatePageName: { index, name in store.updatePageName(name, at: index) },
                     onSelectPageLED: { selectedPageLEDIndex = $0 },
                     onSelectPad: selectPad,
                     onRunPad: { run($0) },
@@ -233,10 +239,26 @@ struct ContentView: View {
                 )
                 .frame(minWidth: 610)
                 .frame(height: launchpadPanelHeight)
+                    if editedWorkflowAction.wrappedValue.kind == .workflow {
+                        WorkflowEditorView(action: editedWorkflowAction) {
+                            runSelectedAction(editedWorkflowAction.wrappedValue, for: editedPad)
+                        }
+                    }
+                }
+                .frame(minWidth: 610)
             }
             .frame(maxWidth: 1120)
-            .frame(height: launchpadPanelHeight, alignment: .top)
+            .frame(minHeight: launchpadPanelHeight, alignment: .top)
         }
+    }
+
+    private var editedWorkflowAction: Binding<PadAction> {
+        Binding(
+            get: { editingSecondPadAction ? editedPad.secondAction ?? PadAction() : editedPad.action },
+            set: { value in
+                if editingSecondPadAction { editedPad.secondAction = value } else { editedPad.action = value }
+            }
+        )
     }
 
     private var footer: some View {

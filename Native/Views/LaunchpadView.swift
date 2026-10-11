@@ -10,6 +10,7 @@ struct LaunchpadView: View {
     let motionFrame: MotionFrame?
     let gridOverlay: [String]?
     let onSelectPage: (Int) -> Void
+    let onUpdatePageName: (Int, String) -> Void
     let onSelectPageLED: (Int) -> Void
     let onSelectPad: (Pad) -> Void
     let onRunPad: (Pad) -> Void
@@ -148,6 +149,7 @@ struct LaunchpadView: View {
         .buttonStyle(.plain)
         .focusable(false)
         .focusEffectDisabled()
+        .modifier(PageNameEditor(name: pages[index].name) { onUpdatePageName(index, $0) })
     }
 
     private func motionColor(row: Int, column: Int) -> String? {

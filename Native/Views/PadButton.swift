@@ -19,7 +19,11 @@ struct PadButton: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { pressed = false }
         } label: {
             VStack(spacing: 1) {
-                if !pad.activeTitle.isEmpty || !pad.activeSymbol.isEmpty {
+                if let appIcon {
+                    Image(nsImage: appIcon)
+                        .resizable().scaledToFit()
+                        .frame(width: circular ? 18 : 20, height: circular ? 18 : 20)
+                } else if !pad.activeTitle.isEmpty || !pad.activeSymbol.isEmpty {
                     Image(systemName: pad.activeSymbol)
                         .font(.system(size: circular ? 15 : 14, weight: .medium))
                 }
@@ -70,6 +74,12 @@ struct PadButton: View {
                 Button("동작 실행", action: runAction)
             }
         }
+    }
+
+    private var appIcon: NSImage? {
+        let configuredAction = pad.secondAction != nil && pad.isSecondActionActive ? pad.secondAction ?? pad.action : pad.action
+        guard pad.activeSymbol.isEmpty, configuredAction.kind == .app else { return nil }
+        return AppRegistrationService.icon(for: configuredAction.value)
     }
 
     private var padColor: Color {

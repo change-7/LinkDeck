@@ -1,11 +1,12 @@
 import Foundation
 
-enum ActionKind: String, Codable, CaseIterable, Identifiable {
+enum ActionKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case app
     case appFolder
     case shortcut
     case terminalCommand
     case url
+    case workflow
     case clipboardText
     case none
 
@@ -17,13 +18,14 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable {
         case .shortcut: "단축키 설정"
         case .terminalCommand: "터미널 명령"
         case .url: "웹페이지 이동"
+        case .workflow: "여러 동작 묶기"
         case .clipboardText: "클립보드 텍스트"
         case .none: "없음"
         }
     }
 }
 
-struct PadAction: Codable, Hashable {
+struct PadAction: Codable, Hashable, Sendable {
     var kind: ActionKind = .none
     var value = ""
     /// Optional app that receives this shortcut. Empty keeps the existing global behavior.
@@ -32,6 +34,7 @@ struct PadAction: Codable, Hashable {
     var launchTargetAppIfNeeded = true
     var showTerminalWindow = true
     var openURLInCurrentTab = false
+    var workflowSteps: [WorkflowStep] = []
 
     init(
         kind: ActionKind = .none,
@@ -39,7 +42,8 @@ struct PadAction: Codable, Hashable {
         targetAppBundleIdentifier: String = "",
         launchTargetAppIfNeeded: Bool = true,
         showTerminalWindow: Bool = true,
-        openURLInCurrentTab: Bool = false
+        openURLInCurrentTab: Bool = false,
+        workflowSteps: [WorkflowStep] = []
     ) {
         self.kind = kind
         self.value = value
@@ -47,11 +51,21 @@ struct PadAction: Codable, Hashable {
         self.launchTargetAppIfNeeded = launchTargetAppIfNeeded
         self.showTerminalWindow = showTerminalWindow
         self.openURLInCurrentTab = openURLInCurrentTab
+        self.workflowSteps = workflowSteps
     }
 
     /// Repairs the value left by the old action-kind switcher when an app
     /// bundle ID was retained as the shortcut value.
     var repairedForPersistence: PadAction {
+        if kind == .workflow {
+            var repaired = self
+            repaired.workflowSteps = workflowSteps.map { step in
+                var step = step
+                step.action = step.action.repairedForPersistence
+                return step
+            }
+            return repaired
+        }
         guard kind == .shortcut,
               !targetAppBundleIdentifier.isEmpty,
               value == targetAppBundleIdentifier,
@@ -62,7 +76,7 @@ struct PadAction: Codable, Hashable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, value, targetAppBundleIdentifier, launchTargetAppIfNeeded, showTerminalWindow, openURLInCurrentTab
+        case kind, value, targetAppBundleIdentifier, launchTargetAppIfNeeded, showTerminalWindow, openURLInCurrentTab, workflowSteps
     }
 
     init(from decoder: Decoder) throws {
@@ -73,6 +87,7 @@ struct PadAction: Codable, Hashable {
         launchTargetAppIfNeeded = try container.decodeIfPresent(Bool.self, forKey: .launchTargetAppIfNeeded) ?? true
         showTerminalWindow = try container.decodeIfPresent(Bool.self, forKey: .showTerminalWindow) ?? true
         openURLInCurrentTab = try container.decodeIfPresent(Bool.self, forKey: .openURLInCurrentTab) ?? false
+        workflowSteps = try container.decodeIfPresent([WorkflowStep].self, forKey: .workflowSteps) ?? []
     }
 
     func encode(to encoder: Encoder) throws {
@@ -83,7 +98,14 @@ struct PadAction: Codable, Hashable {
         try container.encode(launchTargetAppIfNeeded, forKey: .launchTargetAppIfNeeded)
         try container.encode(showTerminalWindow, forKey: .showTerminalWindow)
         try container.encode(openURLInCurrentTab, forKey: .openURLInCurrentTab)
+        if !workflowSteps.isEmpty { try container.encode(workflowSteps, forKey: .workflowSteps) }
     }
+}
+
+struct WorkflowStep: Identifiable, Codable, Hashable, Sendable {
+    var id = UUID().uuidString
+    var action = PadAction(kind: .app)
+    var delayAfter: Double = 0
 }
 
 private func nextConfiguredAction(
@@ -99,7 +121,7 @@ private func nextConfiguredAction(
     return isSecondActionActive ? secondary : primary
 }
 
-struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable {
+struct SmartphoneFolderShortcut: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var title = ""
     var secondTitle: String?
@@ -278,7 +300,7 @@ extension Pad {
     }
 }
 
-struct SmartphoneButton: Identifiable, Codable, Hashable {
+struct SmartphoneButton: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var title = ""
     var secondTitle: String?
@@ -405,7 +427,7 @@ struct SmartphoneButton: Identifiable, Codable, Hashable {
     }
 }
 
-struct SmartphonePage: Identifiable, Codable, Hashable {
+struct SmartphonePage: Identifiable, Codable, Hashable, Sendable {
     let id: String
     var name: String
     var buttons: [SmartphoneButton]

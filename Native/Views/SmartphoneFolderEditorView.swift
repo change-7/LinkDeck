@@ -319,7 +319,7 @@ struct SmartphoneFolderEditorView: View {
                     }
                     shortcutPNGEditor(for: selectedShortcut)
                     Picker("동작", selection: shortcutKindBinding) {
-                        ForEach([ActionKind.none, .shortcut, .app, .terminalCommand, .url]) { kind in
+                        ForEach([ActionKind.none, .shortcut, .app, .terminalCommand, .url, .workflow]) { kind in
                             Text(kind.title).tag(kind)
                         }
                     }
@@ -347,6 +347,11 @@ struct SmartphoneFolderEditorView: View {
     @ViewBuilder
     private var shortcutActionEditor: some View {
         switch selectedAction.kind {
+        case .workflow:
+            WorkflowEditorView(action: Binding(
+                get: { selectedAction },
+                set: { value in updateSelectedAction { $0 = value } }
+            ))
         case .shortcut:
             ShortcutComposerView(
                 value: shortcutValueBinding,
@@ -471,7 +476,8 @@ struct SmartphoneFolderEditorView: View {
                     $0 = PadAction(
                         kind: kind,
                         value: kind == .url ? "https://example.com" : "",
-                        targetAppBundleIdentifier: kind == .shortcut ? folderAction.value : ""
+                        targetAppBundleIdentifier: kind == .shortcut ? folderAction.value : "",
+                        workflowSteps: kind == .workflow ? [WorkflowStep()] : []
                     )
                 }
             }
@@ -764,6 +770,7 @@ struct SmartphoneFolderEditorView: View {
             switch result {
             case .success(let application):
                 updateFolderButton { button in
+                    application.applyIcon(to: &button, isSecondAction: !folderUsesLongPress && folderUsesSecondAction)
                     if folderUsesLongPress {
                         button.longPressAction.value = application.bundleIdentifier
                     } else if folderUsesSecondAction {
@@ -798,6 +805,9 @@ struct SmartphoneFolderEditorView: View {
             switch result {
             case .success(let application):
                 updateShortcut(id: selectedShortcutID) { shortcut in
+                    if selectedAction.kind == .app || selectedAction.kind == .appFolder {
+                        application.applyIcon(to: &shortcut, isSecondAction: !usesLongPress && editingSecondAction)
+                    }
                     if usesLongPress {
                         shortcut.longPressAction.value = application.bundleIdentifier
                     } else {

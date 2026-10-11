@@ -5,6 +5,11 @@ import Observation
 private func remoteSafeAction(_ action: PadAction) -> PadAction {
     var action = action
     if action.kind == .clipboardText { action.value = "" }
+    action.workflowSteps = action.workflowSteps.map { step in
+        var step = step
+        step.action = remoteSafeAction(step.action)
+        return step
+    }
     return action
 }
 

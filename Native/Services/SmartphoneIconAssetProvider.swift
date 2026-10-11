@@ -111,7 +111,7 @@ enum SmartphoneIconAssetProvider {
             return action.value
         case .shortcut:
             return action.targetAppBundleIdentifier
-        case .terminalCommand, .url, .clipboardText, .none:
+        case .terminalCommand, .url, .workflow, .clipboardText, .none:
             return nil
         }
     }

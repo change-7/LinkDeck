@@ -117,12 +117,20 @@ struct SmartphoneSettingsView: View {
                     )
                     .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    buttonGrids
+                    GeometryReader { gridGeometry in
+                        if selectedAction.kind == .workflow {
+                            buttonGrids.frame(height: gridGeometry.size.height, alignment: .top)
+                        } else {
+                            ScrollView(.vertical) {
+                                buttonGrids.frame(minHeight: gridGeometry.size.height)
+                            }
+                        }
+                    }
                     ScrollView(.vertical) {
                         editor
                     }
                     .frame(width: editorPanelWidth, height: max(0, geometry.size.height - 28))
-                    .scrollIndicators(.visible)
+                    .scrollIndicators(selectedAction.kind == .workflow ? .hidden : .visible)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -193,6 +201,7 @@ struct SmartphoneSettingsView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(index == dropTargetPageIndex || index == pageIndex ? theme.accent : theme.foreground.opacity(0.22)))
                     }
                     .buttonStyle(.plain)
+                    .modifier(PageNameEditor(name: page.name) { store.updateSmartphonePageName($0, at: index) })
                 }
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
@@ -278,6 +287,10 @@ struct SmartphoneSettingsView: View {
                 ForEach(Array(page.buttons.enumerated()), id: \.element.id) { index, button in
                     buttonCell(index: index, button: button, pageIndex: gridPageIndex)
                 }
+            }
+            if gridPageIndex == pageIndex, selectedAction.kind == .workflow {
+                WorkflowEditorView(action: selectedActionBinding, onRun: runSelectedAction)
+                    .id("\(selectedButton.id)-\(editingLongPress)-\(editingSecondAction)")
             }
             Spacer()
         }
@@ -393,10 +406,6 @@ struct SmartphoneSettingsView: View {
 
     private var editor: some View {
         VStack(alignment: .leading, spacing: 12) {
-            field("페이지 이름") {
-                DarkTextField(text: pageNameBinding, placeholder: "페이지 이름")
-            }
-            Divider().overlay(theme.foreground.opacity(0.16))
             HStack {
                 Text("버튼 편집").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
                 Spacer()
@@ -445,6 +454,7 @@ struct SmartphoneSettingsView: View {
                     actionButton(.terminalCommand)
                     actionButton(.url)
                     actionButton(.appFolder)
+                    actionButton(.workflow)
                 }
             }
             actionRegistration
@@ -740,7 +750,7 @@ struct SmartphoneSettingsView: View {
         let appBundleIdentifier: String? = switch iconAction.kind {
         case .app, .appFolder: iconAction.value
         case .shortcut: iconAction.targetAppBundleIdentifier
-        case .terminalCommand, .url, .clipboardText, .none: nil
+        case .terminalCommand, .url, .workflow, .clipboardText, .none: nil
         }
 
         if let customIconData = button.activeCustomIconData,
@@ -790,6 +800,7 @@ struct SmartphoneSettingsView: View {
             if previousKind != kind {
                 action.value = kind == .url ? "https://chatgpt.com" : ""
                 action.targetAppBundleIdentifier = ""
+                if kind == .workflow, action.workflowSteps.isEmpty { action.workflowSteps = [WorkflowStep()] }
             }
             if kind != .shortcut { action.targetAppBundleIdentifier = "" }
             if editingLongPress {
@@ -815,6 +826,9 @@ struct SmartphoneSettingsView: View {
 
     @ViewBuilder private var actionRegistration: some View {
         switch selectedAction.kind {
+        case .workflow:
+            Text("4×4 버튼 아래에서 동작과 대기 시간을 설정하세요.")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
         case .app, .appFolder:
             Button(selectedAction.kind == .appFolder ? "앱 폴더 등록" : "앱 등록") {
                 registerApplication(kind: selectedAction.kind)
@@ -872,7 +886,6 @@ struct SmartphoneSettingsView: View {
             }
         )
     }
-    private var pageNameBinding: Binding<String> { Binding(get: { page.name }, set: { store.updateSmartphonePageName($0, at: pageIndex) }) }
     private var secondActionEnabledBinding: Binding<Bool> {
         Binding(
             get: { selectedButton.secondAction != nil },
@@ -1037,6 +1050,7 @@ struct SmartphoneSettingsView: View {
                 action.kind = kind
                 action.value = application.bundleIdentifier
                 action.targetAppBundleIdentifier = ""
+                application.applyIcon(to: &button, isSecondAction: !editingLongPress && editingSecondAction)
                 if editingLongPress {
                     button.longPressAction = action
                 } else if editingSecondAction {

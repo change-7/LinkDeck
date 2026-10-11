@@ -13,12 +13,11 @@ struct InspectorView: View {
     let onOpenCodexSettings: () -> Void
     let onSelectPageLED: (Int?) -> Void
     let onUpdatePageColor: (Int, String, Bool) -> Void
-    let onUpdatePageName: (Int, String) -> Void
     let onReset: () -> Void
     let onRun: (PadAction) -> Void
     @State private var registrationError = ""
     @State private var appRegistrationRequestID = UUID()
-    @State private var editingSecondAction = false
+    @Binding var editingSecondAction: Bool
 
     private var selectedAction: PadAction {
         editingSecondAction ? (pad.secondAction ?? PadAction()) : pad.action
@@ -66,13 +65,6 @@ struct InspectorView: View {
             .overlay(alignment: .bottom) { Divider().overlay(theme.foreground.opacity(0.18)) }
 
             if let pageIndex = selectedPageLEDIndex, pages.indices.contains(pageIndex) {
-                fieldSection("P 버튼 이름") {
-                    DarkTextField(text: Binding(
-                        get: { pages[pageIndex].name },
-                        set: { onUpdatePageName(pageIndex, $0) }
-                    ))
-                }
-                sectionDivider
                 fieldSection("런치패드 LED 색상") {
                     Button("현재 패드 LED 색상으로 돌아가기") {
                         onSelectPageLED(nil)
@@ -132,6 +124,7 @@ struct InspectorView: View {
                         actionButton(.shortcut)
                         actionButton(.terminalCommand)
                         actionButton(.url)
+                        actionButton(.workflow)
                     }
                     if selectedAction.kind != .none {
                         actionRegistration
@@ -247,6 +240,7 @@ struct InspectorView: View {
             updateSelectedAction {
                 $0.kind = kind
                 if changedKind || $0.value.isEmpty { $0.value = defaultValue(for: kind) }
+                if kind == .workflow, $0.workflowSteps.isEmpty { $0.workflowSteps = [WorkflowStep()] }
             }
         } label: {
             Text(kind.title).font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 12)
@@ -260,6 +254,9 @@ struct InspectorView: View {
 
     @ViewBuilder private var actionRegistration: some View {
         switch selectedAction.kind {
+        case .workflow:
+            Text("패드 아래에서 동작과 대기 시간을 설정하세요.")
+                .font(.system(size: 10)).foregroundStyle(.secondary)
         case .app, .appFolder:
             VStack(alignment: .leading, spacing: 8) {
                 Button("앱 등록") { registerApplication() }
@@ -328,9 +325,11 @@ struct InspectorView: View {
             case .success(let application):
                 updateSelectedAction { $0.value = application.bundleIdentifier }
                 if editingSecondAction {
+                    pad.secondSymbol = ""
                     if pad.secondTitle?.isEmpty ?? true { pad.secondTitle = application.name }
-                } else if pad.title.isEmpty {
-                    pad.title = application.name
+                } else {
+                    pad.symbol = ""
+                    if pad.title.isEmpty { pad.title = application.name }
                 }
             case .failure(let error):
                 registrationError = error.localizedDescription
@@ -393,7 +392,7 @@ struct InspectorView: View {
 
     private func defaultValue(for kind: ActionKind) -> String {
         switch kind {
-        case .app, .appFolder, .shortcut, .terminalCommand, .clipboardText: ""
+        case .app, .appFolder, .shortcut, .terminalCommand, .workflow, .clipboardText: ""
         case .url: "https://chatgpt.com"
         case .none: ""
         }
