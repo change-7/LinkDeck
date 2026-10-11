@@ -261,9 +261,7 @@ class RemoteBridgeClient(context: Context) {
         discoveryRetry = null
         stopWirelessDiscovery()
         setConnection(RemoteConnectionState.Searching)
-        val configuredHost = bridgePreferences.macBridgeHost
-        if (configuredHost.isNotEmpty()) connect(configuredHost, BRIDGE_PORT)
-        else connect("127.0.0.1", BRIDGE_PORT, fallbackToWireless = true)
+        connect("127.0.0.1", BRIDGE_PORT, fallbackToWireless = true)
     }
 
     private fun discoverWireless() {
@@ -548,9 +546,11 @@ class RemoteBridgeClient(context: Context) {
                     onCodexRunning?.invoke()
                 }
                 if (approvalEvent) {
+                    PhoneAlertVibration(appContext).notify(approval = true)
                     onCodexApproval?.invoke()
                 }
                 if (completionEvent) {
+                    PhoneAlertVibration(appContext).notify(approval = false)
                     onCodexCompletion?.invoke(playCompletionSound)
                 }
             }

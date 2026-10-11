@@ -831,10 +831,6 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
         }
         if (showConnectionSettings) {
             BridgeConnectionSettingsDialog(
-                microphoneActive = remoteBridge.microphoneActive,
-                microphoneStarting = remoteBridge.microphoneStarting,
-                microphoneEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
-                onMicrophoneToggle = toggleMicrophone,
                 soundOutputTarget = remoteBridge.completionSoundTarget.takeIf { it == remoteBridge.approvalSoundOutputTarget } ?: "",
                 soundOutputTargetEnabled = remoteBridge.connectionState == RemoteConnectionState.Connected,
                 onSoundOutputTargetChanged = remoteBridge::requestSoundOutputTarget,
@@ -1185,10 +1181,6 @@ private fun RunningStatusIndicator(
 
 @Composable
 private fun BridgeConnectionSettingsDialog(
-    microphoneActive: Boolean,
-    microphoneStarting: Boolean,
-    microphoneEnabled: Boolean,
-    onMicrophoneToggle: (Boolean) -> Unit,
     soundOutputTarget: String,
     soundOutputTargetEnabled: Boolean,
     onSoundOutputTargetChanged: (String) -> Unit,
@@ -1205,6 +1197,31 @@ private fun BridgeConnectionSettingsDialog(
     val context = LocalContext.current
     val preferences = remember { RemoteBridgePreferences(context) }
     var draftMacBridgeHost by remember { mutableStateOf(preferences.macBridgeHost) }
+    var section by rememberSaveable { mutableStateOf("Mac 연결") }
+    val configuration = LocalConfiguration.current
+    val isPortrait = configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+    val sections = listOf("Mac 연결", "알림", "화면", "백그라운드·절전")
+    val menuItem: @Composable (String) -> Unit = { title ->
+        TextButton(
+            onClick = { section = title },
+            modifier = Modifier.background(
+                if (section == title) Green.copy(alpha = 0.12f) else Color.Transparent,
+                RoundedCornerShape(8.dp)
+            )
+        ) {
+            Text(
+                if (title == "백그라운드·절전") "절전" else title,
+                color = if (section == title) Green else TextMuted,
+                fontWeight = if (section == title) FontWeight.Bold else FontWeight.Normal,
+                fontSize = 13.sp
+            )
+        }
+    }
+    val settingsScrollState = rememberScrollState()
+    LaunchedEffect(section) { settingsScrollState.scrollTo(0) }
+    val alertVibration = remember { PhoneAlertVibration(context) }
+    var completionVibration by remember { mutableStateOf(alertVibration.selected(false)) }
+    var approvalVibration by remember { mutableStateOf(alertVibration.selected(true)) }
     var keepRunningInBackground by remember { mutableStateOf(preferences.keepRunningInBackground) }
     var selectedKey by remember { mutableStateOf(preferences.screenOffOptionKey) }
     var sleepWindowEnabled by remember { mutableStateOf(preferences.sleepWindowEnabled) }
@@ -1225,18 +1242,35 @@ private fun BridgeConnectionSettingsDialog(
         ?.coerceIn(MinScreenOffTimeoutMinutes, MaxScreenOffTimeoutMinutes)
         ?: 30
     AlertDialog(
+        modifier = Modifier.width((configuration.screenWidthDp - 32).coerceAtMost(if (isPortrait) 440 else 760).dp),
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
         onDismissRequest = onDismiss,
         containerColor = Tile,
         titleContentColor = TextPrimary,
         textContentColor = TextPrimary,
-        title = { Text("연결 설정", color = TextPrimary) },
+        title = { Text("설정", color = TextPrimary) },
         text = {
+            Column {
+                if (isPortrait) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        sections.forEach { menuItem(it) }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                    if (!isPortrait) {
+                        Column(Modifier.width(112.dp)) {
+                            sections.forEach { menuItem(it) }
+                        }
+                    }
             Column(
                 modifier = Modifier
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .weight(1f)
+                    .heightIn(max = (configuration.screenHeightDp - if (isPortrait) 240 else 170).coerceAtLeast(100).coerceAtMost(420).dp)
+                    .verticalScroll(settingsScrollState),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                if (section == "Mac 연결") {
                 OutlinedTextField(
                     value = draftMacBridgeHost,
                     onValueChange = { draftMacBridgeHost = it },
@@ -1244,11 +1278,26 @@ private fun BridgeConnectionSettingsDialog(
                     label = { Text("맥의 Tailscale 주소") },
                     placeholder = { Text("100.x.x.x") },
                     supportingText = {
-                        Text("주소가 저장되어 있으면 바로 연결합니다. 비워 두면 USB 또는 같은 Wi-Fi의 Mac을 찾습니다.")
+                        Text("USB와 같은 Wi-Fi의 Mac을 먼저 찾습니다. 찾지 못하면 저장된 Tailscale 주소로 연결합니다.")
                     },
                     singleLine = true,
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        cursorColor = Green,
+                        focusedBorderColor = Green,
+                        unfocusedBorderColor = TextMuted,
+                        focusedLabelColor = Green,
+                        unfocusedLabelColor = TextMuted,
+                        focusedPlaceholderColor = TextMuted,
+                        unfocusedPlaceholderColor = TextMuted,
+                        focusedSupportingTextColor = TextMuted,
+                        unfocusedSupportingTextColor = TextMuted
+                    ),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
                 )
+                }
+                if (section == "백그라운드·절전") {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -1331,6 +1380,8 @@ private fun BridgeConnectionSettingsDialog(
                     )
                     Text("계속 유지", color = TextPrimary, fontSize = 14.sp)
                 }
+                }
+                if (section == "화면") {
                 Spacer(Modifier.height(6.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1441,6 +1492,24 @@ private fun BridgeConnectionSettingsDialog(
                         Icon(Icons.Outlined.Add, contentDescription = "완료 깜빡임 시간 늘리기", tint = TextPrimary)
                     }
                 }
+                }
+                if (section == "알림") {
+                Text("이 휴대폰의 알림 진동", color = TextPrimary, fontSize = 14.sp)
+                Text("설정은 이 휴대폰에만 저장됩니다.", color = TextPrimary, fontSize = 12.sp)
+                for (approval in listOf(false, true)) {
+                    val selected = if (approval) approvalVibration else completionVibration
+                    Text(if (approval) "확인·승인 필요" else "작업 완료", color = TextPrimary, fontSize = 14.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        TextButton(onClick = {
+                            val patterns = AlertVibrationPattern.entries
+                            val next = patterns[(selected.ordinal + 1) % patterns.size]
+                            if (approval) approvalVibration = next else completionVibration = next
+                        }) { Text("${selected.title} · 변경", color = Green) }
+                        TextButton(onClick = { alertVibration.play(selected) }) {
+                            Text("진동 테스트", color = Green)
+                        }
+                    }
+                }
                 Text("알림 사운드 재생 기기", color = TextPrimary, fontSize = 14.sp)
                 Text("완료·승인 사운드에 함께 적용됩니다.", color = TextMuted, fontSize = 11.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1461,27 +1530,8 @@ private fun BridgeConnectionSettingsDialog(
                         }
                     }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("휴대폰을 Mac 마이크로 사용", color = TextPrimary, fontSize = 14.sp)
-                    Spacer(Modifier.weight(1f))
-                    Switch(
-                        checked = microphoneActive || microphoneStarting,
-                        onCheckedChange = onMicrophoneToggle,
-                        enabled = microphoneEnabled && !microphoneStarting,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Black,
-                            checkedTrackColor = Green,
-                            checkedBorderColor = Green,
-                            uncheckedThumbColor = TextMuted,
-                            uncheckedTrackColor = Tile,
-                            uncheckedBorderColor = TextMuted
-                        )
-                    )
                 }
-                Text("켜면 Mac 기본 마이크가 BlackHole 2ch로 바뀝니다.", color = TextMuted, fontSize = 12.sp)
+                if (section == "백그라운드·절전") {
                 Spacer(Modifier.height(6.dp))
                 Text("절전 시간대", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1515,6 +1565,9 @@ private fun BridgeConnectionSettingsDialog(
                         }
                     ) { Text(formatClockMinutes(sleepWindowEnd), color = if (sleepWindowEnabled) GaugeHigh else TextMuted) }
                 }
+                }
+            }
+                }
             }
         },
         confirmButton = {
@@ -1528,6 +1581,8 @@ private fun BridgeConnectionSettingsDialog(
                     preferences.idleBlackoutEnabled = draftIdleBlackoutEnabled
                     preferences.displayKeepAwakeMinutes = draftDisplayKeepAwakeMinutes
                     preferences.completionBlinkDurationSeconds = draftCompletionBlinkDurationSeconds
+                    alertVibration.save(false, completionVibration)
+                    alertVibration.save(true, approvalVibration)
                     preferences.blackoutClockSizePercent = draftBlackoutClockSizePercent
                     preferences.sleepWindowEnabled = sleepWindowEnabled
                     preferences.sleepWindowStartMinutes = sleepWindowStart

@@ -231,6 +231,7 @@ class RemoteBridgeService : Service() {
                 description = "Alerts when Codex is waiting for approval in LinkDeck."
                 setShowBadge(true)
                 setSound(null, null)
+                enableVibration(false)
             }
         )
     }
@@ -382,7 +383,7 @@ class RemoteBridgeService : Service() {
         const val ACTION_TIMEOUT_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_TIMEOUT_CHANGED"
         const val ACTION_CONNECTION_CHANGED = "com.pdg.galaxymicrolaunchpad.REMOTE_BRIDGE_CONNECTION_CHANGED"
         private const val CHANNEL_ID = "mac_bridge_connection"
-        private const val APPROVAL_CHANNEL_ID = "codex_approval_v2"
+        private const val APPROVAL_CHANNEL_ID = "codex_approval_v3"
         private const val NOTIFICATION_ID = 43123
         private const val APPROVAL_NOTIFICATION_ID = 43124
     }
