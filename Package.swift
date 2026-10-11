@@ -15,7 +15,8 @@ let package = Package(
         .testTarget(
             name: "ChatGPTMicroLaunchpadTests",
             dependencies: ["ChatGPTMicroLaunchpad"],
-            path: "Tests/ChatGPTMicroLaunchpadTests"
+            path: "Tests/ChatGPTMicroLaunchpadTests",
+            exclude: ["Fixtures"]
         )
     ]
 )

@@ -62,6 +62,7 @@ struct ContentView: View {
         .frame(minWidth: 1100, minHeight: 640)
         .preferredColorScheme(AppAppearanceMode(rawValue: appearanceMode)?.colorScheme)
         .onAppear {
+            chatGPTTunnel.connectOnStartup(store: store, folderSyncStore: folderSyncStore, runner: runner)
             midi.onPagePressed = { index in
                 recordLaunchpadOrCodexActivity()
                 selectPage(index)

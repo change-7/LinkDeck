@@ -22,6 +22,14 @@ enum AppRegistrationService {
             let name = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
                 ?? bundle.object(forInfoDictionaryKey: "CFBundleName") as? String
                 ?? url.deletingPathExtension().lastPathComponent
+            do {
+                if let api = try RegisteredAppAPI.load(appURL: url), !api.approved { api.approve() }
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "앱 API 안내 파일을 읽지 못했습니다."
+                alert.informativeText = error.localizedDescription + "\n앱 실행 버튼은 등록됩니다."
+                alert.runModal()
+            }
             completion(.success(RegisteredApplication(name: name, bundleIdentifier: bundleIdentifier)))
         }
     }

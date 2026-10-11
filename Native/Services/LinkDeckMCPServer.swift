@@ -58,7 +58,7 @@ final class LinkDeckMCPServer {
     private var connections: [UUID: NWConnection] = [:]
     private var timeouts: [UUID: Task<Void, Never>] = [:]
     private var startup: CheckedContinuation<URL, any Error>?
-    var handle: ((Data) -> (status: Int, body: Data))?
+    var handle: ((Data) async -> (status: Int, body: Data))?
     var onFailure: (() -> Void)?
     var onRequestRejected: ((String) -> Void)?
 
@@ -145,7 +145,7 @@ final class LinkDeckMCPServer {
                         self.onRequestRejected?("HTTP \(status), MCP \(request.headers["mcp-protocol-version"] ?? "unspecified")")
                         self.respond(connection, id: id, status: status, body: Data())
                     } else if let handle = self.handle {
-                        let response = handle(request.body)
+                        let response = await handle(request.body)
                         self.respond(connection, id: id, status: response.status, body: response.body)
                     } else { self.respond(connection, id: id, status: 503, body: Data()) }
                 }

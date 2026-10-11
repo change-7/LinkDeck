@@ -2,6 +2,17 @@ import AppKit
 import Observation
 
 struct LinkDeckTunnelLaunch {
+    static func supervisedArguments(executable: String, arguments: [String], ownerPID: Int32 = getpid()) -> [String] {
+        ["-c", """
+        owner="$1"; shift
+        "$@" & child=$!
+        trap 'kill "$child" 2>/dev/null || true' EXIT
+        trap 'exit 0' HUP INT TERM
+        while kill -0 "$owner" 2>/dev/null && kill -0 "$child" 2>/dev/null; do sleep 1; done
+        kill "$child" 2>/dev/null || true
+        wait "$child"
+        """, "linkdeck-tunnel", String(ownerPID), executable] + arguments
+    }
     let arguments: [String]
     let environment: [String: String]
 
@@ -25,6 +36,9 @@ struct LinkDeckTunnelLaunch {
 final class ChatGPTTunnelController {
     var tunnelID: String
     var apiKey = ""
+    var autoConnect: Bool {
+        didSet { preferences.set(autoConnect, forKey: "linkdeck.chatgpt-auto-connect") }
+    }
     private(set) var isActive = false
     private(set) var isReady = false
     private(set) var message = "연결 안 됨"
@@ -33,10 +47,21 @@ final class ChatGPTTunnelController {
     @ObservationIgnored private var server: LinkDeckMCPServer?
     @ObservationIgnored private var process: Process?
     @ObservationIgnored private let preferences: UserDefaults
+    @ObservationIgnored private let readCredential: () throws -> String?
+    @ObservationIgnored private let saveCredential: (String) throws -> Void
+    @ObservationIgnored private let deleteCredential: () throws -> Void
+    @ObservationIgnored private var attemptedStartupConnection = false
 
-    init(preferences: UserDefaults = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard) {
+    init(preferences: UserDefaults = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard,
+         readCredential: @escaping () throws -> String? = LinkDeckTunnelKeychain.read,
+         saveCredential: @escaping (String) throws -> Void = LinkDeckTunnelKeychain.save,
+         deleteCredential: @escaping () throws -> Void = LinkDeckTunnelKeychain.delete) {
         self.preferences = preferences
+        self.readCredential = readCredential
+        self.saveCredential = saveCredential
+        self.deleteCredential = deleteCredential
         tunnelID = preferences.string(forKey: "linkdeck.chatgpt-tunnel-id") ?? ""
+        autoConnect = preferences.object(forKey: "linkdeck.chatgpt-auto-connect") as? Bool ?? true
     }
 
     static var executable: URL? {
@@ -46,19 +71,14 @@ final class ChatGPTTunnelController {
 
     func connect(store: LaunchpadStore, folderSyncStore: FolderPairStore, runner: MacActionRunner) {
         guard !isActive else { return }
-        let id = tunnelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard id.hasPrefix("tunnel_"), id.count <= 128,
-              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }), !key.isEmpty else {
-            message = "터널 ID와 런타임 API 키를 입력하세요."
-            return
-        }
         guard let executable = Self.executable else {
             message = "tunnel-client가 없습니다. 안내의 설치 명령을 먼저 실행하세요."
             return
         }
-        tunnelID = id
-        preferences.set(id, forKey: "linkdeck.chatgpt-tunnel-id")
+        let configuration: (id: String, key: String)
+        do { configuration = try savedConfiguration() }
+        catch { message = error.localizedDescription; return }
+        let (id, key) = configuration
         isActive = true
         isReady = false
         message = "터널 연결 중…"
@@ -75,7 +95,42 @@ final class ChatGPTTunnelController {
         }
     }
 
-    func disconnect() {
+    func savedConfiguration() throws -> (id: String, key: String) {
+        let id = tunnelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let enteredKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let key = try enteredKey.isEmpty ? (readCredential() ?? "") : enteredKey
+        guard id.hasPrefix("tunnel_"), id.count <= 128,
+              id.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }), !key.isEmpty else {
+            throw NSError(domain: "LinkDeck.Tunnel", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "터널 ID와 런타임 API 키를 입력하세요."])
+        }
+        if !enteredKey.isEmpty { try saveCredential(key) }
+        tunnelID = id
+        preferences.set(id, forKey: "linkdeck.chatgpt-tunnel-id")
+        preferences.set(autoConnect, forKey: "linkdeck.chatgpt-auto-connect")
+        apiKey = ""
+        return (id, key)
+    }
+
+    func connectOnStartup(store: LaunchpadStore, folderSyncStore: FolderPairStore, runner: MacActionRunner) {
+        guard !attemptedStartupConnection else { return }
+        attemptedStartupConnection = true
+        guard autoConnect, !tunnelID.isEmpty else { return }
+        connect(store: store, folderSyncStore: folderSyncStore, runner: runner)
+    }
+
+    func forgetCredential() {
+        guard !isActive else { return }
+        do {
+            try deleteCredential()
+            apiKey = ""
+            autoConnect = false
+            message = "저장된 API 키를 삭제했습니다."
+        } catch { message = error.localizedDescription }
+    }
+
+    func disconnect(disableAutoConnect: Bool = false) {
+        if disableAutoConnect { autoConnect = false }
         guard isActive else { return }
         message = "연결 종료 중…"
         isReady = false
@@ -95,15 +150,22 @@ final class ChatGPTTunnelController {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-tunnel-\(UUID())")
         let healthFile = directory.appendingPathComponent("health.url")
         let server = LinkDeckMCPServer()
+        let whisper = StableWhisperMCPClient()
+        let appAPIs = AppAPIMCPBridge()
         self.server = server
         server.handle = { [weak self] data in
             let catalog = LinkDeckMCPHandler.buttons(macPages: store.pages, phonePages: store.smartphonePages)
-            return LinkDeckMCPHandler.response(to: data, buttons: catalog, folderSyncStore: folderSyncStore) { button in
-                let result = try runner.execute(button.action, commandFileID: button.commandFileID)
-                self?.lastAction = button.title + ": " + result
-                return result
+            return await appAPIs.response(to: data, apps: RegisteredAppAPI.discover(buttons: catalog)) {
+                await StableWhisperMCPBridge.response(to: data, client: whisper, executable: StableWhisperMCPBridge.executable()) {
+                    LinkDeckMCPHandler.response(to: data, buttons: catalog, folderSyncStore: folderSyncStore) { button in
+                        let result = try runner.execute(button.action, commandFileID: button.commandFileID)
+                        self?.lastAction = button.title + ": " + result
+                        return result
+                    }
+                }
             }
         }
+        defer { Task { await whisper.stop(); await appAPIs.stop() } }
         server.onFailure = { [weak self] in self?.disconnect() }
         server.onRequestRejected = { [weak self] reason in self?.lastAction = "연결 요청 거부: " + reason }
         do {
@@ -114,8 +176,8 @@ final class ChatGPTTunnelController {
             let launch = LinkDeckTunnelLaunch(tunnelID: tunnelID, apiKey: apiKey, serverURL: url,
                                               localToken: server.token, healthFile: healthFile.path)
             let process = Process()
-            process.executableURL = executable
-            process.arguments = launch.arguments
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = LinkDeckTunnelLaunch.supervisedArguments(executable: executable.path, arguments: launch.arguments)
             process.environment = launch.environment
             process.standardInput = FileHandle.nullDevice
             process.standardOutput = FileHandle.nullDevice

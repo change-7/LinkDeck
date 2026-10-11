@@ -4,6 +4,61 @@ import XCTest
 
 @MainActor
 final class LinkDeckMCPTests: XCTestCase {
+    func testInstalledWhisperBridge_discoversCallsAndRejectsUnknownTools() async throws {
+        guard let executable = StableWhisperMCPBridge.executable() else { throw XCTSkip("Stable Whisper is not installed") }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-whisper-test-\(UUID())")
+        let client = StableWhisperMCPClient(jobsDirectory: directory)
+        func invoke(_ method: String, _ params: [String: Any] = [:]) async throws -> [String: Any] {
+            let data = try request(method, params: params)
+            let response = await StableWhisperMCPBridge.response(to: data, client: client, executable: executable) {
+                LinkDeckMCPHandler.response(to: data, buttons: []) { _ in XCTFail("Must not execute buttons"); return "" }
+            }
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        }
+        do {
+            let listed = try await invoke("tools/list")
+            let result = try XCTUnwrap(listed["result"] as? [String: Any])
+            let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
+            XCTAssertEqual(tools.filter { ($0["name"] as? String ?? "").hasPrefix("linkdeck_whisper_") }.count, 6)
+            let start = try XCTUnwrap(tools.first { $0["name"] as? String == "linkdeck_whisper_start_transcription" })
+            let schema = try XCTUnwrap(start["inputSchema"] as? [String: Any])
+            let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+            XCTAssertNotNil(properties["url"])
+            XCTAssertNotNil(properties["file_path"])
+            let jobs = try await invoke("tools/call", ["name": "linkdeck_whisper_list_transcriptions", "arguments": [:]])
+            XCTAssertEqual(jobs["id"] as? Int, 1)
+            let jobsResult = try XCTUnwrap(jobs["result"] as? [String: Any])
+            XCTAssertEqual(jobsResult["isError"] as? Bool, false)
+            let invalid = try await invoke("tools/call", ["name": "linkdeck_whisper_start_transcription", "arguments": ["file_path": "/missing/linkdeck-test.mp4"]])
+            XCTAssertEqual((invalid["result"] as? [String: Any])?["isError"] as? Bool, true)
+            let unknown = try await invoke("tools/call", ["name": "linkdeck_whisper_run_command", "arguments": [:]])
+            XCTAssertEqual((unknown["error"] as? [String: Any])?["code"] as? Int, -32602)
+        } catch {
+            await client.stop()
+            throw error
+        }
+        await client.stop()
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func testTranscriptionDiscovery_exposesAppIdentityAndExplainsLaunchLimit() throws {
+        let button = LinkDeckMCPButton(id: "whisper", title: "전사", page: "Page", device: "Mac", press: "short",
+            action: PadAction(kind: .app, value: "com.example.stable-whisper"), commandFileID: "whisper")
+        XCTAssertEqual(button.metadata["app_bundle_identifier"], "com.example.stable-whisper")
+        let shortcut = LinkDeckMCPButton(id: "shortcut", title: "전사", page: "Page", device: "Mac", press: "short",
+            action: PadAction(kind: .shortcut, value: "private shortcut", targetAppBundleIdentifier: "com.example.stable-whisper"), commandFileID: "shortcut")
+        XCTAssertEqual(shortcut.metadata["app_bundle_identifier"], "com.example.stable-whisper")
+        XCTAssertFalse(shortcut.metadata.values.contains("private shortcut"))
+        let initialized = LinkDeckMCPHandler.response(to: try request("initialize", params: ["protocolVersion": "2025-06-18"]), buttons: [button]) { _ in XCTFail("Must not execute"); return "" }
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: initialized.body) as? [String: Any])
+        let result = try XCTUnwrap(object["result"] as? [String: Any])
+        let instructions = try XCTUnwrap(result["instructions"] as? String)
+        XCTAssertTrue(instructions.contains("Stable Whisper"))
+        XCTAssertTrue(instructions.contains("linkdeck_whisper_*"))
+        let listed = LinkDeckMCPHandler.response(to: try request("tools/list"), buttons: [button]) { _ in XCTFail("Must not execute"); return "" }
+        XCTAssertTrue(String(decoding: listed.body, as: UTF8.self).contains("Stable Whisper"))
+    }
+
     private func request(_ method: String, params: [String: Any] = [:]) throws -> Data {
         try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
     }
