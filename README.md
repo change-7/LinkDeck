@@ -46,3 +46,9 @@ MCP 서버는 임시 포트의 `127.0.0.1`에만 바인딩하고, 세션마다 �
 
 OpenAI 터널 권한과 ChatGPT 개발자 모드 사용 가능 여부는 계정·조직 설정에 따라 다릅니다.
 구체적인 연결 절차는 [OpenAI 공식 안내](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)를 확인하세요.
+
+## GitHub Releases
+
+Git에 포함됐던 배포용 `LinkDeck.app`과 `LinkDeck.apk`는 [Releases](https://github.com/change-7/LinkDeck/releases)에 별도로 보관합니다. 기존 앱 번들은 `tracked-binaries-2026-10-15` 릴리스의 `LinkDeck-macOS.zip`에 담았으며, Android 설치 파일은 같은 릴리스의 `LinkDeck.apk`입니다. 체크섬은 `SHA256SUMS.txt`로 확인할 수 있습니다.
+
+소스에서 macOS 앱을 빌드할 때는 `./script/build_and_run.sh --package`를 사용합니다. 빌드된 앱과 APK는 소스 저장소에 커밋하지 않습니다.

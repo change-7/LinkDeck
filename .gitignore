@@ -10,3 +10,6 @@ Android/app/build/
 .kotlin/
 .DS_Store
 .DS_Store
+
+# Release assets are distributed through GitHub Releases
+/LinkDeck.apk
