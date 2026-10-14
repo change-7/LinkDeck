@@ -1,0 +1,44 @@
+name: Archive tracked binary builds
+on:
+  push:
+    paths:
+      - .github/workflows/archive-tracked-binaries.yml
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  publish:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Package committed artifacts
+        run: |
+          set -euo pipefail
+          test -d LinkDeck.app
+          test -f LinkDeck.apk
+          ditto -c -k --sequesterRsrc --keepParent LinkDeck.app LinkDeck-macOS.zip
+          shasum -a 256 LinkDeck-macOS.zip LinkDeck.apk > SHA256SUMS.txt
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="tracked-binaries-2026-10-15"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" LinkDeck-macOS.zip LinkDeck.apk SHA256SUMS.txt --clobber
+          else
+            gh release create "$tag" LinkDeck-macOS.zip LinkDeck.apk SHA256SUMS.txt \
+              --target "$GITHUB_SHA" \
+              --title "Previously tracked binaries (2026-10-15)" \
+              --notes "These are the exact previously committed builds, not newly compiled releases. The macOS .app bundle is zipped with ditto to preserve its structure and signatures."
+          fi
+      - name: Verify uploaded files against original bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p verified-download
+          gh release download tracked-binaries-2026-10-15 -D verified-download \
+            -p 'LinkDeck-macOS.zip' -p 'LinkDeck.apk' -p 'SHA256SUMS.txt'
+          cmp -s SHA256SUMS.txt verified-download/SHA256SUMS.txt
+          (cd verified-download && shasum -a 256 -c SHA256SUMS.txt)
