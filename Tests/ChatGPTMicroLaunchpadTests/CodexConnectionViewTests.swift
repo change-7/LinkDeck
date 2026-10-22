@@ -5,8 +5,13 @@ import XCTest
 final class CodexConnectionViewTests: XCTestCase {
     func testSettingsSurface_includesApprovalSoundSettings() {
         XCTAssertEqual(CodexConnectionView.availableTabTitles, [
-            "표시 설정", "상태별 모션", "모션 프리셋", "휴대폰 스킨", "완료 사운드", "승인 사운드", "ChatGPT 연결"
+            "연결 설정", "등록된 앱 API", "표시 설정", "휴대폰 스킨", "완료 사운드", "승인 사운드"
         ])
+    }
+
+    func testMainScreens_includePhoneButtonsAndAPIAppsOnly() {
+        XCTAssertEqual(MainScreen.allCases, [.smartphoneButtons, .apiApps])
+        XCTAssertNil(MainScreen(rawValue: "launchpadMini"))
     }
 
     func testApprovalSoundSettings_offerOnlyMacAndPhoneOutputTargets() {

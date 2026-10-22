@@ -4,6 +4,60 @@ import XCTest
 
 final class CodexRemoteStateTests: XCTestCase {
     @MainActor
+    func testStatusWirePayloadOmitsIconsWithoutChangingCachedState() throws {
+        let asset = SmartphoneIconAsset(kind: "custom", data: "large-image")
+        let state = CodexRemoteState(macConnected: true, codexConnected: true, activity: .running,
+            message: "working", weeklyUsage: nil, fiveHourUsage: nil,
+            smartphoneIconAssets: ["button": asset])
+        let bridge = CodexRemoteBridge()
+        let data = try XCTUnwrap(bridge.encodedLine(state, includingSmartphoneIconAssets: false))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertNil(object["smartphoneIconAssets"])
+        XCTAssertEqual(object["message"] as? String, "working")
+        XCTAssertEqual(state.smartphoneIconAssets?["button"], asset)
+        XCTAssertEqual(data.last, 10)
+    }
+
+    @MainActor
+    func testCustomIconsReuseBothSidesAndRefreshAfterReplacement() throws {
+        func image(_ symbol: String) throws -> Data {
+            try XCTUnwrap(NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?.tiffRepresentation)
+        }
+        var pages = SmartphoneDefaults.pages()
+        pages[0].buttons[0].title = "icon"
+        pages[0].buttons[0].customIconData = try image("star.fill")
+        pages[0].buttons[0].secondCustomIconData = try image("heart.fill")
+        pages[0].buttons[0].secondAction = PadAction(kind: .none, value: "")
+        let key = pages[0].buttons[0].id
+        let first = SmartphoneIconAssetProvider.assets(for: pages)
+        XCTAssertEqual(first, SmartphoneIconAssetProvider.assets(for: pages))
+        XCTAssertNotEqual(first[key + "__A"], first[key + "__B"])
+        pages[0].buttons[0].customIconData = try image("moon.fill")
+        let changed = SmartphoneIconAssetProvider.assets(for: pages)
+        XCTAssertNotEqual(first[key + "__A"], changed[key + "__A"])
+        XCTAssertEqual(first[key + "__B"], changed[key + "__B"])
+    }
+    @MainActor
+    func testResetCreditsFiltersUnavailableAndSortsByExpiry() throws {
+        XCTAssertNil(CodexAppServerClient.resetCredits(from: [:]))
+        XCTAssertEqual(CodexAppServerClient.resetCredits(from: ["rateLimitResetCredits": ["credits": []]]), [])
+        let credits = CodexAppServerClient.resetCredits(from: ["rateLimitResetCredits": ["credits": [
+            ["id": "later", "status": "available", "expiresAt": 2000],
+            ["id": "used", "status": "redeemed", "expiresAt": 500],
+            ["id": "first", "status": "available", "expiresAt": "1000"],
+            ["id": "invalid", "status": "available"]
+        ]]])
+        XCTAssertEqual(credits?.map(\.id), ["first", "later"])
+        let state = CodexRemoteState(macConnected: true, codexConnected: true, activity: .idle,
+                                    message: "", weeklyUsage: nil, fiveHourUsage: nil, resetCredits: credits)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(state)) as? [String: Any])
+        let rows = try XCTUnwrap(payload["resetCredits"] as? [[String: Any]])
+        XCTAssertEqual(rows.first?["expiresAt"] as? Double, 1000)
+    }
+
+    @MainActor
     func testUsageRefresh_whenResponseIsMissingRetainsLastKnownUsage() {
         let existingWeekly = CodexWeeklyUsage(usedPercent: 33, resetsAt: nil)
         let refreshedWeekly = CodexWeeklyUsage(usedPercent: 41, resetsAt: nil)

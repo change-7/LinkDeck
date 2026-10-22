@@ -38,6 +38,11 @@ private func smartphonePagesForRemote(_ pages: [SmartphonePage]) -> [SmartphoneP
     }
 }
 
+struct CodexResetCredit: Codable, Equatable, Sendable {
+    let id: String
+    let expiresAt: TimeInterval
+}
+
 struct CodexRemoteState: Codable, Equatable, Sendable {
     let type: String
     let protocolVersion: Int
@@ -51,9 +56,10 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
     let fiveHourUsedPercent: Int?
     let fiveHourRemainingPercent: Int?
     let fiveHourResetsAt: Date?
+    let resetCredits: [CodexResetCredit]?
     let smartphonePages: [SmartphonePage]
     /// Optional for wire compatibility with older bridge clients and cached states.
-    let smartphoneIconAssets: [String: SmartphoneIconAsset]?
+    var smartphoneIconAssets: [String: SmartphoneIconAsset]?
     let approval: CodexRemoteApproval?
     let completionEventID: Int
     let activeSessionCount: Int
@@ -70,6 +76,7 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
         message: String,
         weeklyUsage: CodexWeeklyUsage?,
         fiveHourUsage: CodexFiveHourUsage?,
+        resetCredits: [CodexResetCredit]? = nil,
         smartphonePages: [SmartphonePage] = SmartphoneDefaults.pages(),
         smartphoneIconAssets: [String: SmartphoneIconAsset] = [:],
         approval: CodexRemoteApproval? = nil,
@@ -94,6 +101,7 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
         self.fiveHourUsedPercent = fiveHourUsed
         self.fiveHourRemainingPercent = fiveHourUsed.map { 100 - $0 }
         self.fiveHourResetsAt = fiveHourUsage?.resetsAt
+        self.resetCredits = resetCredits
         self.smartphonePages = smartphonePagesForRemote(smartphonePages)
         self.smartphoneIconAssets = smartphoneIconAssets
         self.approval = approval
@@ -231,6 +239,7 @@ struct CodexRemoteApproval: Codable, Equatable, Sendable {
     let requestKey: String?
     let source: String
     let canRespond: Bool
+    let options: [CodexRemoteApprovalOption]
 
     init(
         requestID: Int? = nil,
@@ -238,7 +247,8 @@ struct CodexRemoteApproval: Codable, Equatable, Sendable {
         detail: String,
         requestKey: String? = nil,
         source: String = "appServer",
-        canRespond: Bool = true
+        canRespond: Bool = true,
+        options: [CodexRemoteApprovalOption]? = nil
     ) {
         self.requestID = requestID
         self.title = title
@@ -246,10 +256,14 @@ struct CodexRemoteApproval: Codable, Equatable, Sendable {
         self.requestKey = requestKey
         self.source = source
         self.canRespond = canRespond
+        self.options = options ?? (canRespond ? [
+            CodexRemoteApprovalOption(id: "accept", title: "한 번만 허용", detail: ""),
+            CodexRemoteApprovalOption(id: "decline", title: "거부", detail: "")
+        ] : [])
     }
 
     private enum CodingKeys: String, CodingKey {
-        case requestID, title, detail, requestKey, source, canRespond
+        case requestID, title, detail, requestKey, source, canRespond, options
     }
 
     init(from decoder: Decoder) throws {
@@ -260,6 +274,10 @@ struct CodexRemoteApproval: Codable, Equatable, Sendable {
         requestKey = try values.decodeIfPresent(String.self, forKey: .requestKey)
         source = try values.decodeIfPresent(String.self, forKey: .source) ?? "appServer"
         canRespond = try values.decodeIfPresent(Bool.self, forKey: .canRespond) ?? true
+        options = try values.decodeIfPresent([CodexRemoteApprovalOption].self, forKey: .options) ?? (canRespond ? [
+            CodexRemoteApprovalOption(id: "accept", title: "한 번만 허용", detail: ""),
+            CodexRemoteApprovalOption(id: "decline", title: "거부", detail: "")
+        ] : [])
     }
 }
 
@@ -414,7 +432,8 @@ final class CodexRemoteBridge {
         if approvalSoundChanged {
             send(approvalSound, to: connections.values)
         }
-        guard let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
+        guard !connections.isEmpty,
+              let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
         for connection in connections.values {
             connection.send(content: data, completion: .contentProcessed { _ in })
         }
@@ -536,18 +555,16 @@ final class CodexRemoteBridge {
         clientCount = connections.count
     }
 
-    private func encodedLine(_ state: CodexRemoteState, includingSmartphoneIconAssets: Bool = true) -> Data? {
+    func encodedLine(_ state: CodexRemoteState, includingSmartphoneIconAssets: Bool = true) -> Data? {
         let encoder = JSONEncoder()
         // The Android client interprets reset timestamps as Unix epoch seconds.
         // Make that wire format explicit instead of Foundation's default
         // reference-date encoding (seconds since 2001).
         encoder.dateEncodingStrategy = .secondsSince1970
-        guard let encoded = try? encoder.encode(state) else { return nil }
-        if includingSmartphoneIconAssets { return encoded + Data([0x0A]) }
-        guard var object = try? JSONSerialization.jsonObject(with: encoded) as? [String: Any] else { return nil }
-        object.removeValue(forKey: "smartphoneIconAssets")
-        guard let stripped = try? JSONSerialization.data(withJSONObject: object) else { return nil }
-        return stripped + Data([0x0A])
+        var payload = state
+        if !includingSmartphoneIconAssets { payload.smartphoneIconAssets = nil }
+        guard let encoded = try? encoder.encode(payload) else { return nil }
+        return encoded + Data([0x0A])
     }
 
     private func encodedLine<T: Encodable>(_ value: T) -> Data? {

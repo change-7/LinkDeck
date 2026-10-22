@@ -2,6 +2,7 @@ import Foundation
 
 enum ActionKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case app
+    case appQuit
     case appFolder
     case shortcut
     case terminalCommand
@@ -14,6 +15,7 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable, Sendable {
     var title: String {
         switch self {
         case .app: "앱 실행"
+        case .appQuit: "앱 종료"
         case .appFolder: "앱 폴더"
         case .shortcut: "단축키 설정"
         case .terminalCommand: "터미널 명령"
@@ -26,15 +28,24 @@ enum ActionKind: String, Codable, CaseIterable, Identifiable, Sendable {
 }
 
 struct PadAction: Codable, Hashable, Sendable {
-    var kind: ActionKind = .none
-    var value = ""
+    var kind: ActionKind = .none {
+        didSet { if kind != oldValue { allowsAppTermination = false } }
+    }
+    var value = "" {
+        didSet { if value != oldValue { allowsAppTermination = false } }
+    }
     /// Optional app that receives this shortcut. Empty keeps the existing global behavior.
     var targetAppBundleIdentifier = ""
     /// When a shortcut has a target app, launch it before dispatching when it is not running.
     var launchTargetAppIfNeeded = true
     var showTerminalWindow = true
+    var allowsAppTermination = false
     var openURLInCurrentTab = false
     var workflowSteps: [WorkflowStep] = []
+
+    var canQuitApp: Bool {
+        allowsAppTermination && (kind == .app || kind == .appFolder) && !value.isEmpty
+    }
 
     init(
         kind: ActionKind = .none,
@@ -42,6 +53,7 @@ struct PadAction: Codable, Hashable, Sendable {
         targetAppBundleIdentifier: String = "",
         launchTargetAppIfNeeded: Bool = true,
         showTerminalWindow: Bool = true,
+        allowsAppTermination: Bool = false,
         openURLInCurrentTab: Bool = false,
         workflowSteps: [WorkflowStep] = []
     ) {
@@ -50,6 +62,7 @@ struct PadAction: Codable, Hashable, Sendable {
         self.targetAppBundleIdentifier = targetAppBundleIdentifier
         self.launchTargetAppIfNeeded = launchTargetAppIfNeeded
         self.showTerminalWindow = showTerminalWindow
+        self.allowsAppTermination = allowsAppTermination
         self.openURLInCurrentTab = openURLInCurrentTab
         self.workflowSteps = workflowSteps
     }
@@ -76,7 +89,7 @@ struct PadAction: Codable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case kind, value, targetAppBundleIdentifier, launchTargetAppIfNeeded, showTerminalWindow, openURLInCurrentTab, workflowSteps
+        case kind, value, targetAppBundleIdentifier, launchTargetAppIfNeeded, showTerminalWindow, allowsAppTermination, openURLInCurrentTab, workflowSteps
     }
 
     init(from decoder: Decoder) throws {
@@ -86,6 +99,7 @@ struct PadAction: Codable, Hashable, Sendable {
         targetAppBundleIdentifier = try container.decodeIfPresent(String.self, forKey: .targetAppBundleIdentifier) ?? ""
         launchTargetAppIfNeeded = try container.decodeIfPresent(Bool.self, forKey: .launchTargetAppIfNeeded) ?? true
         showTerminalWindow = try container.decodeIfPresent(Bool.self, forKey: .showTerminalWindow) ?? true
+        allowsAppTermination = try container.decodeIfPresent(Bool.self, forKey: .allowsAppTermination) ?? false
         openURLInCurrentTab = try container.decodeIfPresent(Bool.self, forKey: .openURLInCurrentTab) ?? false
         workflowSteps = try container.decodeIfPresent([WorkflowStep].self, forKey: .workflowSteps) ?? []
     }
@@ -97,6 +111,7 @@ struct PadAction: Codable, Hashable, Sendable {
         try container.encode(targetAppBundleIdentifier, forKey: .targetAppBundleIdentifier)
         try container.encode(launchTargetAppIfNeeded, forKey: .launchTargetAppIfNeeded)
         try container.encode(showTerminalWindow, forKey: .showTerminalWindow)
+        try container.encode(allowsAppTermination, forKey: .allowsAppTermination)
         try container.encode(openURLInCurrentTab, forKey: .openURLInCurrentTab)
         if !workflowSteps.isEmpty { try container.encode(workflowSteps, forKey: .workflowSteps) }
     }

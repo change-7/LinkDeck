@@ -12,8 +12,8 @@ actor StableWhisperMCPClient {
     private var idleTask: Task<Void, Never>?
     private var pendingJobs: [String: String] = [:]
     private var unknownJob = false
+    private var settledJobs: Set<String> = []
     private let chatView: Bool
-    private var chatViewManagesIdleTermination = false
     private var chatViewTasks: Set<String> = []
     private var chatViewAnswerPending = false
     private var chatViewPendingPanels: Set<Int> = []
@@ -33,7 +33,7 @@ actor StableWhisperMCPClient {
         idleTask = nil
         pendingJobs.removeAll()
         unknownJob = false
-        chatViewManagesIdleTermination = false
+        settledJobs.removeAll()
         try? input?.close()
         if let process, process.isRunning { process.terminate() }
         try? output?.close()
@@ -42,6 +42,8 @@ actor StableWhisperMCPClient {
         output = nil
         buffer.removeAll()
     }
+
+    func isRunning() -> Bool { process?.isRunning == true }
 
     func request(_ data: Data, executable: URL, arguments: [String] = ["--mcp"]) async throws -> Data {
         idleTask?.cancel()
@@ -81,8 +83,7 @@ actor StableWhisperMCPClient {
                 while true {
                     // Probe readiness before sending a task; retrying the task could duplicate work.
                     let state = try exchange(["method": "tools/call", "params": ["name": "chatgpt_state", "arguments": [:]]])
-                    if let state = toolObject(state) {
-                        chatViewManagesIdleTermination = (state["idleTermination"] as? [String: Any])?["managedByApp"] as? Bool == true
+                    if toolObject(state) != nil {
                         break
                     }
                     guard Date() < deadline else { throw failure("챗뷰를 실행했지만 API가 준비되지 않았습니다. 챗뷰의 연결 설정을 확인하세요.") }
@@ -101,7 +102,7 @@ actor StableWhisperMCPClient {
     }
 
     private func scheduleIdleStop() {
-        guard process?.isRunning == true, !chatViewManagesIdleTermination else { return }
+        guard process?.isRunning == true else { return }
         idleTask = Task { [weak self, idleTimeout] in
             do { try await Task.sleep(for: idleTimeout) } catch { return }
             guard !Task.isCancelled else { return }
@@ -117,8 +118,6 @@ actor StableWhisperMCPClient {
                 scheduleIdleStop()
                 return
             }
-            chatViewManagesIdleTermination = (state["idleTermination"] as? [String: Any])?["managedByApp"] as? Bool == true
-            if chatViewManagesIdleTermination { return }
             guard chatViewTasks.isEmpty, !chatViewAnswerPending, chatViewPendingPanels.isEmpty,
                   Self.chatViewCanQuit(state) else {
                 scheduleIdleStop()
@@ -138,11 +137,14 @@ actor StableWhisperMCPClient {
     }
 
     private func observeJob(_ data: Data, tool: String) {
+        if let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           reply["error"] != nil || (reply["result"] as? [String: Any])?["isError"] as? Bool == true { return }
         let job = toolObject(data)
         let statusTool: String?
         switch tool {
         case "start_transcription": statusTool = "get_transcription_status"
         case "start_download": statusTool = "get_download_status"
+        case "burn_subtitles": statusTool = "get_subtitle_status"
         default: statusTool = nil
         }
         guard let job, let id = (job["job_id"] ?? job["id"]) as? String else {
@@ -152,7 +154,22 @@ actor StableWhisperMCPClient {
         let state = (job["state"] ?? job["phase"] ?? job["status"]) as? String
         if ["completed", "failed", "cancelled", "canceled", "interrupted"].contains(state ?? "") {
             pendingJobs.removeValue(forKey: id)
+            settledJobs.insert(id)
         } else if let statusTool { pendingJobs[id] = statusTool }
+    }
+
+    func hasActiveJobs() -> Bool {
+        guard process?.isRunning == true else { return false }
+        for (id, tool) in pendingJobs {
+            if let reply = try? exchange(["method": "tools/call", "params": ["name": tool, "arguments": ["job_id": id]]]) {
+                observeJob(reply, tool: tool)
+            }
+        }
+        return unknownJob || !pendingJobs.isEmpty
+    }
+
+    func rotateSettledConnection(limit: Int) {
+        if settledJobs.count >= limit && !hasActiveJobs() { stop() }
     }
 
     private func toolObject(_ data: Data) -> [String: Any]? {

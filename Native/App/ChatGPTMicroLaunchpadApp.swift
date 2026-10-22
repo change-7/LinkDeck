@@ -7,7 +7,6 @@ struct ChatGPTMicroLaunchpadApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = LaunchpadStore()
     @State private var folderSyncStore = FolderPairStore()
-    @State private var midi = LaunchpadMIDIManager()
     @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
     private let runner = MacActionRunner()
 
@@ -17,14 +16,11 @@ struct ChatGPTMicroLaunchpadApp: App {
                 store: store,
                 folderSyncStore: folderSyncStore,
                 runner: runner,
-                midi: midi,
                 codex: appDelegate.codex,
                 codexActivity: appDelegate.codexActivityController,
-                launchpadLEDBubble: appDelegate.launchpadLEDBubble,
                 chatGPTTunnel: appDelegate.chatGPTTunnel
             )
                 .preferredColorScheme(macDarkModeEnabled ? .dark : .light)
-                .frame(width: 1120, height: 740)
         }
         .defaultSize(width: 1120, height: 740)
         .windowResizability(.contentSize)
@@ -200,16 +196,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var isBridgeOnly: Bool { CommandLine.arguments.contains("--bridge-only") }
     let codex: CodexAppServerClient
     let codexActivityController: CodexActivityController
-    let launchpadLEDBubble = LaunchpadLEDStatusBubble()
     let chatGPTTunnel = ChatGPTTunnelController()
-    private let codexStatusBarIndicator = CodexStatusBarIndicator()
     private let remoteActionRunner = MacActionRunner()
     private let connectionStarter: any CodexAppServerConnectionStarting
     private weak var mainWindow: NSWindow?
     private var statusItem: NSStatusItem?
-    private weak var codexStatusMotionMenuItem: NSMenuItem?
-    private weak var launchpadLEDBubbleMenuItem: NSMenuItem?
-    private var allowsTermination = false
     private var hasStartedCodexConnection = false
 
     override init() {
@@ -218,7 +209,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         connectionStarter = codex
         codexActivityController = CodexActivityController()
         super.init()
-        configureLaunchpadLEDBubbleMenuUpdates()
         configureRemoteCommandHandling()
     }
 
@@ -231,7 +221,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.codexActivityController = codexActivityController
         self.connectionStarter = connectionStarter ?? codex
         super.init()
-        configureLaunchpadLEDBubbleMenuUpdates()
         configureRemoteCommandHandling()
     }
 
@@ -242,8 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         } else {
             installMenuBarItem()
         }
-        codexActivityController.onActivityChange = { [weak self, weak codex] activity in
-            self?.codexStatusBarIndicator.update(activity: activity)
+        codexActivityController.onActivityChange = { [weak codex] activity in
             codex?.publishRemoteActivity(activity)
         }
         codexActivityController.onTaskCompletion = { [weak codex] taskID in
@@ -252,12 +240,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         codexActivityController.onActiveSessionCountChange = { [weak codex] count in
             codex?.publishRemoteSessionCount(count)
         }
-        codex.onPhoneMicrophoneActivityChanged = { [weak self] active in
-            self?.codexStatusBarIndicator.update(phoneMicrophoneActive: active)
-        }
         codexActivityController.startDesktopMonitoring()
         codex.publishRemoteSessionCount(codexActivityController.activeSessionCount)
-        codexStatusBarIndicator.update(activity: codexActivityController.activity)
         codex.publishRemoteActivity(codexActivityController.activity)
         codex.startRemoteBridge()
         guard !hasStartedCodexConnection else { return }
@@ -274,7 +258,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             .first(where: { $0.processIdentifier != currentPID }) else { return false }
 
         existing.activate(options: [.activateAllWindows])
-        allowsTermination = true
         NSApp.terminate(nil)
         return true
     }
@@ -312,7 +295,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         chatGPTTunnel.disconnect()
-        launchpadLEDBubble.close()
         codexActivityController.stopDesktopMonitoring()
         codex.stopRemoteBridge()
     }
@@ -322,10 +304,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard allowsTermination else {
-            hideMainWindow()
-            return .terminateCancel
-        }
         return .terminateNow
     }
 
@@ -358,7 +336,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func quitCompletely() {
-        allowsTermination = true
         NSApp.terminate(nil)
     }
 
@@ -472,29 +449,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
         let menu = NSMenu()
         menu.addItem(withTitle: "설정 창 열기", action: #selector(openMainWindowFromMenu), keyEquivalent: "")
-        let statusMotionItem = menu.addItem(
-            withTitle: "Codex 상태 표시 모션",
-            action: #selector(toggleCodexStatusMotionFromMenu),
-            keyEquivalent: ""
-        )
-        statusMotionItem.state = codexStatusBarIndicator.isEnabled ? .on : .off
-        statusMotionItem.toolTip = "작업중·오류·확인 필요 상태를 상태바 아이콘으로 표시합니다."
-        codexStatusMotionMenuItem = statusMotionItem
-        let bubbleItem = menu.addItem(
-            withTitle: "LED 말풍선 표시",
-            action: #selector(toggleLaunchpadLEDBubbleFromMenu),
-            keyEquivalent: ""
-        )
-        bubbleItem.state = .off
-        bubbleItem.isEnabled = false
-        launchpadLEDBubbleMenuItem = bubbleItem
         menu.addItem(.separator())
         menu.addItem(withTitle: "완전히 종료", action: #selector(quitFromMenu), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
         item.menu = menu
         statusItem = item
-        codexStatusBarIndicator.attach(to: item.button)
-        launchpadLEDBubble.attach(to: item.button)
     }
 
     @objc private func openMainWindowFromMenu() {
@@ -505,19 +464,4 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         quitCompletely()
     }
 
-    @objc private func toggleLaunchpadLEDBubbleFromMenu() {
-        launchpadLEDBubble.toggleVisibilityPreference()
-    }
-
-    @objc private func toggleCodexStatusMotionFromMenu() {
-        codexStatusBarIndicator.setEnabled(!codexStatusBarIndicator.isEnabled)
-        codexStatusMotionMenuItem?.state = codexStatusBarIndicator.isEnabled ? .on : .off
-    }
-
-    private func configureLaunchpadLEDBubbleMenuUpdates() {
-        launchpadLEDBubble.onVisibilityPreferenceChanged = { [weak self] isVisible, isReady in
-            self?.launchpadLEDBubbleMenuItem?.state = isVisible ? .on : .off
-            self?.launchpadLEDBubbleMenuItem?.isEnabled = isReady
-        }
-    }
 }

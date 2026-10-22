@@ -9,7 +9,7 @@ final class AppAPIIdleTests: XCTestCase {
         func quit() -> Bool { calls += 1; return true }
     }
 
-    func testAppManagedChatViewKeepsGUIAndBridgeAliveIncludingManualLaunch() async throws {
+    func testLinkDeckQuitsIdleChatViewEvenWhenAppManagesTermination() async throws {
         for mode in ["app_managed_chat_view", "app_managed_manual_chat_view"] {
             let recorder = QuitRecorder()
             let client = StableWhisperMCPClient(idleTimeout: .milliseconds(200), chatView: true,
@@ -18,19 +18,10 @@ final class AppAPIIdleTests: XCTestCase {
             _ = try await call(client, mode)
             try await Task.sleep(for: .milliseconds(450))
             let quitCalls = await recorder.calls
-            XCTAssertEqual(quitCalls, 0, mode)
-            XCTAssertEqual(kill(try XCTUnwrap(Int32(firstPID)), 0), 0, mode)
-            _ = try await call(client, "chat_view_start_task")
-            _ = try await call(client, "chat_view_task_status")
-            try await Task.sleep(for: .milliseconds(450))
-            let laterQuitCalls = await recorder.calls
-            XCTAssertEqual(laterQuitCalls, 0, mode)
-            let reusedPID = try await call(client, "pid")
-            XCTAssertEqual(reusedPID, firstPID, mode)
-            _ = try await call(client, "simulate_cold_chat_view")
-            _ = try await call(client, "chatgpt_state")
+            XCTAssertEqual(quitCalls, 1, mode)
+            XCTAssertEqual(kill(try XCTUnwrap(Int32(firstPID)), 0), -1, mode)
             let reconnectedPID = try await call(client, "pid")
-            XCTAssertEqual(reconnectedPID, firstPID, mode)
+            XCTAssertNotEqual(reconnectedPID, firstPID, mode)
             await client.stop()
             let pid = try XCTUnwrap(Int32(firstPID))
             let deadline = Date().addingTimeInterval(1)
@@ -137,6 +128,18 @@ final class AppAPIIdleTests: XCTestCase {
         let pidText = try await call(client, "pid")
         let pid = try XCTUnwrap(Int32(pidText))
         _ = try await call(client, "start_download")
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertEqual(kill(pid, 0), 0)
+        try await Task.sleep(for: .milliseconds(900))
+        XCTAssertEqual(kill(pid, 0), -1)
+        await client.stop()
+    }
+
+    func testRenderingSurvivesIdleUntilTerminalStatus() async throws {
+        let client = StableWhisperMCPClient(idleTimeout: .milliseconds(200))
+        let pidText = try await call(client, "pid")
+        let pid = try XCTUnwrap(Int32(pidText))
+        _ = try await call(client, "burn_subtitles")
         try await Task.sleep(for: .milliseconds(450))
         XCTAssertEqual(kill(pid, 0), 0)
         try await Task.sleep(for: .milliseconds(900))

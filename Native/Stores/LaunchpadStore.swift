@@ -3,13 +3,14 @@ import Observation
 
 @Observable
 final class LaunchpadStore {
-    private let preferences = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard
+    private let preferences: UserDefaults
     private let storageKey = "chatgpt-micro-launchpad.pages"
     private let motionStorageKey = "chatgpt-micro-launchpad.motion-presets"
     private let codexMotionStorageKey = "chatgpt-micro-launchpad.codex-motion-bindings"
     private let codexMotionPresentationStorageKey = "chatgpt-micro-launchpad.codex-motion-presentations"
     private let codexMotionDisplaySettingsStorageKey = "chatgpt-micro-launchpad.codex-motion-display-settings"
     private let codexPhoneThemeStorageKey = "linkdeck.codex-phone-theme"
+    private let deletedCodexPhoneThemesStorageKey = "linkdeck.deleted-codex-phone-themes"
     private let sideButtonDefaultsMigrationKey = "chatgpt-micro-launchpad.side-button-defaults-v2"
     private let sideButtonCategoryOrderMigrationKey = "chatgpt-micro-launchpad.side-button-category-order-v3"
     private let sortedSideButtonDefaultsMigrationKey = "chatgpt-micro-launchpad.sorted-side-button-defaults-v4"
@@ -20,12 +21,14 @@ final class LaunchpadStore {
     var codexMotionPresentations: [String: CodexMotionPresentation]
     var codexMotionDisplaySettings: CodexMotionDisplaySettings
     var codexPhoneTheme: CodexPhoneTheme
+    private(set) var deletedCodexPhoneThemes: Set<String>
     let codexCompletionSounds: CodexCompletionSoundLibrary
     var selectedPage = 0
     var selectedPadID = "grid_0_0"
     var statusMessage = "패드를 선택해 설정하세요."
 
-    init() {
+    init(preferences: UserDefaults = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard) {
+        self.preferences = preferences
         codexCompletionSounds = CodexCompletionSoundLibrary(preferences: preferences)
         let needsSideButtonMigration = !preferences.bool(forKey: sideButtonDefaultsMigrationKey)
         let needsSideButtonCategoryOrdering = !preferences.bool(forKey: sideButtonCategoryOrderMigrationKey)
@@ -70,7 +73,11 @@ final class LaunchpadStore {
             legacyPresentations: loadedPresentations
         )
         codexMotionDisplaySettings = restoredDisplaySettings.settings
-        codexPhoneTheme = CodexPhoneTheme(rawValue: preferences.string(forKey: codexPhoneThemeStorageKey) ?? "") ?? .classic
+        let deletedThemes = Set(preferences.stringArray(forKey: deletedCodexPhoneThemesStorageKey) ?? [])
+            .subtracting([CodexPhoneTheme.classic.rawValue])
+        deletedCodexPhoneThemes = deletedThemes
+        let savedTheme = CodexPhoneTheme(rawValue: preferences.string(forKey: codexPhoneThemeStorageKey) ?? "") ?? .classic
+        codexPhoneTheme = deletedThemes.contains(savedTheme.rawValue) ? .classic : savedTheme
         if needsSideButtonMigration
             || needsSideButtonCategoryOrdering
             || needsSortedSideButtonDefaults
@@ -441,9 +448,25 @@ final class LaunchpadStore {
     }
 
     func setCodexPhoneTheme(_ theme: CodexPhoneTheme) {
-        guard codexPhoneTheme != theme else { return }
+        guard !deletedCodexPhoneThemes.contains(theme.rawValue), codexPhoneTheme != theme else { return }
         codexPhoneTheme = theme
         preferences.set(theme.rawValue, forKey: codexPhoneThemeStorageKey)
+    }
+
+    var availableCodexPhoneThemes: [CodexPhoneTheme] {
+        CodexPhoneTheme.allCases.filter { !deletedCodexPhoneThemes.contains($0.rawValue) }
+    }
+
+    func deleteCodexPhoneTheme(_ theme: CodexPhoneTheme) {
+        guard theme != .classic else { return }
+        if codexPhoneTheme == theme { setCodexPhoneTheme(.classic) }
+        deletedCodexPhoneThemes.insert(theme.rawValue)
+        preferences.set(deletedCodexPhoneThemes.sorted(), forKey: deletedCodexPhoneThemesStorageKey)
+    }
+
+    func restoreCodexPhoneThemes() {
+        deletedCodexPhoneThemes.removeAll()
+        preferences.removeObject(forKey: deletedCodexPhoneThemesStorageKey)
     }
 
     var idleScreensaverPreset: MotionPreset? {

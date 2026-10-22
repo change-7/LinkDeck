@@ -257,6 +257,8 @@ struct InspectorView: View {
         case .workflow:
             Text("패드 아래에서 동작과 대기 시간을 설정하세요.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+        case .appQuit:
+            Text("앱 실행 버튼에서 ‘플러그인에서 종료 허용’을 설정하세요.")
         case .app, .appFolder:
             VStack(alignment: .leading, spacing: 8) {
                 Button("앱 등록") { registerApplication() }
@@ -270,6 +272,9 @@ struct InspectorView: View {
                     title: selectedAction.value.isEmpty ? "등록된 앱 없음" : (AppRegistrationService.displayName(for: selectedAction.value) ?? "등록된 앱"),
                     detail: selectedAction.value
                 )
+                Toggle("플러그인에서 종료 허용", isOn: selectedActionBinding(for: \.allowsAppTermination))
+                    .toggleStyle(.checkbox)
+                    .accessibilityIdentifier("app-termination-permission-toggle")
             }
         case .shortcut:
             ShortcutComposerView(
@@ -392,7 +397,7 @@ struct InspectorView: View {
 
     private func defaultValue(for kind: ActionKind) -> String {
         switch kind {
-        case .app, .appFolder, .shortcut, .terminalCommand, .workflow, .clipboardText: ""
+        case .app, .appQuit, .appFolder, .shortcut, .terminalCommand, .workflow, .clipboardText: ""
         case .url: "https://chatgpt.com"
         case .none: ""
         }

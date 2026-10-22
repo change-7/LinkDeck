@@ -14,4 +14,6 @@
 <key>NSHighResolutionCapable</key><true/>
 <key>NSAppleEventsUsageDescription</key><string>LinkDeck이 등록된 터미널 명령을 실행하거나 브라우저의 현재 탭에서 웹페이지를 열기 위해 앱을 제어합니다.</string>
 <key>NSPrincipalClass</key><string>NSApplication</string>
+<key>NSCalendarsUsageDescription</key><string>LinkDeck에서 연결한 미우 일정 앱이 일정을 조회하고 신규 작성·수정하기 위해 캘린더 접근 권한을 요청합니다.</string>
+<key>NSCalendarsFullAccessUsageDescription</key><string>LinkDeck에서 연결한 미우 일정 앱이 중복 일정을 확인하고 앱이 등록한 일정을 생성·수정하기 위해 캘린더 전체 접근 권한이 필요합니다.</string>
 </dict></plist>

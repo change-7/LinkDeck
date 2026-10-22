@@ -153,6 +153,10 @@ private struct AdvancedSyncOptionsView: View {
                 }
 
                 Section(AppText.fileHandlingSettings) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Toggle(".git 메타데이터 제외", isOn: $options.excludeGitMetadata)
+                        explanatoryText(".git 디렉터리와 worktree 참조 파일을 복사 및 삭제 대상에서 보호합니다.")
+                    }
                     if nestedDestinationPath != nil {
                         VStack(alignment: .leading, spacing: 6) {
                             Toggle(AppText.excludeNestedDestination, isOn: $options.excludeNestedDestination)

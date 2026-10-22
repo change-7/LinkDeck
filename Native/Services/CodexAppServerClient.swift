@@ -23,6 +23,9 @@ final class CodexAppServerClient {
     }
 
     private let remoteBridge = CodexRemoteBridge()
+    private var resetCredits: [CodexResetCredit]? {
+        didSet { publishRemoteState() }
+    }
     private let phoneMicrophone = PhoneMicrophoneOutput()
     @ObservationIgnored var onPhoneMicrophoneActivityChanged: ((Bool) -> Void)?
     private var process: Process?
@@ -62,6 +65,7 @@ final class CodexAppServerClient {
         let detail: String
         let responseKind: ResponseKind
         let requestedPermissions: [String: Any]?
+        let decisions: [CodexApprovalDecision]
 
         enum ResponseKind: Equatable {
             case decision
@@ -69,7 +73,7 @@ final class CodexAppServerClient {
             case unsupported
         }
 
-        var canRespond: Bool { responseKind != .unsupported }
+        var canRespond: Bool { responseKind != .unsupported && !decisions.isEmpty }
     }
 
     func startRemoteBridge() {
@@ -290,6 +294,7 @@ final class CodexAppServerClient {
         activity = .idle
         weeklyUsage = nil
         fiveHourUsage = nil
+        resetCredits = nil
     }
 
     func startTask(prompt: String, workingDirectory: String) {
@@ -411,7 +416,8 @@ final class CodexAppServerClient {
                     title: Self.remoteApprovalTitle(for: method),
                     detail: Self.remoteApprovalDetail(from: params),
                     responseKind: Self.remoteApprovalResponseKind(for: method),
-                    requestedPermissions: params["permissions"] as? [String: Any]
+                    requestedPermissions: params["permissions"] as? [String: Any],
+                    decisions: Self.remoteApprovalDecisions(method: method, params: params)
                 )
                 localApprovalSoundHandler()
                 if Self.shouldResetDesktopActivity(
@@ -491,6 +497,9 @@ final class CodexAppServerClient {
             message = "Codex 작업 중"
         case .weeklyUsage:
             let usage = Self.usage(from: object["result"] as? [String: Any])
+            if let credits = Self.resetCredits(from: object["result"] as? [String: Any]) {
+                resetCredits = credits
+            }
             fiveHourUsage = Self.retainedUsage(existing: fiveHourUsage, refreshed: usage.fiveHour)
             weeklyUsage = Self.retainedUsage(existing: weeklyUsage, refreshed: usage.weekly)
         }
@@ -501,9 +510,6 @@ final class CodexAppServerClient {
         requestKey: String? = nil
     ) async -> (success: Bool, message: String) {
         let normalizedDecision = decision.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ["accept", "acceptForSession", "decline", "cancel"].contains(normalizedDecision) else {
-            return (false, "지원하지 않는 승인 응답입니다.")
-        }
         let requestCount = desktopPendingApprovals.count + (pendingRemoteApproval == nil ? 0 : 1)
         guard requestCount == 1 else {
             return (false, "현재 대기 중인 Codex 승인 요청이 없습니다.")
@@ -518,11 +524,14 @@ final class CodexAppServerClient {
                 return (false, "승인 요청이 바뀌었습니다. 현재 요청을 다시 확인해 주세요.")
             }
             guard isConnected else { return (false, "Codex App Server 연결이 끊겼습니다.") }
+            guard let selected = pendingApproval.decisions.first(where: { $0.option.id == normalizedDecision }) else {
+                return (false, "현재 승인 요청에 없는 선택지입니다.")
+            }
             pendingRemoteApproval = nil
             let result: [String: Any]
             switch pendingApproval.responseKind {
             case .decision:
-                result = ["decision": normalizedDecision]
+                result = ["decision": selected.value.foundationValue]
             case .permissions:
                 let approved = normalizedDecision == "accept" || normalizedDecision == "acceptForSession"
                 result = [
@@ -534,9 +543,9 @@ final class CodexAppServerClient {
             }
             write(["id": pendingApproval.requestID, "result": result])
             activity = .running
-            message = normalizedDecision == "accept" || normalizedDecision == "acceptForSession"
-                ? "Codex 승인을 전송했습니다."
-                : "Codex 거부를 전송했습니다."
+            message = normalizedDecision == "decline" || normalizedDecision == "cancel"
+                ? "Codex 거부를 전송했습니다."
+                : "Codex 승인을 전송했습니다."
             return (true, message)
         }
 
@@ -659,6 +668,12 @@ final class CodexAppServerClient {
         return "Codex 승인 필요"
     }
 
+    static func remoteApprovalDecisions(method: String, params: [String: Any]) -> [CodexApprovalDecision] {
+        guard let data = try? JSONSerialization.data(withJSONObject: params),
+              let values = try? JSONDecoder().decode([String: CodexIPCJSONValue].self, from: data) else { return [] }
+        return CodexApprovalDecision.options(method: method, params: values)
+    }
+
     static func remoteApprovalDetail(from params: [String: Any]) -> String {
         var parts = [String]()
         if let message = params["message"] as? String, !message.isEmpty {
@@ -700,6 +715,7 @@ final class CodexAppServerClient {
             message: remoteMessage,
             weeklyUsage: weeklyUsage,
             fiveHourUsage: fiveHourUsage,
+            resetCredits: resetCredits,
             smartphonePages: smartphonePages,
             smartphoneIconAssets: SmartphoneIconAssetProvider.assets(for: smartphonePages),
             approval: remoteApprovalForPhone,
@@ -721,7 +737,8 @@ final class CodexAppServerClient {
                 detail: $0.detail,
                 requestKey: $0.requestKey,
                 source: "desktop",
-                canRespond: $0.canRespond
+                canRespond: $0.canRespond,
+                options: $0.availableDecisions.map(\.option)
             )
         }
         if let appServerApproval = pendingRemoteApproval {
@@ -731,7 +748,8 @@ final class CodexAppServerClient {
                 detail: appServerApproval.detail,
                 requestKey: "appServer:\(appServerApproval.requestID)",
                 source: "appServer",
-                canRespond: appServerApproval.canRespond
+                canRespond: appServerApproval.canRespond,
+                options: appServerApproval.decisions.map(\.option)
             ))
         }
         guard !approvals.isEmpty else { return nil }
@@ -845,6 +863,17 @@ final class CodexAppServerClient {
             }
         }
         return (fiveHour: fiveHour, weekly: weekly)
+    }
+
+    static func resetCredits(from result: [String: Any]?) -> [CodexResetCredit]? {
+        guard let payload = result?["rateLimitResetCredits"] as? [String: Any],
+              let credits = payload["credits"] as? [[String: Any]] else { return nil }
+        return credits.compactMap { credit in
+            guard credit["status"] as? String == "available",
+                  let id = credit["id"] as? String,
+                  let expiresAt = number(credit["expiresAt"]), expiresAt.isFinite else { return nil }
+            return CodexResetCredit(id: id, expiresAt: expiresAt)
+        }.sorted { $0.expiresAt < $1.expiresAt }
     }
 
     private static func number(_ value: Any?) -> TimeInterval? {

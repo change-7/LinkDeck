@@ -20,7 +20,7 @@ struct BackupRestoreView: View {
                     .keyboardShortcut(.defaultAction)
             }
 
-            Text("Mac 64버튼, 스마트폰 버튼, Codex 모션과 표시 설정을 하나의 JSON 파일로 저장합니다.")
+            Text("휴대폰 버튼과 설정을 JSON 파일로 저장합니다. 이전 런치패드 설정도 복구를 위해 함께 보관합니다.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -61,7 +61,7 @@ struct BackupRestoreView: View {
             Button("복구", role: .destructive) { restoreBackup() }
             Button("취소", role: .cancel) { pendingRestoreURL = nil }
         } message: {
-            Text("현재 Mac 버튼, 스마트폰 버튼, Codex 모션 설정이 백업 파일의 내용으로 바뀝니다.")
+            Text("현재 휴대폰 버튼과 저장된 설정이 백업 파일의 내용으로 바뀝니다.")
         }
     }
 

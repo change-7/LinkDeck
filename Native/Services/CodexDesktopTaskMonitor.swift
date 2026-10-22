@@ -95,8 +95,8 @@ private final class CodexDesktopTaskMonitorPollingTimer: @unchecked Sendable {
     private let timer: Timer
 
     @MainActor
-    init(tick: @escaping @MainActor @Sendable () -> Void) {
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+    init(interval: TimeInterval, tick: @escaping @MainActor @Sendable () -> Void) {
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { _ in
             Task { @MainActor in tick() }
         }
     }
@@ -429,7 +429,6 @@ final class CodexDesktopTaskMonitor {
     private let onDiagnostic: (CodexDesktopTaskMonitorDiagnostic) -> Void
     private var scheduledScan: CodexDesktopTaskMonitorCancellation?
     private var activeDesktopTaskIDs: Set<DesktopCodexTaskID> = []
-    private var activeWorkSafetyTimer: Timer?
     private var isRunning = false
     private var generation = 0
 
@@ -468,8 +467,6 @@ final class CodexDesktopTaskMonitor {
         generation += 1
         scheduledScan?.cancel()
         scheduledScan = nil
-        activeWorkSafetyTimer?.invalidate()
-        activeWorkSafetyTimer = nil
         activeDesktopTaskIDs.removeAll()
         worker.reset()
     }
@@ -525,14 +522,6 @@ final class CodexDesktopTaskMonitor {
             }
         }
 
-        if activeDesktopTaskIDs.isEmpty {
-            activeWorkSafetyTimer?.invalidate()
-            activeWorkSafetyTimer = nil
-        } else if activeWorkSafetyTimer == nil {
-            activeWorkSafetyTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.requestScan() }
-            }
-        }
         return reconciledEvents
     }
 
@@ -568,9 +557,7 @@ final class CodexDesktopTaskMonitor {
     ) -> CodexDesktopTaskMonitorCancellation {
         let watcher = CodexDesktopTaskMonitorFSEventWatcher(rootURL: rootURL, tick: tick)
         // FSEvents is an optimization, not the source of truth. Keep a small
-        // polling fallback so a missed create/append event cannot hide the
-        // beginning of a Codex turn indefinitely.
-        let pollingTimer = CodexDesktopTaskMonitorPollingTimer(tick: tick)
+        let pollingTimer = CodexDesktopTaskMonitorPollingTimer(interval: watcher == nil ? 1 : 15, tick: tick)
         return CodexDesktopTaskMonitorCancellation {
             watcher?.cancel()
             pollingTimer.cancel()

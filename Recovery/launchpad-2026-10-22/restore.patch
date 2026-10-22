@@ -1,0 +1,4241 @@
+--- a/Native/Views/ContentView.swift
++++ b/Native/Views/ContentView.swift
+@@ -1,24 +1,64 @@
+ import SwiftUI
++import CoreGraphics
+ import Combine
+ 
++@MainActor
++@Observable
++final class CodexMotionActivityRouter {
++    private(set) var presentedActivity: CodexActivity = .idle
++
++    func present(
++        _ activity: CodexActivity,
++        endingCurrentMotion: () -> Void = {},
++        using presentation: (CodexActivity) -> Void
++    ) {
++        endingCurrentMotion()
++        presentedActivity = activity
++        presentation(activity)
++    }
++
++    func dismissalPresentation(
++        using resolve: (CodexActivity) -> CodexMotionPresentation
++    ) -> CodexMotionPresentation {
++        resolve(presentedActivity)
++    }
++}
++
+ struct ContentView: View {
+     @Environment(\.colorScheme) private var colorScheme
+     @Bindable var store: LaunchpadStore
+     let folderSyncStore: FolderPairStore
+     let runner: MacActionRunner
++    let midi: LaunchpadMIDIManager
+     let codex: CodexAppServerClient
+     let codexActivity: CodexActivityController
++    let launchpadLEDBubble: LaunchpadLEDStatusBubble
+     let chatGPTTunnel: ChatGPTTunnelController
++    @State private var editedPad = Pad(id: "grid_0_0")
++    @State private var editingSecondPadAction = false
+     @State private var showingPermissionAlert = false
++    @State private var selectedPageLEDIndex: Int?
+     @State private var showingCodexConnection = false
+     @State private var showingBackupRestore = false
+     @State private var showingFolderSyncSettings = false
+     @AppStorage("linkdeck.main-screen") private var selectedMainScreen: MainScreen = .smartphoneButtons
+     @AppStorage(AppAppearanceMode.storageKey) private var appearanceMode = AppAppearanceMode.system.rawValue
++    private let launchpadPanelHeight: CGFloat = 620
++    @State private var virtualPreviewEnabled = true
++    @State private var virtualMotion = VirtualMotionPlayer()
++    @State private var codexMotionActivity = CodexMotionActivityRouter()
++    @State private var codexMotionStopWorkItem: DispatchWorkItem?
++    @State private var isCodexMotionPlaying = false
++    @State private var lastLaunchpadOrCodexActivity = Date()
++    @State private var idleScreensaverSessionID: UUID?
++    @State private var idleScreensaverStopWorkItem: DispatchWorkItem?
++    private let idleScreensaverTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
++    private let weeklyUsageRefreshTimer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
++
+     var body: some View {
+         ZStack {
+             MacAppearance(scheme: colorScheme).canvas.ignoresSafeArea()
+-            mainContent
++            launchpadContent
+         }
+         .frame(minWidth: selectedMainScreen == .apiApps ? 360 : 1100,
+                maxWidth: selectedMainScreen == .apiApps ? 420 : .infinity,
+@@ -28,6 +68,14 @@
+         .preferredColorScheme(AppAppearanceMode(rawValue: appearanceMode)?.colorScheme)
+         .onAppear {
+             chatGPTTunnel.connectOnStartup(store: store, folderSyncStore: folderSyncStore, runner: runner)
++            midi.onPagePressed = { index in
++                recordLaunchpadOrCodexActivity()
++                selectPage(index)
++            }
++            midi.onPadPressed = handleHardwarePadPress
++            launchpadLEDBubble.onSelectPage = { index in
++                selectPage(index)
++            }
+             codex.setRemoteSmartphonePagesProvider { SmartphoneDefaults.persistedPages() }
+             codex.setRemoteSmartphonePagesDidChangeHandler { store.applyRemoteSmartphonePages($0) }
+             codex.setRemoteCodexPhoneThemeProvider { store.codexPhoneTheme }
+@@ -39,20 +87,65 @@
+             }
+             codex.setLocalCompletionSoundHandler { store.codexCompletionSounds.playSelectedSoundOnMac() }
+             codex.setLocalApprovalSoundHandler { store.codexCompletionSounds.playSelectedApprovalSoundOnMac() }
++            synchronizeSelection()
++            midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
++            synchronizeWeeklyUsageDisplay()
+             codex.refreshWeeklyUsage()
++            updateStatusBubble()
+         }
++        .onReceive(idleScreensaverTimer) { _ in evaluateIdleScreensaver() }
++        .onReceive(weeklyUsageRefreshTimer) { _ in codex.refreshWeeklyUsage() }
+         .onReceive(NotificationCenter.default.publisher(for: MacActionRunner.workflowFinishedNotification)) { notification in
+             if let message = notification.object as? String { store.statusMessage = message }
+         }
++        .onChange(of: editedPad) { _, pad in store.update(pad) }
++        .onChange(of: store.selectedPage) { _, _ in
++            midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
++            virtualMotion.updateUnderlyingPage(store.currentPage)
++            synchronizeWeeklyUsageDisplay()
++            resumeCodexMotionForCurrentPageIfNeeded()
++        }
++        .onChange(of: midi.isConnected) { _, isConnected in
++            guard !isConnected, selectedMainScreen == .launchpadMini else { return }
++            selectedMainScreen = .smartphoneButtons
++        }
++        .onChange(of: store.pages) { _, _ in
++            midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
++            virtualMotion.updateUnderlyingPage(store.currentPage)
++            synchronizeWeeklyUsageDisplay()
++        }
+         .onChange(of: store.smartphonePages) { _, _ in
+             codex.publishRemoteState()
+         }
+         .onChange(of: store.codexPhoneTheme) { _, _ in
+             codex.publishRemoteState()
+         }
++        .onChange(of: store.codexMotionDisplaySettings) { _, _ in
++            if !store.shouldPresentCodexMotion(on: store.currentPage) {
++                endCodexMotion()
++            }
++            synchronizeWeeklyUsageDisplay()
++            updateStatusBubble()
++        }
++        .onChange(of: codex.weeklyUsage, initial: true) { _, _ in
++            synchronizeWeeklyUsageDisplay()
++            updateStatusBubble()
++        }
++        .onChange(of: store.codexMotionDisplaySettings.idleScreensaver) { _, _ in
++            stopIdleScreensaver()
++            lastLaunchpadOrCodexActivity = Date()
++        }
+         .onChange(of: codex.activity, initial: true) { _, activity in
+             codexActivity.updateAppServerActivity(activity)
+         }
++        .onChange(of: codexActivity.activity, initial: true) { _, activity in
++            recordLaunchpadOrCodexActivity()
++            codexMotionActivity.present(
++                activity,
++                endingCurrentMotion: endCodexMotion,
++                using: startCodexMotion
++            )
++        }
+         .safeAreaInset(edge: .bottom) {
+             if selectedMainScreen != .apiApps { footer }
+         }
+@@ -66,6 +159,7 @@
+             CodexConnectionView(
+                 store: store,
+                 folderSyncStore: folderSyncStore,
++                midi: midi,
+                 codex: codex,
+                 chatGPTTunnel: chatGPTTunnel
+             )
+@@ -78,12 +172,15 @@
+         }
+     }
+ 
+-    private var mainContent: some View {
++    private var launchpadContent: some View {
+         Group {
+             switch selectedMainScreen {
+             case .apiApps:
+                 APIAppsView(store: store, selection: $selectedMainScreen,
++                            midiIsConnected: midi.isConnected,
+                             onOpenSettings: { showingCodexConnection = true })
++            case .launchpadMini:
++                launchpadMiniContent
+             case .smartphoneButtons:
+                 SmartphoneSettingsView(
+                     store: store,
+@@ -91,6 +188,7 @@
+                     folderSyncStore: folderSyncStore,
+                     selectedMainScreen: $selectedMainScreen,
+                     codexIsConnected: codex.isConnected,
++                    midiIsConnected: midi.isConnected,
+                     onOpenBackupRestore: { showingBackupRestore = true },
+                     onOpenCodexSettings: { showingCodexConnection = true },
+                     onOpenFolderSyncSettings: { showingFolderSyncSettings = true }
+@@ -102,6 +200,77 @@
+         .padding(.bottom, selectedMainScreen == .apiApps ? 0 : 6)
+     }
+ 
++    private var launchpadMiniContent: some View {
++        ScrollView {
++            HStack(alignment: .top, spacing: 28) {
++                InspectorView(
++                    pad: $editedPad,
++                    pages: store.pages,
++                    selectedMainScreen: $selectedMainScreen,
++                    selectedPageLEDIndex: selectedPageLEDIndex,
++                    codexIsConnected: codex.isConnected,
++                    midiIsConnected: midi.isConnected,
++                    onOpenBackupRestore: { showingBackupRestore = true },
++                    onOpenCodexSettings: { showingCodexConnection = true },
++                    onSelectPageLED: { selectedPageLEDIndex = $0 },
++                    onUpdatePageColor: { index, color, selected in
++                        store.updatePageColor(color, selected: selected, at: index)
++                    },
++                    onReset: {
++                        if editedPad.id.hasPrefix("grid_") {
++                            deleteGridPad(editedPad.id)
++                        } else {
++                            store.resetSelectedPad()
++                            synchronizeSelection()
++                        }
++                    },
++                    onRun: { runSelectedAction($0, for: editedPad) },
++                    editingSecondAction: $editingSecondPadAction
++                )
++                .frame(width: 360, height: launchpadPanelHeight)
++
++                VStack(spacing: 12) {
++                    LaunchpadView(
++                    page: store.currentPage,
++                    pages: store.pages,
++                    activePage: store.selectedPage,
++                    selectedPadID: store.selectedPadID,
++                    midiConnected: midi.isConnected,
++                    virtualPreviewEnabled: $virtualPreviewEnabled,
++                    motionFrame: virtualMotion.frame,
++                    gridOverlay: weeklyUsageGridColors,
++                    onSelectPage: selectPage,
++                    onUpdatePageName: { index, name in store.updatePageName(name, at: index) },
++                    onSelectPageLED: { selectedPageLEDIndex = $0 },
++                    onSelectPad: selectPad,
++                    onRunPad: { run($0) },
++                    onVirtualPadPress: virtualPadPress,
++                    onMoveGridPad: moveGridPad
++                )
++                .frame(minWidth: 610)
++                .frame(height: launchpadPanelHeight)
++                    if editedWorkflowAction.wrappedValue.kind == .workflow {
++                        WorkflowEditorView(action: editedWorkflowAction) {
++                            runSelectedAction(editedWorkflowAction.wrappedValue, for: editedPad)
++                        }
++                    }
++                }
++                .frame(minWidth: 610)
++            }
++            .frame(maxWidth: 1120)
++            .frame(minHeight: launchpadPanelHeight, alignment: .top)
++        }
++    }
++
++    private var editedWorkflowAction: Binding<PadAction> {
++        Binding(
++            get: { editingSecondPadAction ? editedPad.secondAction ?? PadAction() : editedPad.action },
++            set: { value in
++                if editingSecondPadAction { editedPad.secondAction = value } else { editedPad.action = value }
++            }
++        )
++    }
++
+     private var footer: some View {
+         HStack {
+             Text(store.statusMessage)
+@@ -115,4 +284,240 @@
+         .background(MacAppearance(scheme: colorScheme).canvas)
+     }
+ 
++    private func selectPage(_ index: Int) {
++        dismissCodexMotionIfNeeded(for: "top_\(index)")
++        selectedPageLEDIndex = nil
++        store.selectPage(index)
++        if !store.shouldPresentCodexMotion(on: store.currentPage) {
++            endCodexMotion()
++        }
++        synchronizeSelection()
++        midi.flashPage(index, pages: store.pages)
++    }
++
++    private func selectPad(_ pad: Pad) {
++        selectedPageLEDIndex = nil
++        store.selectedPadID = pad.id
++        synchronizeSelection()
++    }
++
++    private func moveGridPad(from sourceID: String, to destinationID: String) {
++        guard store.swapGridPadConfigurations(from: sourceID, to: destinationID) else { return }
++        selectedPageLEDIndex = nil
++        synchronizeSelection()
++        midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
++        updateStatusBubble()
++    }
++
++    private func deleteGridPad(_ padID: String) {
++        guard store.clearGridPadConfiguration(padID) else { return }
++        store.selectedPadID = padID
++        selectedPageLEDIndex = nil
++        synchronizeSelection()
++        midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
++        updateStatusBubble()
++    }
++
++    private func run(_ pad: Pad, flashHardwarePad: Bool = false) {
++        guard let action = store.actionForNextPress(on: pad.id) else { return }
++        synchronizeSelection()
++        midi.updateLEDs(for: store.pages, activePage: store.selectedPage)
++        if flashHardwarePad,
++           let updatedPad = store.currentPage.pads.first(where: { $0.id == pad.id }) {
++            midi.flash(updatedPad)
++        }
++        execute(action, for: pad)
++    }
++
++    private func runSelectedAction(_ action: PadAction, for pad: Pad) {
++        guard action.kind != .none else { return }
++        execute(action, for: pad)
++    }
++
++    private func execute(_ action: PadAction, for pad: Pad) {
++        let commandFileID = TerminalCommandFileStore.macButtonIdentifier(pageIndex: store.selectedPage, padID: pad.id)
++        do { store.statusMessage = try runner.execute(action, commandFileID: commandFileID) }
++        catch MacActionError.accessibilityRequired {
++            store.statusMessage = MacActionError.accessibilityRequired.localizedDescription
++            showingPermissionAlert = true
++        }
++        catch { store.statusMessage = error.localizedDescription }
++    }
++
++    private func handleHardwarePadPress(_ padID: String) {
++        recordLaunchpadOrCodexActivity()
++        dismissCodexMotionIfNeeded(for: padID)
++        selectedPageLEDIndex = nil
++        guard let pad = store.currentPage.pads.first(where: { $0.id == padID }) else { return }
++        store.selectedPadID = padID
++        synchronizeSelection()
++        run(pad, flashHardwarePad: true)
++    }
++
++    private func virtualPadPress(_ pad: Pad) {
++        dismissCodexMotionIfNeeded(for: pad.id)
++        selectedPageLEDIndex = nil
++        store.selectedPadID = pad.id
++        synchronizeSelection()
++    }
++
++    private func synchronizeSelection() {
++        editedPad = store.selectedPad ?? Pad(id: store.selectedPadID)
++    }
++
++    private func startCodexMotion(for activity: CodexActivity) {
++        stopIdleScreensaver(restorePage: false)
++        guard activity != .idle,
++              store.shouldPresentCodexMotion(on: store.currentPage) else { return }
++        let presentation = store.codexMotionPresentation(for: activity)
++        guard let preset = store.codexMotionPreset(for: activity) else { return }
++        let loopingPreset = MotionPreset(name: preset.name, loop: true, frameDurationMs: preset.frameDurationMs, frames: preset.frames)
++        isCodexMotionPlaying = true
++        midi.playMotion(
++            loopingPreset,
++            preservingPadLEDs: store.shouldPreservePadLEDsDuringCodexMotion(for: activity)
++        )
++        virtualMotion.play(
++            loopingPreset,
++            over: store.currentPage,
++            preservingPadLEDs: store.shouldPreservePadLEDsDuringCodexMotion(for: activity)
++        )
++
++        scheduleCodexMotionStop(using: presentation, activity: activity)
++    }
++
++    private func scheduleCodexMotionStop(using presentation: CodexMotionPresentation, activity: CodexActivity) {
++        guard let delay = presentation.automaticStopDelay(for: activity) else { return }
++        let workItem = DispatchWorkItem { endCodexMotion() }
++        codexMotionStopWorkItem = workItem
++        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
++    }
++
++    private func resumeCodexMotionForCurrentPageIfNeeded() {
++        guard !isCodexMotionPlaying,
++              CodexMotionReentryPolicy.shouldRestart(for: codexActivity.activity),
++              store.shouldPresentCodexMotion(on: store.currentPage) else { return }
++        startCodexMotion(for: codexActivity.activity)
++    }
++
++    private func dismissCodexMotionIfNeeded(for padID: String) {
++        let presentation = codexMotionActivity.dismissalPresentation(using: store.codexMotionPresentation)
++        if presentation.shouldDismiss(for: padID) {
++            endCodexMotion()
++        }
++    }
++
++    private func endCodexMotion() {
++        codexMotionStopWorkItem?.cancel()
++        codexMotionStopWorkItem = nil
++        isCodexMotionPlaying = false
++        midi.stopMotion()
++        virtualMotion.stop()
++        synchronizeWeeklyUsageDisplay()
++        updateStatusBubble()
++        lastLaunchpadOrCodexActivity = Date()
++    }
++
++    private func updateStatusBubble() {
++        launchpadLEDBubble.update(midi: midi, store: store)
++    }
++
++    private func recordLaunchpadOrCodexActivity() {
++        lastLaunchpadOrCodexActivity = Date()
++        stopIdleScreensaver()
++    }
++
++    private var weeklyUsageGridColors: [String]? {
++        let settings = store.codexMotionDisplaySettings.weeklyUsageDisplay
++        guard settings.isEnabled,
++              !isCodexMotionPlaying,
++              settings.allowsPresentation(on: store.currentPage.id),
++              let weeklyUsage = codex.weeklyUsage else { return nil }
++        let remainingCellCount = CodexWeeklyUsageGrid.remainingCellCount(usedPercent: weeklyUsage.usedPercent)
++        let activeColor = CodexWeeklyUsageGrid.color(forUsedPercent: weeklyUsage.usedPercent).rawValue
++        let activePixels: [Bool]
++        switch settings.style {
++        case .level:
++            activePixels = (0..<64).map {
++                CodexWeeklyUsageGrid.isRemainingCellActive(index: $0, remainingCellCount: remainingCellCount)
++            }
++        case .number:
++            activePixels = CodexWeeklyUsageGrid.numericPixels(remainingPercent: 100 - weeklyUsage.usedPercent)
++        }
++        return activePixels.map { $0 ? activeColor : PadColor.off.rawValue }
++    }
++
++    private func synchronizeWeeklyUsageDisplay() {
++        guard let colors = weeklyUsageGridColors else {
++            midi.setGridOverlay(colors: nil)
++            return
++        }
++        midi.setGridOverlay(colors: colors.compactMap(PadColor.init(rawValue:)))
++    }
++
++    private func evaluateIdleScreensaver() {
++        // A live Codex task can remain `.running` while no new status event is
++        // emitted during file reads or tool execution. Recover the visual
++        // motion if it was interrupted by page changes or a transient update.
++        resumeCodexMotionForCurrentPageIfNeeded()
++        let settings = store.codexMotionDisplaySettings.idleScreensaver
++        let launchpadAndCodexIdleSeconds = Date().timeIntervalSince(lastLaunchpadOrCodexActivity)
++        let macIdleSeconds = CGEventSource.secondsSinceLastEventType(
++            .combinedSessionState,
++            eventType: CGEventType(rawValue: UInt32.max)!
++        )
++        let shouldPlay = LaunchpadIdleScreensaverPolicy.shouldPlay(
++            settings: settings,
++            hasPreset: store.idleScreensaverPreset != nil,
++            codexIsBusy: codexIsBusy,
++            launchpadAndCodexIdleSeconds: launchpadAndCodexIdleSeconds,
++            macIdleSeconds: macIdleSeconds
++        )
++
++        if shouldPlay {
++            startIdleScreensaverIfNeeded()
++        } else {
++            stopIdleScreensaver()
++        }
++    }
++
++    private func startIdleScreensaverIfNeeded() {
++        guard idleScreensaverSessionID == nil,
++              let preset = store.idleScreensaverPreset else { return }
++        let loopingPreset = MotionPreset(
++            name: preset.name,
++            loop: true,
++            frameDurationMs: preset.frameDurationMs,
++            frames: preset.frames
++        )
++        let sessionID = midi.playMotion(loopingPreset)
++        idleScreensaverSessionID = sessionID
++        virtualMotion.play(loopingPreset, over: store.currentPage, preservingPadLEDs: false)
++
++        let duration = store.codexMotionDisplaySettings.idleScreensaver.clampedDurationSeconds
++        let workItem = DispatchWorkItem {
++            guard idleScreensaverSessionID == sessionID else { return }
++            stopIdleScreensaver()
++            lastLaunchpadOrCodexActivity = Date()
++        }
++        idleScreensaverStopWorkItem = workItem
++        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(duration), execute: workItem)
++    }
++
++    private func stopIdleScreensaver(restorePage: Bool = true) {
++        idleScreensaverStopWorkItem?.cancel()
++        idleScreensaverStopWorkItem = nil
++        guard let sessionID = idleScreensaverSessionID else { return }
++        idleScreensaverSessionID = nil
++        midi.stopMotion(ifCurrent: sessionID, restorePage: restorePage)
++        virtualMotion.stop()
++    }
++
++    private var codexIsBusy: Bool {
++        if isCodexMotionPlaying { return true }
++        return switch codexActivity.activity {
++        case .connecting, .running, .waitingForApproval: true
++        case .idle, .completed, .failed: false
++        }
++    }
+ }
+--- a/Native/App/ChatGPTMicroLaunchpadApp.swift
++++ b/Native/App/ChatGPTMicroLaunchpadApp.swift
+@@ -7,6 +7,7 @@
+     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+     @State private var store = LaunchpadStore()
+     @State private var folderSyncStore = FolderPairStore()
++    @State private var midi = LaunchpadMIDIManager()
+     @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
+     private let runner = MacActionRunner()
+ 
+@@ -16,8 +17,10 @@
+                 store: store,
+                 folderSyncStore: folderSyncStore,
+                 runner: runner,
++                midi: midi,
+                 codex: appDelegate.codex,
+                 codexActivity: appDelegate.codexActivityController,
++                launchpadLEDBubble: appDelegate.launchpadLEDBubble,
+                 chatGPTTunnel: appDelegate.chatGPTTunnel
+             )
+                 .preferredColorScheme(macDarkModeEnabled ? .dark : .light)
+@@ -192,15 +195,20 @@
+ }
+ 
+ @MainActor
+-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
++final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
++    static let ledBubbleMenuItemPreferenceKey = "chatgpt-micro-launchpad.shows-led-bubble-menu-item"
+     var isBridgeOnly: Bool { CommandLine.arguments.contains("--bridge-only") }
+     let codex: CodexAppServerClient
+     let codexActivityController: CodexActivityController
++    let launchpadLEDBubble = LaunchpadLEDStatusBubble()
+     let chatGPTTunnel = ChatGPTTunnelController()
++    private let codexStatusBarIndicator = CodexStatusBarIndicator()
+     private let remoteActionRunner = MacActionRunner()
+     private let connectionStarter: any CodexAppServerConnectionStarting
+     private weak var mainWindow: NSWindow?
+     private var statusItem: NSStatusItem?
++    private weak var codexStatusMotionMenuItem: NSMenuItem?
++    private weak var launchpadLEDBubbleMenuItem: NSMenuItem?
+     private var hasStartedCodexConnection = false
+ 
+     override init() {
+@@ -209,6 +217,7 @@
+         connectionStarter = codex
+         codexActivityController = CodexActivityController()
+         super.init()
++        configureLaunchpadLEDBubbleMenuUpdates()
+         configureRemoteCommandHandling()
+     }
+ 
+@@ -221,6 +230,7 @@
+         self.codexActivityController = codexActivityController
+         self.connectionStarter = connectionStarter ?? codex
+         super.init()
++        configureLaunchpadLEDBubbleMenuUpdates()
+         configureRemoteCommandHandling()
+     }
+ 
+@@ -231,7 +241,8 @@
+         } else {
+             installMenuBarItem()
+         }
+-        codexActivityController.onActivityChange = { [weak codex] activity in
++        codexActivityController.onActivityChange = { [weak self, weak codex] activity in
++            self?.codexStatusBarIndicator.update(activity: activity)
+             codex?.publishRemoteActivity(activity)
+         }
+         codexActivityController.onTaskCompletion = { [weak codex] taskID in
+@@ -239,9 +250,13 @@
+         }
+         codexActivityController.onActiveSessionCountChange = { [weak codex] count in
+             codex?.publishRemoteSessionCount(count)
++        }
++        codex.onPhoneMicrophoneActivityChanged = { [weak self] active in
++            self?.codexStatusBarIndicator.update(phoneMicrophoneActive: active)
+         }
+         codexActivityController.startDesktopMonitoring()
+         codex.publishRemoteSessionCount(codexActivityController.activeSessionCount)
++        codexStatusBarIndicator.update(activity: codexActivityController.activity)
+         codex.publishRemoteActivity(codexActivityController.activity)
+         codex.startRemoteBridge()
+         guard !hasStartedCodexConnection else { return }
+@@ -295,6 +310,7 @@
+ 
+     func applicationWillTerminate(_ notification: Notification) {
+         chatGPTTunnel.disconnect()
++        launchpadLEDBubble.close()
+         codexActivityController.stopDesktopMonitoring()
+         codex.stopRemoteBridge()
+     }
+@@ -448,14 +464,44 @@
+             accessibilityDescription: "LinkDeck"
+         )
+         let menu = NSMenu()
++        menu.delegate = self
+         menu.addItem(withTitle: "설정 창 열기", action: #selector(openMainWindowFromMenu), keyEquivalent: "")
++        let statusMotionItem = menu.addItem(
++            withTitle: "Codex 상태 표시 모션",
++            action: #selector(toggleCodexStatusMotionFromMenu),
++            keyEquivalent: ""
++        )
++        statusMotionItem.state = codexStatusBarIndicator.isEnabled ? .on : .off
++        statusMotionItem.toolTip = "작업중·오류·확인 필요 상태를 상태바 아이콘으로 표시합니다."
++        codexStatusMotionMenuItem = statusMotionItem
++        let bubbleItem = menu.addItem(
++            withTitle: "LED 말풍선 표시",
++            action: #selector(toggleLaunchpadLEDBubbleFromMenu),
++            keyEquivalent: ""
++        )
++        bubbleItem.state = .off
++        bubbleItem.identifier = NSUserInterfaceItemIdentifier(Self.ledBubbleMenuItemPreferenceKey)
++        bubbleItem.isEnabled = false
++        launchpadLEDBubbleMenuItem = bubbleItem
++        Self.updateLEDBubbleMenuItemVisibility(in: menu)
+         menu.addItem(.separator())
+         menu.addItem(withTitle: "완전히 종료", action: #selector(quitFromMenu), keyEquivalent: "")
+         menu.items.forEach { $0.target = self }
+         item.menu = menu
+         statusItem = item
++        codexStatusBarIndicator.attach(to: item.button)
++        launchpadLEDBubble.attach(to: item.button)
+     }
+ 
++    func menuWillOpen(_ menu: NSMenu) {
++        Self.updateLEDBubbleMenuItemVisibility(in: menu)
++    }
++
++    static func updateLEDBubbleMenuItemVisibility(in menu: NSMenu, preferences: UserDefaults = .standard) {
++        let isShown = preferences.object(forKey: ledBubbleMenuItemPreferenceKey) as? Bool ?? false
++        menu.items.first { $0.identifier?.rawValue == ledBubbleMenuItemPreferenceKey }?.isHidden = !isShown
++    }
++
+     @objc private func openMainWindowFromMenu() {
+         showMainWindow()
+     }
+@@ -464,4 +510,19 @@
+         quitCompletely()
+     }
+ 
++    @objc private func toggleLaunchpadLEDBubbleFromMenu() {
++        launchpadLEDBubble.toggleVisibilityPreference()
++    }
++
++    @objc private func toggleCodexStatusMotionFromMenu() {
++        codexStatusBarIndicator.setEnabled(!codexStatusBarIndicator.isEnabled)
++        codexStatusMotionMenuItem?.state = codexStatusBarIndicator.isEnabled ? .on : .off
++    }
++
++    private func configureLaunchpadLEDBubbleMenuUpdates() {
++        launchpadLEDBubble.onVisibilityPreferenceChanged = { [weak self] isVisible, isReady in
++            self?.launchpadLEDBubbleMenuItem?.state = isVisible ? .on : .off
++            self?.launchpadLEDBubbleMenuItem?.isEnabled = isReady
++        }
++    }
+ }
+--- a/Native/Views/CodexConnectionView.swift
++++ b/Native/Views/CodexConnectionView.swift
+@@ -11,14 +11,27 @@
+         case theme
+         case completionSound
+         case approvalSound
++        case launchpad
++        case motion
++        case presets
+ 
+         var id: Self { self }
+ 
++        var requiresLaunchpad: Bool {
++            switch self {
++            case .launchpad, .motion, .presets: true
++            default: false
++            }
++        }
++
+         var title: String {
+             switch self {
+             case .connection: "연결 설정"
+             case .registeredAppAPIs: "등록된 앱 API"
+             case .display: "표시 설정"
++            case .launchpad: "LED·말풍선"
++            case .motion: "상태별 모션"
++            case .presets: "모션 프리셋"
+             case .theme: "휴대폰 스킨"
+             case .completionSound: "완료 사운드"
+             case .approvalSound: "승인 사운드"
+@@ -30,6 +43,9 @@
+             case .connection: "network"
+             case .registeredAppAPIs: "app.connected.to.app.below.fill"
+             case .display: "display"
++            case .launchpad: "square.grid.3x3.fill"
++            case .motion: "waveform.path"
++            case .presets: "square.grid.3x3"
+             case .theme: "paintpalette"
+             case .completionSound: "speaker.wave.2"
+             case .approvalSound: "bell.badge.waveform"
+@@ -41,6 +57,7 @@
+ 
+     @Bindable var store: LaunchpadStore
+     let folderSyncStore: FolderPairStore
++    let midi: LaunchpadMIDIManager
+     let codex: CodexAppServerClient
+     let chatGPTTunnel: ChatGPTTunnelController
+ 
+@@ -75,6 +92,12 @@
+ 
+                 Divider()
+ 
++                if selectedTab.requiresLaunchpad && !midi.isConnected {
++                    Label("런치패드 연결 필요", systemImage: "cable.connector")
++                        .foregroundStyle(.secondary)
++                        .padding()
++                }
++
+                 switch selectedTab {
+                 case .connection:
+                     connectionPane
+@@ -82,6 +105,15 @@
+                     ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, folderSyncStore: folderSyncStore, showsRegisteredAppAPIsOnly: true)
+                 case .display:
+                     displayPane
++                case .launchpad:
++                    launchpadPane
++                        .disabled(!midi.isConnected)
++                case .motion:
++                    motionRulesPane
++                        .disabled(!midi.isConnected)
++                case .presets:
++                    MotionPresetView(store: store, midi: midi, isEmbedded: true)
++                        .disabled(!midi.isConnected)
+                 case .theme:
+                     phoneThemePane
+                 case .completionSound:
+@@ -98,6 +130,13 @@
+     private var settingsSidebar: some View {
+         VStack(alignment: .leading, spacing: 4) {
+             ForEach(Tab.allCases) { tab in
++                if tab == .launchpad {
++                    Divider().padding(.vertical, 6)
++                    Text(midi.isConnected ? "런치패드 · 연결됨" : "런치패드 · 연결 필요")
++                        .font(.caption)
++                        .foregroundStyle(.secondary)
++                        .padding(.horizontal, 10)
++                }
+                 Button {
+                     selectedTab = tab
+                 } label: {
+@@ -112,6 +151,7 @@
+                 }
+                 .buttonStyle(.plain)
+                 .focusEffectDisabled()
++                .disabled(tab.requiresLaunchpad && !midi.isConnected)
+             }
+             Spacer()
+         }
+@@ -168,6 +208,30 @@
+         }
+     }
+ 
++    private var launchpadPane: some View {
++        Form {
++            Section("LED 표시") {
++                motionDisplayLocation
++                weeklyUsageDisplaySetting
++            }
++
++            Section("말풍선") {
++                launchpadLEDBubbleSetting
++            }
++
++            Section("LED 화면보호기") {
++                idleScreensaverSetting
++            }
++
++            Section {
++                Text("이 앱에서 시작한 Codex 작업만 상태·모션으로 추적합니다. 기존 ChatGPT 앱 작업은 포함되지 않습니다.")
++                    .font(.caption)
++                    .foregroundStyle(.secondary)
++            }
++        }
++        .formStyle(.grouped)
++    }
++
+     private var phoneThemePane: some View {
+         ScrollView(.vertical) {
+             VStack(alignment: .leading, spacing: 16) {
+@@ -893,9 +957,245 @@
+                 }
+             }
+             .frame(height: 4)
++        }
++    }
++
++    private var motionRulesPane: some View {
++        VStack(alignment: .leading, spacing: 0) {
++            HStack(spacing: 8) {
++                Text("상태").frame(width: 74, alignment: .leading)
++                Text("모션").frame(width: 104, alignment: .leading)
++                Text("").frame(width: 58)
++                Text("종료 방식").frame(width: 108, alignment: .leading)
++                Text("조건").frame(width: 70, alignment: .leading)
++                Text("옵션").frame(maxWidth: .infinity, alignment: .leading)
++            }
++            .font(.caption.weight(.semibold))
++            .foregroundStyle(.secondary)
++            .padding(.horizontal, 14)
++            .padding(.bottom, 7)
++
++            GroupBox {
++                VStack(spacing: 0) {
++                    ForEach(Array(motionActivities.enumerated()), id: \.element.id) { index, activity in
++                        CodexMotionRuleCard(store: store, midi: midi, activity: activity)
++                        if index < motionActivities.count - 1 {
++                            Divider()
++                        }
++                    }
++                }
++                .padding(.horizontal, 12)
++            }
++        }
++        .padding(20)
++        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
++    }
++
++    private var motionActivities: [CodexActivity] {
++        [.connecting, .running, .waitingForApproval, .completed, .failed]
++    }
++
++    private var motionDisplayLocation: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            LabeledContent("상태 모션 페이지") {
++                Picker("Codex 상태 모션 표시 페이지", selection: motionDisplayPageBinding) {
++                    ForEach(Array(store.pages.enumerated()), id: \.element.id) { index, page in
++                        Text("P\(index + 1) · \(page.name)").tag(page.id)
++                    }
++                }
++                .labelsHidden()
++                .frame(width: 180)
++            }
++            Toggle("모션 재생 중에도 기존 패드 LED 유지", isOn: preservesPadLEDsBinding)
++                .accessibilityIdentifier("codex-motion-preserve-pad-leds-toggle")
++        }
++    }
++
++    private var launchpadLEDBubbleSetting: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Toggle("Launchpad LED 말풍선 표시", isOn: launchpadLEDBubbleBinding)
++                .accessibilityIdentifier("launchpad-led-bubble-toggle")
++            LabeledContent("크기") {
++                Picker("Launchpad LED 말풍선 크기", selection: launchpadLEDBubbleSizeBinding) {
++                    ForEach(LaunchpadLEDBubbleSize.allCases) { size in
++                        Text(size.title).tag(size)
++                    }
++                }
++                .labelsHidden()
++                .frame(width: 120)
++                .accessibilityIdentifier("launchpad-led-bubble-size-picker")
++            }
++            .disabled(!store.codexMotionDisplaySettings.showsLaunchpadLEDBubble)
++        }
++    }
++
++    private var idleScreensaverSetting: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Toggle("사용", isOn: idleScreensaverEnabledBinding)
++                .accessibilityIdentifier("idle-screensaver-toggle")
++
++            LabeledContent("입력 기준") {
++                Picker("화면보호기 입력 기준", selection: idleScreensaverInputScopeBinding) {
++                    ForEach(LaunchpadIdleInputScope.allCases) { scope in
++                        Text(scope.title).tag(scope)
++                    }
++                }
++                .labelsHidden()
++                .frame(width: 160)
++            }
++
++            LabeledContent("시작 및 재생 시간") {
++                HStack(spacing: 6) {
++                TextField("초", value: idleScreensaverDelayBinding, format: .number)
++                    .textFieldStyle(.roundedBorder)
++                    .frame(width: 58)
++                    .multilineTextAlignment(.trailing)
++                    .accessibilityLabel("화면보호기 시작 대기 시간(초)")
++                Text("초 후")
++                    .font(.system(size: 10))
++                    .foregroundStyle(.secondary)
++
++                TextField("초", value: idleScreensaverDurationBinding, format: .number)
++                    .textFieldStyle(.roundedBorder)
++                    .frame(width: 58)
++                    .multilineTextAlignment(.trailing)
++                    .accessibilityLabel("화면보호기 지속 시간(초)")
++                Text("초 재생")
++                    .foregroundStyle(.secondary)
++                }
++            }
++
++            LabeledContent("재생 모션") {
++                Picker("화면보호기 모션", selection: idleScreensaverPresetBinding) {
++                    Text("모션 선택").tag(UUID?.none)
++                    ForEach(store.motionPresets) { preset in
++                        Text(preset.name).tag(Optional(preset.id))
++                    }
++                }
++                .labelsHidden()
++                .frame(width: 180)
++            }
++            .disabled(!store.codexMotionDisplaySettings.idleScreensaver.isEnabled)
+         }
+     }
+ 
++    private var weeklyUsageDisplaySetting: some View {
++        VStack(alignment: .leading, spacing: 8) {
++            Toggle("주간 잔여량 표시", isOn: weeklyUsageEnabledBinding)
++                .accessibilityIdentifier("weekly-usage-display-toggle")
++
++            LabeledContent("표시 방식") {
++                Picker("주간 잔여량 표시 방식", selection: weeklyUsageStyleBinding) {
++                    ForEach(CodexWeeklyUsageDisplayStyle.allCases) { style in
++                        Text(style.title).tag(style)
++                    }
++                }
++                .labelsHidden()
++                .frame(width: 140)
++            }
++
++            LabeledContent("표시 페이지") {
++                Picker("주간 잔여량 표시 페이지", selection: weeklyUsagePageBinding) {
++                    ForEach(Array(store.pages.enumerated()), id: \.element.id) { index, page in
++                        Text("P\(index + 1) · \(page.name)").tag(page.id)
++                    }
++                }
++                .labelsHidden()
++                .frame(width: 180)
++            }
++            .disabled(!store.codexMotionDisplaySettings.weeklyUsageDisplay.isEnabled)
++            Text(store.codexMotionDisplaySettings.weeklyUsageDisplay.style == .level
++                ? "평소 사용량 표시 · 모션 종료 후 자동 복귀"
++                : "0%=0 · 100%=00 · 모션 종료 후 자동 복귀")
++                .font(.caption)
++                .foregroundStyle(.secondary)
++        }
++    }
++
++    private var motionDisplayPageBinding: Binding<UUID> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.pageID ?? store.pages[0].id },
++            set: { store.setCodexMotionDisplayPageID($0) }
++        )
++    }
++
++    private var preservesPadLEDsBinding: Binding<Bool> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.preservesPadLEDsDuringMotion },
++            set: { store.setCodexMotionPreservesPadLEDsDuringMotion($0) }
++        )
++    }
++
++    private var launchpadLEDBubbleBinding: Binding<Bool> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.showsLaunchpadLEDBubble },
++            set: { store.setLaunchpadLEDBubbleVisible($0) }
++        )
++    }
++
++    private var launchpadLEDBubbleSizeBinding: Binding<LaunchpadLEDBubbleSize> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.launchpadLEDBubbleSize },
++            set: { store.setLaunchpadLEDBubbleSize($0) }
++        )
++    }
++
++    private var idleScreensaverEnabledBinding: Binding<Bool> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.idleScreensaver.isEnabled },
++            set: { store.setIdleScreensaverEnabled($0) }
++        )
++    }
++
++    private var idleScreensaverInputScopeBinding: Binding<LaunchpadIdleInputScope> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.idleScreensaver.inputScope },
++            set: { store.setIdleScreensaverInputScope($0) }
++        )
++    }
++
++    private var idleScreensaverDelayBinding: Binding<Int> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.idleScreensaver.delaySeconds },
++            set: { store.setIdleScreensaverDelaySeconds($0) }
++        )
++    }
++
++    private var idleScreensaverPresetBinding: Binding<UUID?> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.idleScreensaver.presetID },
++            set: { store.setIdleScreensaverPresetID($0) }
++        )
++    }
++
++    private var idleScreensaverDurationBinding: Binding<Int> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.idleScreensaver.durationSeconds },
++            set: { store.setIdleScreensaverDurationSeconds($0) }
++        )
++    }
++
++    private var weeklyUsageEnabledBinding: Binding<Bool> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.weeklyUsageDisplay.isEnabled },
++            set: { store.setWeeklyUsageDisplayEnabled($0) }
++        )
++    }
++
++    private var weeklyUsagePageBinding: Binding<UUID> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.weeklyUsageDisplay.pageID ?? store.pages[0].id },
++            set: { store.setWeeklyUsageDisplayPageID($0) }
++        )
++    }
++
++    private var weeklyUsageStyleBinding: Binding<CodexWeeklyUsageDisplayStyle> {
++        Binding(
++            get: { store.codexMotionDisplaySettings.weeklyUsageDisplay.style },
++            set: { store.setWeeklyUsageDisplayStyle($0) }
++        )
++    }
++
+     private var statusColor: Color {
+         switch codex.activity {
+         case .idle: .gray
+--- a/Native/Views/MainWindowSidebarControls.swift
++++ b/Native/Views/MainWindowSidebarControls.swift
+@@ -1,6 +1,7 @@
+ import SwiftUI
+ 
+-enum MainScreen: String, CaseIterable, Hashable {
++enum MainScreen: String, Hashable {
++    case launchpadMini
+     case smartphoneButtons
+     case apiApps
+ }
+@@ -9,6 +10,7 @@
+     @Environment(\.colorScheme) private var colorScheme
+     private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
+     @Binding var selection: MainScreen
++    let midiIsConnected: Bool
+     var onSelectScreen: ((MainScreen) -> Void)? = nil
+     var compact = false
+ 
+@@ -18,11 +20,13 @@
+                 HStack(spacing: 4) {
+                     screenButton(.smartphoneButtons, title: "휴대폰", systemImage: "iphone")
+                     screenButton(.apiApps, title: "API 앱", systemImage: "point.3.connected.trianglepath.dotted")
++                    screenButton(.launchpadMini, title: "런치패드 미니", systemImage: "square.grid.3x3")
+                 }
+             } else {
+                 VStack(spacing: 4) {
+                     screenButton(.smartphoneButtons, title: "휴대폰", systemImage: "iphone")
+                     screenButton(.apiApps, title: "API 앱", systemImage: "point.3.connected.trianglepath.dotted")
++                    screenButton(.launchpadMini, title: "런치패드 미니", systemImage: "square.grid.3x3")
+                 }
+             }
+         }
+@@ -32,7 +36,9 @@
+ 
+     private func screenButton(_ screen: MainScreen, title: String, systemImage: String) -> some View {
+         let isSelected = selection == screen
++        let isAvailable = screen != .launchpadMini || midiIsConnected
+         return Button {
++            guard isAvailable else { return }
+             if let onSelectScreen {
+                 onSelectScreen(screen)
+             } else {
+@@ -69,16 +75,20 @@
+             .contentShape(RoundedRectangle(cornerRadius: 7))
+         }
+         .buttonStyle(.plain)
++        .disabled(!isAvailable)
++        .opacity(isAvailable ? 1 : 0.38)
+         .focusable(false)
+         .focusEffectDisabled()
+         .accessibilityLabel(title)
+-        .help(title)
++        .accessibilityHint(isAvailable ? "" : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
++        .help(isAvailable ? title : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
+     }
+ }
+ 
+ struct MainSidebarFooter: View {
+     @Environment(\.colorScheme) private var colorScheme
+     let codexIsConnected: Bool
++    let midiIsConnected: Bool
+     let onOpenBackupRestore: () -> Void
+     let onOpenCodexSettings: () -> Void
+ 
+@@ -87,6 +97,9 @@
+             Circle()
+                 .fill(codexIsConnected ? .green : .gray)
+                 .frame(width: 7, height: 7)
++            Circle()
++                .fill(midiIsConnected ? .green : .gray)
++                .frame(width: 7, height: 7)
+             Spacer(minLength: 0)
+             Button(action: onOpenBackupRestore) {
+                 Image(systemName: "externaldrive")
+@@ -97,7 +110,7 @@
+             }
+             .buttonStyle(.plain)
+             .accessibilityLabel("설정·버튼 백업 및 복구")
+-            .help("휴대폰 버튼과 저장된 설정을 백업하거나 복구합니다.")
++            .help("Mac 버튼, 스마트폰 버튼, Codex 모션 설정을 백업하거나 복구합니다.")
+ 
+             Button(action: onOpenCodexSettings) {
+                 Image(systemName: "gearshape")
+@@ -117,6 +130,6 @@
+         }
+         .accessibilityElement(children: .contain)
+         .accessibilityLabel("연결 상태와 설정")
+-        .accessibilityValue("Codex \(codexIsConnected ? "연결됨" : "연결 안 됨")")
++        .accessibilityValue("Codex \(codexIsConnected ? "연결됨" : "연결 안 됨"), Launchpad Mini \(midiIsConnected ? "연결됨" : "연결 안 됨")")
+     }
+ }
+--- a/Native/Views/APIAppsView.swift
++++ b/Native/Views/APIAppsView.swift
+@@ -24,6 +24,7 @@
+ 
+     let store: LaunchpadStore
+     @Binding var selection: MainScreen
++    let midiIsConnected: Bool
+     let onOpenSettings: () -> Void
+     @State private var apps: [RegisteredAppAPI] = []
+     @State private var statuses: [String: AppAPIMCPBridge.ConnectionStatus] = [:]
+@@ -88,6 +89,7 @@
+                 HStack(spacing: 3) {
+                     screenButton(.smartphoneButtons, title: "휴대폰", icon: "iphone")
+                     screenButton(.apiApps, title: "API 앱", icon: "point.3.connected.trianglepath.dotted")
++                    screenButton(.launchpadMini, title: "런치패드 미니", icon: "square.grid.3x3")
+                 }
+                 .padding(.leading, 6.5)
+                 Button(action: onOpenSettings) { Image(systemName: "gearshape") }
+@@ -204,19 +206,21 @@
+ 
+     @ViewBuilder
+     private func screenButton(_ screen: MainScreen, title: String, icon: String) -> some View {
++        let available = screen != .launchpadMini || midiIsConnected
+         let selected = selection == screen
+         Button { selection = screen } label: {
+             Image(systemName: icon)
+                 .font(.system(size: 10))
+                 .frame(width: 21.13, height: 19.62)
+-                .foregroundStyle(selected ? Color.orange : Color(white: 180 / 255))
++                .foregroundStyle(selected ? Color.orange : Color(white: available ? 180 / 255 : 39 / 255))
+                 .background(selected ? Color(red: 51 / 255, green: 33 / 255, blue: 17 / 255) : Color(white: 28 / 255),
+                             in: RoundedRectangle(cornerRadius: 7.5))
+                 .overlay(RoundedRectangle(cornerRadius: 7.5).stroke(selected ? Color.orange : Color(white: 64 / 255), lineWidth: 0.75))
+         }
+         .buttonStyle(.plain)
++        .disabled(!available)
+         .accessibilityLabel(title)
+-        .help(title)
++        .help(available ? title : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
+     }
+ 
+     @ViewBuilder
+--- a/Native/Views/SmartphoneSettingsView.swift
++++ b/Native/Views/SmartphoneSettingsView.swift
+@@ -14,6 +14,7 @@
+     let folderSyncStore: FolderPairStore
+     @Binding var selectedMainScreen: MainScreen
+     let codexIsConnected: Bool
++    let midiIsConnected: Bool
+     let onOpenBackupRestore: () -> Void
+     let onOpenCodexSettings: () -> Void
+     let onOpenFolderSyncSettings: () -> Void
+@@ -169,6 +170,7 @@
+         VStack(alignment: .leading, spacing: 9) {
+             MainScreenSidebarNavigation(
+                 selection: $selectedMainScreen,
++                midiIsConnected: midiIsConnected,
+                 onSelectScreen: { screen in
+                     selectedMainScreen = screen
+                     if screen == .smartphoneButtons {
+@@ -246,6 +248,7 @@
+             .accessibilityHint("동기화 목록과 폴더 동기화 화면을 엽니다.")
+             MainSidebarFooter(
+                 codexIsConnected: codexIsConnected,
++                midiIsConnected: midiIsConnected,
+                 onOpenBackupRestore: onOpenBackupRestore,
+                 onOpenCodexSettings: onOpenCodexSettings
+             )
+@@ -1092,21 +1095,3 @@
+         catch { store.statusMessage = error.localizedDescription }
+     }
+ }
+-
+-struct DarkTextField: View {
+-    @Environment(\.colorScheme) private var colorScheme
+-    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
+-    @Binding var text: String
+-    var placeholder = ""
+-
+-    var body: some View {
+-        TextField(placeholder, text: $text)
+-            .textFieldStyle(.plain)
+-            .font(.system(size: 13, weight: .medium))
+-            .foregroundStyle(theme.foreground)
+-            .padding(.horizontal, 13)
+-            .frame(height: 34)
+-            .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
+-            .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
+-    }
+-}
+--- a/Tests/ChatGPTMicroLaunchpadTests/CodexConnectionViewTests.swift
++++ b/Tests/ChatGPTMicroLaunchpadTests/CodexConnectionViewTests.swift
+@@ -5,13 +5,15 @@
+ final class CodexConnectionViewTests: XCTestCase {
+     func testSettingsSurface_includesApprovalSoundSettings() {
+         XCTAssertEqual(CodexConnectionView.availableTabTitles, [
+-            "연결 설정", "등록된 앱 API", "표시 설정", "휴대폰 스킨", "완료 사운드", "승인 사운드"
++            "연결 설정", "등록된 앱 API", "표시 설정", "휴대폰 스킨", "완료 사운드", "승인 사운드", "LED·말풍선", "상태별 모션", "모션 프리셋"
+         ])
+     }
+ 
+-    func testMainScreens_includePhoneButtonsAndAPIAppsOnly() {
+-        XCTAssertEqual(MainScreen.allCases, [.smartphoneButtons, .apiApps])
+-        XCTAssertNil(MainScreen(rawValue: "launchpadMini"))
++    func testOnlyLaunchpadSettingsRequireADevice() {
++        XCTAssertEqual(
++            CodexConnectionView.Tab.allCases.filter(\.requiresLaunchpad),
++            [.launchpad, .motion, .presets]
++        )
+     }
+ 
+     func testApprovalSoundSettings_offerOnlyMacAndPhoneOutputTargets() {
+--- a/Tests/ChatGPTMicroLaunchpadTests/CodexActivityIntegrationTests.swift
++++ b/Tests/ChatGPTMicroLaunchpadTests/CodexActivityIntegrationTests.swift
+@@ -4,13 +4,14 @@
+ 
+ final class CodexActivityIntegrationTests: XCTestCase {
+     @MainActor
+-    func testIntegration_whenDesktopTaskStarts_publishesRunningActivity() async throws {
++    func testIntegration_whenDesktopTaskStarts_reachesMotionPresentationCallbackAsRunning() async throws {
+         // Given
+         let fixture = try MonitorFixture()
+         let controller = makeController(fixture: fixture)
++        let router = CodexMotionActivityRouter()
+         var presented: [CodexActivity] = []
+         controller.onActivityChange = { activity in
+-            presented.append(activity)
++            router.present(activity, using: { presented.append($0) })
+         }
+         controller.startDesktopMonitoring()
+         await fixture.waitForMonitorToBecomeIdle()
+@@ -25,6 +26,7 @@
+ 
+         // Then
+         XCTAssertEqual(controller.activity, .running)
++        XCTAssertEqual(router.presentedActivity, .running)
+         XCTAssertEqual(presented, [.running])
+     }
+ 
+@@ -206,6 +208,47 @@
+     }
+ 
+     @MainActor
++    func testDismissal_whenAppServerActivityIsStale_resolvesPresentationForEffectivePresentedActivity() {
++        // Given
++        let router = CodexMotionActivityRouter()
++        router.present(.running, using: { _ in })
++        var resolvedActivity: CodexActivity?
++
++        // When
++        _ = router.dismissalPresentation { activity in
++            resolvedActivity = activity
++            return CodexMotionPresentation(dismissal: .anyPad)
++        }
++
++        // Then
++        XCTAssertEqual(resolvedActivity, .running)
++    }
++
++    @MainActor
++    func testMotionRouting_whenHeldRunningActivityChanges_endsTheHeldMotionBeforePresentingTheNewStatus() {
++        // Given
++        let router = CodexMotionActivityRouter()
++        var events: [String] = []
++        router.present(
++            .running,
++            endingCurrentMotion: { events.append("end") },
++            using: { activity in events.append("present:\(activity.rawValue)") }
++        )
++        events.removeAll()
++
++        // When
++        router.present(
++            .completed,
++            endingCurrentMotion: { events.append("end") },
++            using: { activity in events.append("present:\(activity.rawValue)") }
++        )
++
++        // Then
++        XCTAssertEqual(events, ["end", "present:completed"])
++        XCTAssertEqual(router.presentedActivity, .completed)
++    }
++
++    @MainActor
+     func testLifecycle_whenApplicationWillFinishLaunchingRepeats_startsMonitorOnceAndStopsAtTermination() async throws {
+         // Given
+         let fixture = try MonitorFixture()
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,6 @@
+ # LinkDeck
+ 
+-Mac과 Android 휴대폰에서 버튼을 실행하고 Codex 상태를 확인하는 앱입니다. 물리 런치패드와 메뉴바 LED 애니메이션 기능은 제거했습니다.
++Mac과 Android 휴대폰에서 버튼을 실행하고 Codex 상태를 확인하는 앱입니다. Novation Launchpad Mini MK1도 지원합니다.
+ 
+ ## 빌드·실행
+ 
+@@ -12,8 +12,7 @@
+ 
+ ## 구성
+ 
+-- `Native/`: SwiftUI 앱, 휴대폰 버튼 편집·원격 실행과 API 연결
+-- `Recovery/launchpad-2026-10-22/`: 런치패드 원본 코드와 복구 패치·안내
++- `Native/`: SwiftUI 앱, CoreMIDI 연결, 버튼 매핑과 LED 모션
+ - `script/`: 빌드·앱 번들·아이콘 생성 스크립트
+ - `assets/`: 앱 아이콘
+ 
+--- a/Native/Views/BackupRestoreView.swift
++++ b/Native/Views/BackupRestoreView.swift
+@@ -20,7 +20,7 @@
+                     .keyboardShortcut(.defaultAction)
+             }
+ 
+-            Text("휴대폰 버튼과 설정을 JSON 파일로 저장합니다. 이전 런치패드 설정도 복구를 위해 함께 보관합니다.")
++            Text("Mac 64버튼, 스마트폰 버튼, Codex 모션과 표시 설정을 하나의 JSON 파일로 저장합니다.")
+                 .font(.callout)
+                 .foregroundStyle(.secondary)
+ 
+@@ -61,7 +61,7 @@
+             Button("복구", role: .destructive) { restoreBackup() }
+             Button("취소", role: .cancel) { pendingRestoreURL = nil }
+         } message: {
+-            Text("현재 휴대폰 버튼과 저장된 설정이 백업 파일의 내용으로 바뀝니다.")
++            Text("현재 Mac 버튼, 스마트폰 버튼, Codex 모션 설정이 백업 파일의 내용으로 바뀝니다.")
+         }
+     }
+ 
+--- a/Native/FolderSync/Views/AppSettingsView.swift
++++ b/Native/FolderSync/Views/AppSettingsView.swift
+@@ -80,6 +80,7 @@
+ 
+ private struct GeneralSettingsView: View {
+     let store: FolderPairStore
++    @AppStorage(AppDelegate.ledBubbleMenuItemPreferenceKey) private var showsLEDBubbleMenuItem = false
+     @AppStorage(AppAppearanceMode.storageKey) private var appearanceMode = AppAppearanceMode.system.rawValue
+ 
+     var body: some View {
+@@ -99,6 +100,13 @@
+                 .pickerStyle(.segmented)
+                 .labelsHidden()
+             }
++            Section("메뉴바") {
++                Toggle("메뉴바에 ‘LED 말풍선 표시’ 항목 표시", isOn: $showsLEDBubbleMenuItem)
++                .accessibilityIdentifier("settings-led-bubble-menu-item-toggle")
++                Text("메뉴바 아이콘을 눌렀을 때 나타나는 메뉴 항목의 표시 여부를 설정합니다.")
++                    .font(.caption)
++                    .foregroundStyle(.secondary)
++            }
+             Section(AppText.githubAccount) {
+                 HStack {
+                     Label(AppText.githubAccount, systemImage: "person.crop.circle")
+--- a/Native/Services/LaunchpadMIDIManager.swift
++++ b/Native/Services/LaunchpadMIDIManager.swift
+@@ -0,0 +1,388 @@
++import CoreMIDI
++import Foundation
++import Observation
++
++struct LaunchpadMIDIMessage: Equatable, Sendable {
++    let status: UInt8
++    let number: UInt8
++    let value: UInt8
++}
++
++struct LaunchpadLEDState: Equatable, Sendable {
++    var top = Array(repeating: UInt8(12), count: 8)
++    var grid = Array(repeating: UInt8(12), count: 64)
++    var side = Array(repeating: UInt8(12), count: 8)
++
++    mutating func apply(_ messages: [LaunchpadMIDIMessage]) {
++        for message in messages {
++            switch message.status & 0xF0 {
++            case 0xB0 where (104...111).contains(message.number):
++                top[Int(message.number - 104)] = message.value
++            case 0x90:
++                let row = Int(message.number / 16)
++                let column = Int(message.number % 16)
++                guard (0..<8).contains(row) else { continue }
++                if (0..<8).contains(column) {
++                    grid[row * 8 + column] = message.value
++                } else if column == 8 {
++                    side[row] = message.value
++                }
++            default:
++                continue
++            }
++        }
++    }
++}
++
++@Observable
++final class LaunchpadMIDIManager: @unchecked Sendable {
++    // CoreMIDI invokes its packet callback off the main thread. That callback only parses
++    // immutable bytes and schedules UI/action work back on the main queue.
++    private(set) var isConnected = false
++    private(set) var ledState = LaunchpadLEDState()
++
++    var onPadPressed: ((String) -> Void)?
++    var onPagePressed: ((Int) -> Void)?
++
++    private var client = MIDIClientRef()
++    private var inputPort = MIDIPortRef()
++    private var outputPort = MIDIPortRef()
++    private var connectedSource = MIDIEndpointRef()
++    private var connectedDestination = MIDIEndpointRef()
++    private var latestPages: [LaunchPage] = []
++    private var latestPageIndex = 0
++    private var persistentSideLEDValues: [UInt8]?
++    private var gridOverlay: [UInt8]?
++    private var motionTimer: Timer?
++    private var activeMotion: MotionPreset?
++    private var activeMotionSessionID: UUID?
++    private var preservesPadLEDsDuringMotion = false
++    private var motionFrameIndex = 0
++    private let messageSink: (([LaunchpadMIDIMessage]) -> Void)?
++
++    init(
++        startsMIDIClient: Bool = true,
++        messageSink: (([LaunchpadMIDIMessage]) -> Void)? = nil
++    ) {
++        self.messageSink = messageSink
++        if startsMIDIClient { start() }
++    }
++
++    deinit {
++        motionTimer?.invalidate()
++        if connectedSource != 0 { MIDIPortDisconnectSource(inputPort, connectedSource) }
++        if inputPort != 0 { MIDIPortDispose(inputPort) }
++        if outputPort != 0 { MIDIPortDispose(outputPort) }
++        if client != 0 { MIDIClientDispose(client) }
++    }
++
++    func start() {
++        guard client == 0 else {
++            refreshConnection()
++            return
++        }
++
++        guard MIDIClientCreateWithBlock("LinkDeck" as CFString, &client, { [weak self] _ in
++            DispatchQueue.main.async { self?.refreshConnection() }
++        }) == noErr else { return }
++
++        guard MIDIInputPortCreateWithBlock(client, "Launchpad Mini Input" as CFString, &inputPort, { [weak self] packetList, _ in
++            self?.receive(packetList)
++        }) == noErr else { return }
++
++        guard MIDIOutputPortCreate(client, "Launchpad Mini Output" as CFString, &outputPort) == noErr else { return }
++        refreshConnection()
++    }
++
++    func updateLEDs(for pages: [LaunchPage], activePage: Int) {
++        guard pages.indices.contains(activePage) else { return }
++        let activePageChanged = !latestPages.isEmpty && activePage != latestPageIndex
++        let currentSideLEDValues = sideLEDValues(for: pages[activePage])
++        let previousSideLEDValues = latestPages.indices.contains(latestPageIndex)
++            ? sideLEDValues(for: latestPages[latestPageIndex])
++            : nil
++        if persistentSideLEDValues == nil
++            || (!activePageChanged && previousSideLEDValues != currentSideLEDValues) {
++            persistentSideLEDValues = currentSideLEDValues
++        }
++        latestPages = pages
++        latestPageIndex = activePage
++        if activeMotion != nil {
++            sendCurrentMotionFrame()
++            return
++        }
++        let page = pages[activePage]
++
++        var messages = [LaunchpadMIDIMessage(status: 0xB0, number: 0x00, value: 0x01)] // X-Y layout
++
++        for pageIndex in 0..<8 {
++            let color = color(for: pages[pageIndex].topButtonColor(isSelected: pageIndex == activePage))
++            messages.append(LaunchpadMIDIMessage(status: 0xB0, number: UInt8(104 + pageIndex), value: color.midiValue))
++        }
++
++        for row in 0..<8 {
++            for column in 0..<8 {
++                let pad = page.pads[row * 8 + column]
++                let gridIndex = row * 8 + column
++                let value = gridOverlay?[gridIndex] ?? color(for: pad.stateColor).midiValue
++                messages.append(LaunchpadMIDIMessage(status: 0x90, number: UInt8(row * 16 + column), value: value))
++            }
++
++            let sideValue = persistentSideLEDValues?[row] ?? LaunchpadLEDColor.off.midiValue
++            messages.append(LaunchpadMIDIMessage(status: 0x90, number: UInt8(row * 16 + 8), value: sideValue))
++        }
++
++        send(messages)
++    }
++
++    func setGridOverlay(colors: [PadColor]?) {
++        let values = colors?.map { LaunchpadLEDColor(rawValue: $0.rawValue)?.midiValue ?? LaunchpadLEDColor.off.midiValue }
++        gridOverlay = values?.count == 64 ? values : nil
++        guard !latestPages.isEmpty, activeMotion == nil else { return }
++        updateLEDs(for: latestPages, activePage: latestPageIndex)
++    }
++
++    func flash(_ pad: Pad) {
++        guard isConnected, let address = address(for: pad) else { return }
++        send([LaunchpadMIDIMessage(status: address.status, number: address.number, value: color(for: pad.activeColor).midiValue)])
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
++            guard let self, !self.latestPages.isEmpty else { return }
++            self.updateLEDs(for: self.latestPages, activePage: self.latestPageIndex)
++        }
++    }
++
++    func flashPage(_ index: Int, pages: [LaunchPage]) {
++        guard isConnected, pages.indices.contains(index) else { return }
++        send([LaunchpadMIDIMessage(status: 0xB0, number: UInt8(104 + index), value: color(for: pages[index].pageActiveColor).midiValue)])
++        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
++            guard let self, !self.latestPages.isEmpty else { return }
++            self.updateLEDs(for: self.latestPages, activePage: self.latestPageIndex)
++        }
++    }
++
++    @discardableResult
++    func playMotion(_ preset: MotionPreset, preservingPadLEDs: Bool = false) -> UUID {
++        stopMotion(restorePage: false)
++        let sessionID = UUID()
++        activeMotionSessionID = sessionID
++        activeMotion = preset
++        preservesPadLEDsDuringMotion = preservingPadLEDs
++        motionFrameIndex = 0
++        sendCurrentMotionFrame()
++        scheduleNextMotionFrame()
++        return sessionID
++    }
++
++    func stopMotion(restorePage: Bool = true) {
++        motionTimer?.invalidate()
++        motionTimer = nil
++        activeMotion = nil
++        activeMotionSessionID = nil
++        preservesPadLEDsDuringMotion = false
++        motionFrameIndex = 0
++        if restorePage, !latestPages.isEmpty {
++            updateLEDs(for: latestPages, activePage: latestPageIndex)
++        }
++    }
++
++    func stopMotion(ifCurrent sessionID: UUID, restorePage: Bool = true) {
++        guard activeMotionSessionID == sessionID else { return }
++        stopMotion(restorePage: restorePage)
++    }
++
++    private func refreshConnection() {
++        let source = (0..<MIDIGetNumberOfSources())
++            .map(MIDIGetSource)
++            .first(where: isLaunchpad)
++        let destination = (0..<MIDIGetNumberOfDestinations())
++            .map(MIDIGetDestination)
++            .first(where: isLaunchpad)
++
++        if connectedSource != source ?? 0 {
++            if connectedSource != 0 { MIDIPortDisconnectSource(inputPort, connectedSource) }
++            connectedSource = source ?? 0
++            if connectedSource != 0 { MIDIPortConnectSource(inputPort, connectedSource, nil) }
++        }
++
++        connectedDestination = destination ?? 0
++        isConnected = connectedSource != 0 && connectedDestination != 0
++
++        if !latestPages.isEmpty, isConnected {
++            if activeMotion != nil {
++                sendCurrentMotionFrame()
++            } else {
++                updateLEDs(for: latestPages, activePage: latestPageIndex)
++            }
++        }
++    }
++
++    private func receive(_ packetList: UnsafePointer<MIDIPacketList>) {
++        var packet = UnsafeMutablePointer(mutating: withUnsafePointer(to: packetList.pointee.packet) { $0 })
++        for _ in 0..<packetList.pointee.numPackets {
++            let bytes = withUnsafeBytes(of: packet.pointee.data) { Array($0.prefix(Int(packet.pointee.length))) }
++            parse(bytes)
++            packet = MIDIPacketNext(packet)
++        }
++    }
++
++    private func parse(_ bytes: [UInt8]) {
++        var offset = 0
++        while offset + 2 < bytes.count {
++            let status = bytes[offset] & 0xF0
++            let number = bytes[offset + 1]
++            let value = bytes[offset + 2]
++            offset += 3
++
++            guard value > 0 else { continue }
++            if status == 0x90, let padID = padID(note: number) {
++                DispatchQueue.main.async { [weak self] in self?.onPadPressed?(padID) }
++            } else if status == 0xB0, (104...111).contains(number) {
++                DispatchQueue.main.async { [weak self] in self?.onPagePressed?(Int(number - 104)) }
++            }
++        }
++    }
++
++    private var canSend: Bool { messageSink != nil || isConnected }
++
++    private func send(_ messages: [LaunchpadMIDIMessage]) {
++        ledState.apply(messages)
++        if let messageSink {
++            messageSink(messages)
++            return
++        }
++        guard connectedDestination != 0, outputPort != 0 else { return }
++        let capacity = 4096
++        let rawList = UnsafeMutableRawPointer.allocate(byteCount: capacity, alignment: MemoryLayout<MIDIPacketList>.alignment)
++        defer { rawList.deallocate() }
++        let list = rawList.bindMemory(to: MIDIPacketList.self, capacity: 1)
++        var packet = MIDIPacketListInit(list)
++
++        for message in messages {
++            var bytes = [message.status, message.number, message.value]
++            packet = bytes.withUnsafeMutableBufferPointer { buffer in
++                MIDIPacketListAdd(list, capacity, packet, 0, buffer.count, buffer.baseAddress!)
++            }
++        }
++        MIDISend(outputPort, connectedDestination, list)
++    }
++
++    private func scheduleNextMotionFrame() {
++        guard let preset = activeMotion else { return }
++        motionTimer?.invalidate()
++        motionTimer = Timer.scheduledTimer(withTimeInterval: Double(preset.frameDurationMs) / 1000, repeats: false) { [weak self] _ in
++            guard let self, let current = self.activeMotion else { return }
++            let nextIndex = self.motionFrameIndex + 1
++            if nextIndex < current.frames.count {
++                self.motionFrameIndex = nextIndex
++                self.sendCurrentMotionFrame()
++                self.scheduleNextMotionFrame()
++            } else if current.loop {
++                self.motionFrameIndex = 0
++                self.sendCurrentMotionFrame()
++                self.scheduleNextMotionFrame()
++            } else {
++                self.stopMotion()
++            }
++        }
++    }
++
++    private func sendCurrentMotionFrame() {
++        guard let preset = activeMotion, preset.frames.indices.contains(motionFrameIndex) else { return }
++        let frame = preset.frames[motionFrameIndex]
++        var pixelColors = ordinaryGridColors()
++        if !preservesPadLEDsDuringMotion {
++            pixelColors = Array(repeating: LaunchpadLEDColor.off, count: 64)
++        }
++        // Omitted pixels are transparent only in preservation mode. A present `off`
++        // pixel is an explicit black pixel and therefore overrides the ordinary LED.
++        for pixel in frame.pixels where (1...8).contains(pixel.row) && (1...8).contains(pixel.column) {
++            pixelColors[(pixel.row - 1) * 8 + pixel.column - 1] = color(for: pixel.color)
++        }
++        let messages = (0..<64).map { index in
++            let row = index / 8
++            let column = index % 8
++            return LaunchpadMIDIMessage(status: 0x90, number: UInt8(row * 16 + column), value: pixelColors[index].midiValue)
++        }
++        send(messages)
++    }
++
++    private func ordinaryGridColors() -> [LaunchpadLEDColor] {
++        guard latestPages.indices.contains(latestPageIndex) else {
++            return Array(repeating: .off, count: 64)
++        }
++        let page = latestPages[latestPageIndex]
++        return (0..<64).map { index in
++            guard page.pads.indices.contains(index) else { return .off }
++            return color(for: page.pads[index].stateColor)
++        }
++    }
++
++    private func sideLEDValues(for page: LaunchPage) -> [UInt8] {
++        (0..<8).map { row in
++            let side = page.pads.first(where: { $0.id == "side_\(row)" })
++            return color(for: side?.stateColor ?? "off").midiValue
++        }
++    }
++
++    private func isLaunchpad(_ endpoint: MIDIEndpointRef) -> Bool {
++        endpointDisplayName(endpoint).localizedCaseInsensitiveContains("launchpad")
++    }
++
++    private func endpointDisplayName(_ endpoint: MIDIEndpointRef) -> String {
++        var name: Unmanaged<CFString>?
++        if MIDIObjectGetStringProperty(endpoint, kMIDIPropertyDisplayName, &name) == noErr,
++           let value = name?.takeRetainedValue() {
++            return value as String
++        }
++        if MIDIObjectGetStringProperty(endpoint, kMIDIPropertyName, &name) == noErr,
++           let value = name?.takeRetainedValue() {
++            return value as String
++        }
++        return "Launchpad Mini"
++    }
++
++    private func padID(note: UInt8) -> String? {
++        let row = Int(note) / 16
++        let column = Int(note) % 16
++        guard (0..<8).contains(row) else { return nil }
++        if (0..<8).contains(column) { return "grid_\(row)_\(column)" }
++        if column == 8 { return "side_\(row)" }
++        return nil
++    }
++
++    private func address(for pad: Pad) -> (status: UInt8, number: UInt8)? {
++        if pad.id.hasPrefix("grid_") {
++            let components = pad.id.split(separator: "_")
++            guard components.count == 3, let row = Int(components[1]), let column = Int(components[2]) else { return nil }
++            return (0x90, UInt8(row * 16 + column))
++        }
++        if pad.id.hasPrefix("side_"), let row = Int(pad.id.dropFirst(5)) {
++            return (0x90, UInt8(row * 16 + 8))
++        }
++        return nil
++    }
++
++    private func color(for rawValue: String) -> LaunchpadLEDColor {
++        LaunchpadLEDColor(rawValue: rawValue) ?? .off
++    }
++}
++
++private enum LaunchpadLEDColor: String {
++    case off, darkRed, red, brightRed, darkGreen, green, brightGreen, darkAmber, amber, yellow, orange
++
++    var midiValue: UInt8 {
++        switch self {
++        case .off: 12
++        case .darkRed: 13
++        case .red: 14
++        case .brightRed: 15
++        case .darkGreen: 28
++        case .green: 44
++        case .brightGreen: 60
++        case .darkAmber: 29
++        case .amber: 46
++        case .yellow: 62
++        case .orange: 63
++        }
++    }
++}
+--- a/Native/Services/VirtualMotionPlayer.swift
++++ b/Native/Services/VirtualMotionPlayer.swift
+@@ -0,0 +1,82 @@
++import Foundation
++import Observation
++
++@MainActor
++@Observable
++final class VirtualMotionPlayer {
++    private(set) var frame: MotionFrame?
++    private var timer: Timer?
++    private var preset: MotionPreset?
++    private var underlyingPage: LaunchPage?
++    private var preservesPadLEDs = false
++    private var frameIndex = 0
++
++    func play(_ motion: MotionPreset, over page: LaunchPage, preservingPadLEDs: Bool = false) {
++        stop()
++        preset = motion
++        underlyingPage = page
++        preservesPadLEDs = preservingPadLEDs
++        frameIndex = 0
++        updateDisplayedFrame()
++        scheduleNextFrame()
++    }
++
++    func updateUnderlyingPage(_ page: LaunchPage) {
++        underlyingPage = page
++        updateDisplayedFrame()
++    }
++
++    func stop() {
++        timer?.invalidate()
++        timer = nil
++        preset = nil
++        underlyingPage = nil
++        preservesPadLEDs = false
++        frameIndex = 0
++        frame = nil
++    }
++
++    private func scheduleNextFrame() {
++        guard let preset else { return }
++        timer?.invalidate()
++        timer = Timer.scheduledTimer(withTimeInterval: Double(preset.frameDurationMs) / 1000, repeats: false) { [weak self] _ in
++            Task { @MainActor in self?.advanceFrame() }
++        }
++    }
++
++    private func advanceFrame() {
++        guard let preset else { return }
++        if frameIndex + 1 < preset.frames.count {
++            frameIndex += 1
++        } else if preset.loop {
++            frameIndex = 0
++        } else {
++            stop()
++            return
++        }
++        updateDisplayedFrame()
++        scheduleNextFrame()
++    }
++
++    private func updateDisplayedFrame() {
++        guard let preset, preset.frames.indices.contains(frameIndex) else {
++            frame = nil
++            return
++        }
++        let motionFrame = preset.frames[frameIndex]
++        guard preservesPadLEDs, let underlyingPage else {
++            frame = motionFrame
++            return
++        }
++
++        var colors = (0..<64).map { index in
++            underlyingPage.pads.indices.contains(index) ? underlyingPage.pads[index].stateColor : "off"
++        }
++        for pixel in motionFrame.pixels where (1...8).contains(pixel.row) && (1...8).contains(pixel.column) {
++            colors[(pixel.row - 1) * 8 + pixel.column - 1] = pixel.color
++        }
++        frame = MotionFrame(pixels: colors.enumerated().map { index, color in
++            MotionPixel(row: index / 8 + 1, column: index % 8 + 1, color: color)
++        })
++    }
++}
+--- a/Native/Services/MotionPresetImportService.swift
++++ b/Native/Services/MotionPresetImportService.swift
+@@ -0,0 +1,88 @@
++import Foundation
++
++enum MotionPresetImportError: LocalizedError {
++    case empty
++    case malformed
++    case missingName
++    case invalidDuration
++    case missingFrames
++    case invalidCoordinate(frame: Int, row: Int, column: Int)
++    case unsupportedColor(frame: Int, color: String)
++
++    var errorDescription: String? {
++        switch self {
++        case .empty: "가져올 JSON을 붙여 넣으세요."
++        case .malformed: "JSON 형식이 올바르지 않습니다. 안내 프롬프트의 출력 형식을 그대로 사용하세요."
++        case .missingName: "프리셋 이름(name)이 필요합니다."
++        case .invalidDuration: "frameDurationMs는 40~2000 사이의 숫자여야 합니다."
++        case .missingFrames: "최소 한 개의 프레임이 필요합니다."
++        case let .invalidCoordinate(frame, row, column): "\(frame)번 프레임의 좌표 (\(row), \(column))는 1~8 범위여야 합니다."
++        case let .unsupportedColor(frame, color): "\(frame)번 프레임의 ‘\(color)’는 MK1에서 지원하지 않는 색상입니다."
++        }
++    }
++}
++
++enum MotionPresetImportService {
++    /// Copy this together with a natural-language request to receive import-ready data.
++    static let chatGPTPrompt = """
++    당신은 Novation Launchpad Mini MK1용 8×8 LED 모션 디자이너입니다.
++    중앙 8×8 그리드만 사용합니다. row 1은 위쪽, row 8은 아래쪽이며 column 1은 왼쪽, column 8은 오른쪽입니다.
++    MK1은 RGB 장치가 아닙니다. 다음 색상 문자열만 사용하세요:
++    off, darkRed, red, brightRed, darkGreen, green, brightGreen, darkAmber, amber, yellow, orange
++    blue, purple, pink, white, cyan, lime은 절대 사용하지 마세요.
++    복사하기 쉽도록 설명은 절대 쓰지 말고, 결과 JSON 전체를 반드시 json 코드박스 안에만 작성하세요.
++    각 프레임에는 켜질 픽셀만 넣고, 없는 픽셀은 off입니다.
++
++    {
++      "name": "프리셋 이름",
++      "loop": true,
++      "frameDurationMs": 120,
++      "frames": [
++        { "pixels": [{ "row": 1, "column": 1, "color": "green" }] }
++      ]
++    }
++
++    요청: 여기에 원하는 모션을 한국어로 작성
++    """
++
++    static func decode(_ text: String) throws -> MotionPreset {
++        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !trimmed.isEmpty else { throw MotionPresetImportError.empty }
++        let json = stripCodeFence(from: trimmed)
++        guard let data = json.data(using: .utf8), let draft = try? JSONDecoder().decode(Draft.self, from: data) else {
++            throw MotionPresetImportError.malformed
++        }
++        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !name.isEmpty else { throw MotionPresetImportError.missingName }
++        guard (40...2000).contains(draft.frameDurationMs) else { throw MotionPresetImportError.invalidDuration }
++        guard !draft.frames.isEmpty else { throw MotionPresetImportError.missingFrames }
++
++        let allowed = Set(PadColor.launchpadPalette.map(\.rawValue))
++        for (frameIndex, frame) in draft.frames.enumerated() {
++            for pixel in frame.pixels {
++                guard (1...8).contains(pixel.row), (1...8).contains(pixel.column) else {
++                    throw MotionPresetImportError.invalidCoordinate(frame: frameIndex + 1, row: pixel.row, column: pixel.column)
++                }
++                guard allowed.contains(pixel.color) else {
++                    throw MotionPresetImportError.unsupportedColor(frame: frameIndex + 1, color: pixel.color)
++                }
++            }
++        }
++
++        return MotionPreset(name: name, loop: draft.loop, frameDurationMs: draft.frameDurationMs, frames: draft.frames)
++    }
++
++    private static func stripCodeFence(from text: String) -> String {
++        guard text.hasPrefix("```") else { return text }
++        let lines = text.components(separatedBy: .newlines)
++        guard lines.count >= 3 else { return text }
++        return lines.dropFirst().dropLast().joined(separator: "\n")
++    }
++
++    private struct Draft: Decodable {
++        var name: String
++        var loop: Bool
++        var frameDurationMs: Int
++        var frames: [MotionFrame]
++    }
++}
+--- a/Native/Services/CodexStatusBarIndicator.swift
++++ b/Native/Services/CodexStatusBarIndicator.swift
+@@ -0,0 +1,181 @@
++import AppKit
++
++@MainActor
++final class CodexStatusBarIndicator {
++    private static let preferenceKey = "chatgpt-micro-launchpad.status-bar-codex-motion-enabled"
++    private static let iconSize = NSSize(width: 18, height: 18)
++    private static let dotCenters: [NSPoint] = [
++        NSPoint(x: 4, y: 14), NSPoint(x: 9, y: 14), NSPoint(x: 14, y: 14),
++        NSPoint(x: 4, y: 9), NSPoint(x: 9, y: 9), NSPoint(x: 14, y: 9),
++        NSPoint(x: 4, y: 4), NSPoint(x: 9, y: 4), NSPoint(x: 14, y: 4)
++    ]
++    private static let outerDotIndices = [0, 1, 2, 5, 8, 7, 6, 3]
++
++    private let preferences = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard
++    private weak var statusButton: NSStatusBarButton?
++    private var animationTimer: Timer?
++    private var frameIndex = 0
++    private var activity: CodexActivity = .idle
++    private var phoneMicrophoneActive = false
++
++    private(set) var isEnabled: Bool
++
++    init() {
++        isEnabled = preferences.object(forKey: Self.preferenceKey) as? Bool ?? true
++    }
++
++    func attach(to button: NSStatusBarButton?) {
++        statusButton = button
++        button?.setAccessibilityLabel("LinkDeck")
++        updateAnimationTimer()
++        render()
++    }
++
++    func update(activity: CodexActivity) {
++        self.activity = activity
++        updateAnimationTimer()
++        render()
++    }
++
++    func update(phoneMicrophoneActive: Bool) {
++        guard self.phoneMicrophoneActive != phoneMicrophoneActive else { return }
++        self.phoneMicrophoneActive = phoneMicrophoneActive
++        updateAnimationTimer()
++        render()
++    }
++
++    func setEnabled(_ enabled: Bool) {
++        guard isEnabled != enabled else { return }
++        isEnabled = enabled
++        preferences.set(enabled, forKey: Self.preferenceKey)
++        preferences.synchronize()
++        updateAnimationTimer()
++        render()
++    }
++
++    private var shouldAnimate: Bool {
++        statusButton != nil && !phoneMicrophoneActive && isEnabled && Self.isAnimatedActivity(activity)
++    }
++
++    static func isAnimatedActivity(_ activity: CodexActivity) -> Bool {
++        switch activity {
++        case .connecting, .running, .waitingForApproval, .failed:
++            return true
++        case .idle, .completed:
++            return false
++        }
++    }
++
++    private func updateAnimationTimer() {
++        guard shouldAnimate else {
++            animationTimer?.invalidate()
++            animationTimer = nil
++            frameIndex = 0
++            return
++        }
++        guard animationTimer == nil else { return }
++        animationTimer = Timer.scheduledTimer(withTimeInterval: 0.18, repeats: true) { [weak self] _ in
++            Task { @MainActor [weak self] in
++                self?.advanceFrame()
++            }
++        }
++    }
++
++    private func advanceFrame() {
++        guard shouldAnimate else {
++            updateAnimationTimer()
++            render()
++            return
++        }
++        frameIndex += 1
++        render()
++    }
++
++    private func render() {
++        guard let statusButton else { return }
++        if phoneMicrophoneActive {
++            statusButton.image = Self.makePhoneMicrophoneImage()
++            return
++        }
++        guard isEnabled, Self.isAnimatedActivity(activity) else {
++            statusButton.image = Self.staticImage()
++            return
++        }
++        statusButton.image = Self.makeImage(activity: activity, frameIndex: frameIndex)
++    }
++
++    private static func makePhoneMicrophoneImage() -> NSImage {
++        let image = NSImage(size: iconSize)
++        image.lockFocus()
++
++        for center in dotCenters {
++            drawGlow(at: center, color: .systemOrange, intensity: 1)
++            drawDot(at: center, radius: 2.2, color: .systemOrange)
++        }
++
++        image.unlockFocus()
++        image.isTemplate = false
++        return image
++    }
++
++    private static func staticImage() -> NSImage? {
++        let image = NSImage(
++            systemSymbolName: "square.grid.3x3.fill",
++            accessibilityDescription: "LinkDeck"
++        )
++        image?.isTemplate = true
++        return image
++    }
++
++    private static func makeImage(activity: CodexActivity, frameIndex: Int) -> NSImage {
++        let image = NSImage(size: iconSize)
++        image.lockFocus()
++
++        let baseColor = NSColor.white.withAlphaComponent(0.82)
++        for center in dotCenters {
++            drawDot(at: center, radius: 2.05, color: baseColor)
++        }
++
++        switch activity {
++        case .connecting, .running:
++            let activeIndex = outerDotIndices[frameIndex % outerDotIndices.count]
++            let previousIndex = outerDotIndices[(frameIndex + outerDotIndices.count - 1) % outerDotIndices.count]
++            drawGlow(at: dotCenters[previousIndex], color: .systemOrange, intensity: 0.45)
++            drawGlow(at: dotCenters[activeIndex], color: .systemOrange, intensity: 1)
++            drawDot(at: dotCenters[previousIndex], radius: 2.05, color: NSColor.systemOrange.withAlphaComponent(0.55))
++            drawDot(at: dotCenters[activeIndex], radius: 2.15, color: .systemOrange)
++        case .waitingForApproval, .failed:
++            let isOn = frameIndex % 2 == 0
++            if isOn {
++                for index in outerDotIndices {
++                    drawGlow(at: dotCenters[index], color: .systemRed, intensity: 0.8)
++                    drawDot(at: dotCenters[index], radius: 2.1, color: .systemRed)
++                }
++                drawGlow(at: dotCenters[4], color: .systemRed, intensity: 0.55)
++                drawDot(at: dotCenters[4], radius: 2.05, color: .systemRed.withAlphaComponent(0.9))
++            }
++        case .idle, .completed:
++            break
++        }
++
++        image.unlockFocus()
++        image.isTemplate = false
++        return image
++    }
++
++    private static func drawGlow(at center: NSPoint, color: NSColor, intensity: CGFloat) {
++        let glowColor = color.withAlphaComponent(0.16 * intensity)
++        drawDot(at: center, radius: 4.4, color: glowColor)
++        drawDot(at: center, radius: 3.2, color: color.withAlphaComponent(0.28 * intensity))
++    }
++
++    private static func drawDot(at center: NSPoint, radius: CGFloat, color: NSColor) {
++        color.setFill()
++        NSBezierPath(ovalIn: NSRect(
++            x: center.x - radius,
++            y: center.y - radius,
++            width: radius * 2,
++            height: radius * 2
++        )).fill()
++    }
++}
+--- a/Native/Views/LaunchpadView.swift
++++ b/Native/Views/LaunchpadView.swift
+@@ -0,0 +1,161 @@
++import SwiftUI
++
++struct LaunchpadView: View {
++    let page: LaunchPage
++    let pages: [LaunchPage]
++    let activePage: Int
++    let selectedPadID: String
++    let midiConnected: Bool
++    @Binding var virtualPreviewEnabled: Bool
++    let motionFrame: MotionFrame?
++    let gridOverlay: [String]?
++    let onSelectPage: (Int) -> Void
++    let onUpdatePageName: (Int, String) -> Void
++    let onSelectPageLED: (Int) -> Void
++    let onSelectPad: (Pad) -> Void
++    let onRunPad: (Pad) -> Void
++    let onVirtualPadPress: (Pad) -> Void
++    let onMoveGridPad: (String, String) -> Void
++
++    @State private var dropTargetPadID: String?
++
++    var body: some View {
++        GeometryReader { proxy in
++            let gap: CGFloat = 8
++            let cell = min(44, max(34, (proxy.size.width - 48 - gap * 8) / 9))
++            let gridWidth = cell * 9 + gap * 8
++
++            VStack(spacing: 16) {
++                HStack(spacing: 10) {
++                    RoundedRectangle(cornerRadius: 5).fill(.orange).frame(width: 17, height: 17).shadow(color: .orange.opacity(0.7), radius: 6)
++                    Text("NOVATION").font(.system(size: 18, weight: .bold))
++                    Text("LAUNCHPAD MINI (MK1)").font(.system(size: 12, design: .monospaced)).foregroundStyle(.secondary)
++                    Spacer()
++                    Button {
++                        virtualPreviewEnabled.toggle()
++                    } label: {
++                        Label(virtualPreviewEnabled ? "가상 작동" : "편집", systemImage: virtualPreviewEnabled ? "hand.tap.fill" : "slider.horizontal.3")
++                            .font(.system(size: 10, weight: .bold))
++                            .padding(.horizontal, 8)
++                            .frame(minHeight: 30)
++                            .background((virtualPreviewEnabled ? Color.orange : Color.white.opacity(0.10)), in: Capsule())
++                            .overlay(Capsule().stroke(.white.opacity(virtualPreviewEnabled ? 0.12 : 0.18)))
++                    }
++                    .buttonStyle(.plain)
++                    Circle().fill(midiConnected ? .green : .gray).frame(width: 8, height: 8)
++                }
++                .foregroundStyle(.white)
++
++                VStack(spacing: gap) {
++                    HStack(spacing: gap) {
++                        ForEach(0..<8, id: \.self) { index in
++                            pageButton(index: index, size: cell)
++                        }
++                        Text("CC").font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary).frame(width: cell, height: cell)
++                    }
++
++                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(cell), spacing: gap), count: 9), spacing: gap) {
++                        ForEach(0..<72, id: \.self) { slot in
++                            let row = slot / 9
++                            let column = slot % 9
++                            if column == 8 {
++                                let side = page.pads.first(where: { $0.id == "side_\(row)" }) ?? Pad(id: "side_\(row)", title: PadDefaults.sideTitles[row], symbol: PadDefaults.sideSymbols[row])
++                                PadButton(pad: side, selected: side.id == selectedPadID, circular: true, executeOnPress: virtualPreviewEnabled, action: {
++                                    virtualPreviewEnabled ? onVirtualPadPress(side) : onSelectPad(side)
++                                }, runAction: { onRunPad(side) })
++                                    .frame(width: cell, height: cell)
++                            } else {
++                                let pad = page.pads[row * 8 + column]
++                                gridPadButton(pad, row: row, column: column, size: cell)
++                            }
++                        }
++                    }
++                }
++                .frame(width: gridWidth)
++
++                HStack {
++                    Text("MODEL: NOVATION L_PAD_MINI_MK1").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary.opacity(0.55))
++                    Spacer()
++                    Circle().fill(.orange).frame(width: 7, height: 7)
++                    Text("64 GRID + 16 CC").font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary.opacity(0.55))
++                }
++                .padding(.top, 4)
++            }
++            .padding(24)
++            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
++            .background(Color(red: 0.11, green: 0.11, blue: 0.14), in: RoundedRectangle(cornerRadius: 36))
++            .overlay(RoundedRectangle(cornerRadius: 36).stroke(.black.opacity(0.9), lineWidth: 4))
++            .overlay(RoundedRectangle(cornerRadius: 36).stroke(.white.opacity(0.08), lineWidth: 1))
++            .shadow(color: .black.opacity(0.42), radius: 24, y: 12)
++        }
++        .frame(minHeight: 620)
++    }
++
++    @ViewBuilder
++    private func gridPadButton(_ pad: Pad, row: Int, column: Int, size: CGFloat) -> some View {
++        let button = PadButton(
++            pad: pad,
++            selected: pad.id == selectedPadID,
++            executeOnPress: virtualPreviewEnabled,
++            displayColor: motionColor(row: row, column: column),
++            action: { virtualPreviewEnabled ? onVirtualPadPress(pad) : onSelectPad(pad) },
++            runAction: { onRunPad(pad) }
++        )
++        .frame(width: size, height: size)
++        .overlay {
++            if dropTargetPadID == pad.id {
++                RoundedRectangle(cornerRadius: 8)
++                    .stroke(Color.yellow, lineWidth: 3)
++            }
++        }
++
++        if virtualPreviewEnabled {
++            button
++        } else {
++            button
++                .draggable(pad.id) {
++                    Label(pad.activeTitle.isEmpty ? "빈 버튼" : pad.activeTitle, systemImage: pad.activeSymbol.isEmpty ? "square" : pad.activeSymbol)
++                        .padding(8)
++                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
++                }
++                .dropDestination(for: String.self) { sourceIDs, _ in
++                    guard let sourceID = sourceIDs.first,
++                          sourceID.hasPrefix("grid_") else { return false }
++                    onMoveGridPad(sourceID, pad.id)
++                    return sourceID != pad.id
++                } isTargeted: { isTargeted in
++                    dropTargetPadID = isTargeted ? pad.id : nil
++                }
++        }
++    }
++
++    private func pageButton(index: Int, size: CGFloat) -> some View {
++        let active = index == activePage
++        let pageColor = PadColor(rawValue: pages[index].topButtonColor(isSelected: active))?.color ?? .black
++        return Button {
++            onSelectPage(index)
++            if !virtualPreviewEnabled {
++                onSelectPageLED(index)
++            }
++        } label: {
++            Text("P\(index + 1)")
++                .font(.system(size: 12, weight: .bold, design: .monospaced))
++                .frame(width: size, height: size)
++                .foregroundStyle(active ? .white : .white.opacity(0.6))
++                .background(pageColor.opacity(active ? 1 : 0.36), in: Circle())
++                .overlay(Circle().stroke(active ? Color.orange : pageColor.opacity(0.58), lineWidth: active ? 2 : 1.5))
++                .shadow(color: active ? pageColor.opacity(0.85) : .clear, radius: 11)
++        }
++        .buttonStyle(.plain)
++        .focusable(false)
++        .focusEffectDisabled()
++        .modifier(PageNameEditor(name: pages[index].name) { onUpdatePageName(index, $0) })
++    }
++
++    private func motionColor(row: Int, column: Int) -> String? {
++        if let motionFrame {
++            return motionFrame.pixels.first(where: { $0.row == row + 1 && $0.column == column + 1 })?.color ?? "off"
++        }
++        return gridOverlay?[row * 8 + column]
++    }
++}
+--- a/Native/Views/InspectorView.swift
++++ b/Native/Views/InspectorView.swift
+@@ -0,0 +1,577 @@
++import SwiftUI
++
++struct InspectorView: View {
++    @Environment(\.colorScheme) private var colorScheme
++    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
++    @Binding var pad: Pad
++    let pages: [LaunchPage]
++    @Binding var selectedMainScreen: MainScreen
++    let selectedPageLEDIndex: Int?
++    let codexIsConnected: Bool
++    let midiIsConnected: Bool
++    let onOpenBackupRestore: () -> Void
++    let onOpenCodexSettings: () -> Void
++    let onSelectPageLED: (Int?) -> Void
++    let onUpdatePageColor: (Int, String, Bool) -> Void
++    let onReset: () -> Void
++    let onRun: (PadAction) -> Void
++    @State private var registrationError = ""
++    @State private var appRegistrationRequestID = UUID()
++    @Binding var editingSecondAction: Bool
++
++    private var selectedAction: PadAction {
++        editingSecondAction ? (pad.secondAction ?? PadAction()) : pad.action
++    }
++
++    private var selectedSymbolBinding: Binding<String> {
++        Binding(
++            get: { editingSecondAction ? pad.secondSymbol ?? pad.symbol : pad.symbol },
++            set: { if editingSecondAction { pad.secondSymbol = $0 } else { pad.symbol = $0 } }
++        )
++    }
++
++    private var selectedTitleBinding: Binding<String> {
++        Binding(
++            get: { editingSecondAction ? pad.secondTitle ?? "" : pad.title },
++            set: { if editingSecondAction { pad.secondTitle = $0.isEmpty ? nil : $0 } else { pad.title = $0 } }
++        )
++    }
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 14) {
++            VStack(alignment: .leading, spacing: 5) {
++                HStack(spacing: 6) {
++                    Text(selectedPageLEDIndex == nil ? "SELECTED PAD" : "SELECTED TOP BUTTON")
++                        .font(.system(size: 11, weight: .bold, design: .monospaced))
++                        .foregroundStyle(.yellow)
++                    Spacer(minLength: 0)
++                    MainScreenSidebarNavigation(
++                        selection: $selectedMainScreen,
++                        midiIsConnected: midiIsConnected,
++                        compact: true
++                    )
++                    .padding(.trailing, selectedPageLEDIndex == nil ? 34 : 0)
++                }
++                Text(inspectorTitle).font(.system(size: 17, weight: .bold)).foregroundStyle(theme.foreground)
++            }
++            .frame(maxWidth: .infinity, alignment: .leading)
++            .overlay(alignment: .topTrailing) {
++                if selectedPageLEDIndex == nil {
++                    Button(role: .destructive, action: onReset) { Image(systemName: "trash").frame(width: 30, height: 30).background(Color.red.opacity(0.16), in: RoundedRectangle(cornerRadius: 6)) }
++                        .buttonStyle(.plain)
++                }
++            }
++            .padding(.bottom, 11)
++            .overlay(alignment: .bottom) { Divider().overlay(theme.foreground.opacity(0.18)) }
++
++            if let pageIndex = selectedPageLEDIndex, pages.indices.contains(pageIndex) {
++                fieldSection("런치패드 LED 색상") {
++                    Button("현재 패드 LED 색상으로 돌아가기") {
++                        onSelectPageLED(nil)
++                    }
++                    .font(.system(size: 11, weight: .semibold))
++                    .foregroundStyle(.secondary)
++                    .buttonStyle(.plain)
++                    HStack(alignment: .top, spacing: 16) {
++                        pagePalette(title: "P\(pageIndex + 1) 대기 색상", selection: pages[pageIndex].pageIdleColor, selected: false, index: pageIndex)
++                        pagePalette(title: "P\(pageIndex + 1) 선택된 페이지 색상", selection: pages[pageIndex].pageActiveColor, selected: true, index: pageIndex)
++                    }
++                }
++            } else {
++                fieldSection(pad.secondAction == nil ? "버튼 라벨" : "버튼 라벨 \(editingSecondAction ? "B" : "A")") {
++                    DarkTextField(text: selectedTitleBinding, placeholder: editingSecondAction ? "B 이름" : "A 이름")
++                }
++
++                sectionDivider
++                if let descriptor = PadDefaults.sideButtonDescriptor(for: pad.id) {
++                    sideButtonRoleSection(descriptor)
++                    sectionDivider
++                }
++                fieldSection("할당할 동작") {
++                    Toggle("A/B 동작 전환", isOn: Binding(
++                        get: { pad.secondAction != nil },
++                        set: { enabled in
++                            if enabled {
++                                if pad.secondAction == nil {
++                                    pad.secondAction = PadAction()
++                                    pad.isSecondActionActive = false
++                                }
++                            } else {
++                                pad.secondAction = nil
++                                pad.isSecondActionActive = false
++                                editingSecondAction = false
++                            }
++                        }
++                    ))
++                    .toggleStyle(.checkbox)
++                    if pad.secondAction != nil {
++                        HStack(spacing: 8) {
++                            Picker("편집 동작", selection: $editingSecondAction) {
++                                Text("A").tag(false)
++                                Text("B").tag(true)
++                            }
++                            .pickerStyle(.segmented)
++                            Text("현재 \(pad.isSecondActionActive ? "B" : "A")")
++                                .font(.system(size: 10, weight: .semibold))
++                                .foregroundStyle(theme.accent)
++                        }
++                    }
++                    fieldSection("아이콘 \(editingSecondAction ? "B" : "A")") {
++                        LaunchpadIconPicker(selection: selectedSymbolBinding, isSideButton: pad.id.hasPrefix("side_"))
++                    }
++                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
++                        actionButton(.app)
++                        actionButton(.shortcut)
++                        actionButton(.terminalCommand)
++                        actionButton(.url)
++                        actionButton(.workflow)
++                    }
++                    if selectedAction.kind != .none {
++                        actionRegistration
++                        Button("이 동작 실행") { onRun(selectedAction) }
++                            .font(.system(size: 12, weight: .semibold))
++                            .frame(maxWidth: .infinity)
++                            .padding(.vertical, 9)
++                            .foregroundStyle(theme.accent)
++                            .background(theme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
++                            .buttonStyle(.plain)
++                    }
++                }
++
++                sectionDivider
++                fieldSection("런치패드 LED 색상") {
++                    HStack(alignment: .top, spacing: 16) {
++                        palette(title: "대기 색상", selection: $pad.idleColor)
++                        palette(title: "눌렀을 때 색상", selection: $pad.activeColor)
++                    }
++                }
++            }
++            Spacer(minLength: 0)
++            MainSidebarFooter(
++                codexIsConnected: codexIsConnected,
++                midiIsConnected: midiIsConnected,
++                onOpenBackupRestore: onOpenBackupRestore,
++                onOpenCodexSettings: onOpenCodexSettings
++            )
++        }
++        .padding(16)
++        .frame(maxHeight: .infinity, alignment: .top)
++        .foregroundStyle(theme.foreground.opacity(0.9))
++        .background(theme.panel, in: RoundedRectangle(cornerRadius: 18))
++        .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.foreground.opacity(0.11)))
++        .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
++        .onChange(of: pad.id) { _, _ in
++            appRegistrationRequestID = UUID()
++            editingSecondAction = false
++        }
++        .onChange(of: editingSecondAction) { _, _ in
++            appRegistrationRequestID = UUID()
++        }
++    }
++
++    private var locationTitle: String {
++        if pad.id.hasPrefix("side_") { return "우측 버튼 [\(pad.id.dropFirst(5))]" }
++        return "메인 그리드 [\(pad.id.replacingOccurrences(of: "grid_", with: ""))]"
++    }
++
++    private var inspectorTitle: String {
++        guard let pageIndex = selectedPageLEDIndex else { return locationTitle }
++        return "상단 P\(pageIndex + 1) 버튼"
++    }
++
++    @ViewBuilder private func fieldSection<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
++        VStack(alignment: .leading, spacing: 9) {
++            Text(title).font(.system(size: 13, weight: .semibold)).foregroundStyle(theme.foreground.opacity(0.76))
++            content()
++        }
++    }
++
++    private var sectionDivider: some View { Divider().overlay(theme.foreground.opacity(0.18)).padding(.vertical, 1) }
++
++    private func sideButtonRoleSection(_ descriptor: PadDefaults.SideButtonDescriptor) -> some View {
++        let usesDefault = descriptor.defaultAction == pad.action
++        return VStack(alignment: .leading, spacing: 7) {
++            if let description = descriptor.defaultDescription, usesDefault {
++                Label("기본 macOS 기능", systemImage: "macwindow")
++                    .font(.system(size: 12, weight: .bold))
++                    .foregroundStyle(.green)
++                Text(description)
++                    .font(.system(size: 12, weight: .medium))
++                    .foregroundStyle(theme.foreground.opacity(0.82))
++                Text("아래에서 앱·단축키·웹 동작으로 바꾸면 사용자 지정 버튼이 됩니다.")
++                    .font(.system(size: 10))
++                    .foregroundStyle(.secondary)
++                Button("사용자 지정 기능으로 변경") {
++                    pad.action = PadAction()
++                }
++                .font(.system(size: 11, weight: .semibold))
++                .foregroundStyle(theme.accent)
++                .buttonStyle(.plain)
++                .help("기본 macOS 기능을 해제합니다. 아래에서 앱 실행, 단축키, 웹 동작을 새로 지정할 수 있습니다.")
++            } else {
++                Label("사용자 지정 버튼", systemImage: "slider.horizontal.3")
++                    .font(.system(size: 12, weight: .bold))
++                    .foregroundStyle(theme.accent)
++                Text(descriptor.isCustomOnly ? "이 표기는 앱마다 의미가 달라 원하는 동작을 직접 정할 수 있습니다." : "기본 기능 대신 직접 지정한 동작을 사용 중입니다.")
++                    .font(.system(size: 10))
++                    .foregroundStyle(.secondary)
++                if let defaultAction = descriptor.defaultAction, !usesDefault {
++                    Button("기본 macOS 기능 복원") {
++                        pad.action = defaultAction
++                    }
++                    .font(.system(size: 11, weight: .semibold))
++                    .foregroundStyle(.green)
++                    .buttonStyle(.plain)
++                }
++            }
++        }
++        .frame(maxWidth: .infinity, alignment: .leading)
++        .padding(10)
++        .background((usesDefault ? Color.green : theme.accent).opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
++        .overlay(RoundedRectangle(cornerRadius: 8).stroke((usesDefault ? Color.green : theme.accent).opacity(0.26)))
++    }
++
++    private func actionButton(_ kind: ActionKind) -> some View {
++        Button {
++            let changedKind = selectedAction.kind != kind
++            if changedKind {
++                appRegistrationRequestID = UUID()
++            }
++            updateSelectedAction {
++                $0.kind = kind
++                if changedKind || $0.value.isEmpty { $0.value = defaultValue(for: kind) }
++                if kind == .workflow, $0.workflowSteps.isEmpty { $0.workflowSteps = [WorkflowStep()] }
++            }
++        } label: {
++            Text(kind.title).font(.system(size: 13, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 12)
++                .foregroundStyle(selectedAction.kind == kind ? theme.accentForeground : theme.foreground.opacity(0.72))
++                .background(selectedAction.kind == kind ? theme.accent : theme.foreground.opacity(0.075), in: RoundedRectangle(cornerRadius: 8))
++                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedAction.kind == kind ? theme.accent : theme.foreground.opacity(0.22)))
++                .frame(minHeight: 42)
++        }
++        .buttonStyle(.plain)
++    }
++
++    @ViewBuilder private var actionRegistration: some View {
++        switch selectedAction.kind {
++        case .workflow:
++            Text("패드 아래에서 동작과 대기 시간을 설정하세요.")
++                .font(.system(size: 10)).foregroundStyle(.secondary)
++        case .appQuit:
++            Text("앱 실행 버튼에서 ‘플러그인에서 종료 허용’을 설정하세요.")
++        case .app, .appFolder:
++            VStack(alignment: .leading, spacing: 8) {
++                Button("앱 등록") { registerApplication() }
++                    .font(.system(size: 12, weight: .semibold))
++                    .frame(maxWidth: .infinity)
++                    .padding(.vertical, 9)
++                    .foregroundStyle(theme.foreground)
++                    .background(theme.foreground.opacity(0.09), in: RoundedRectangle(cornerRadius: 8))
++                    .buttonStyle(.plain)
++                registrationValue(
++                    title: selectedAction.value.isEmpty ? "등록된 앱 없음" : (AppRegistrationService.displayName(for: selectedAction.value) ?? "등록된 앱"),
++                    detail: selectedAction.value
++                )
++                Toggle("플러그인에서 종료 허용", isOn: selectedActionBinding(for: \.allowsAppTermination))
++                    .toggleStyle(.checkbox)
++                    .accessibilityIdentifier("app-termination-permission-toggle")
++            }
++        case .shortcut:
++            ShortcutComposerView(
++                value: selectedActionBinding(for: \.value),
++                targetAppBundleIdentifier: selectedActionBinding(for: \.targetAppBundleIdentifier),
++                launchTargetAppIfNeeded: selectedActionBinding(for: \.launchTargetAppIfNeeded)
++            )
++        case .terminalCommand:
++            DarkTextField(text: selectedActionBinding(for: \.value), placeholder: "예: open -a Safari")
++            Toggle("터미널 창 표시", isOn: selectedActionBinding(for: \.showTerminalWindow))
++                .toggleStyle(.checkbox)
++        case .url:
++            DarkTextField(text: selectedActionBinding(for: \.value), placeholder: "https://example.com")
++            URLTabPicker(openInCurrentTab: selectedActionBinding(for: \.openURLInCurrentTab))
++        case .clipboardText:
++            TextEditor(text: selectedActionBinding(for: \.value))
++                .font(.system(size: 13, weight: .medium))
++                .foregroundStyle(theme.foreground)
++                .scrollContentBackground(.hidden)
++                .padding(7)
++                .frame(minHeight: 92, maxHeight: 140)
++                .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
++                .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.18)))
++        case .none:
++            EmptyView()
++        }
++    }
++
++    private func registrationValue(title: String, detail: String) -> some View {
++        VStack(alignment: .leading, spacing: 2) {
++            Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
++            if !detail.isEmpty { Text(detail).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1) }
++            if !registrationError.isEmpty { Text(registrationError).font(.system(size: 10)).foregroundStyle(.red).lineLimit(2) }
++        }
++        .frame(maxWidth: .infinity, alignment: .leading)
++        .padding(.horizontal, 11)
++        .padding(.vertical, 8)
++        .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
++    }
++
++    private func registerApplication() {
++        registrationError = ""
++        let targetPadID = pad.id
++        let targetEditsSecondAction = editingSecondAction
++        let requestID = UUID()
++        appRegistrationRequestID = requestID
++        AppRegistrationService.chooseApplication { result in
++            guard appRegistrationRequestID == requestID,
++                  pad.id == targetPadID,
++                  editingSecondAction == targetEditsSecondAction,
++                  selectedAction.kind == .app else { return }
++            switch result {
++            case .success(let application):
++                updateSelectedAction { $0.value = application.bundleIdentifier }
++                if editingSecondAction {
++                    pad.secondSymbol = ""
++                    if pad.secondTitle?.isEmpty ?? true { pad.secondTitle = application.name }
++                } else {
++                    pad.symbol = ""
++                    if pad.title.isEmpty { pad.title = application.name }
++                }
++            case .failure(let error):
++                registrationError = error.localizedDescription
++            }
++        }
++    }
++
++    private func updateSelectedAction(_ update: (inout PadAction) -> Void) {
++        if editingSecondAction {
++            var action = pad.secondAction ?? PadAction()
++            update(&action)
++            pad.secondAction = action
++        } else {
++            update(&pad.action)
++        }
++    }
++
++    private func selectedActionBinding<Value>(for keyPath: WritableKeyPath<PadAction, Value>) -> Binding<Value> {
++        Binding(
++            get: { selectedAction[keyPath: keyPath] },
++            set: { value in updateSelectedAction { $0[keyPath: keyPath] = value } }
++        )
++    }
++
++    private func palette(title: String, selection: Binding<String>) -> some View {
++        VStack(alignment: .leading, spacing: 6) {
++            Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
++            LazyVGrid(columns: Array(repeating: GridItem(.fixed(31), spacing: 8), count: 4), spacing: 8) {
++                ForEach(PadColor.launchpadPalette) { color in
++                    Button { selection.wrappedValue = color.rawValue } label: {
++                        RoundedRectangle(cornerRadius: 4).fill(color.color).frame(width: 31, height: 31)
++                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selection.wrappedValue == color.rawValue ? Color.white : theme.foreground.opacity(0.32), lineWidth: selection.wrappedValue == color.rawValue ? 3 : 1))
++                    }
++                    .buttonStyle(.plain)
++                }
++            }
++            .padding(9)
++            .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
++            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.16)))
++        }
++    }
++
++    private func pagePalette(title: String, selection: String, selected: Bool, index: Int) -> some View {
++        VStack(alignment: .leading, spacing: 6) {
++            Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
++            LazyVGrid(columns: Array(repeating: GridItem(.fixed(31), spacing: 8), count: 4), spacing: 8) {
++                ForEach(PadColor.launchpadPalette) { color in
++                    Button { onUpdatePageColor(index, color.rawValue, selected) } label: {
++                        RoundedRectangle(cornerRadius: 4).fill(color.color).frame(width: 31, height: 31)
++                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(selection == color.rawValue ? Color.white : theme.foreground.opacity(0.32), lineWidth: selection == color.rawValue ? 3 : 1))
++                    }
++                    .buttonStyle(.plain)
++                }
++            }
++            .padding(9)
++            .background(theme.input, in: RoundedRectangle(cornerRadius: 8))
++            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.foreground.opacity(0.16)))
++        }
++    }
++
++    private func defaultValue(for kind: ActionKind) -> String {
++        switch kind {
++        case .app, .appQuit, .appFolder, .shortcut, .terminalCommand, .workflow, .clipboardText: ""
++        case .url: "https://chatgpt.com"
++        case .none: ""
++        }
++    }
++}
++
++private struct LaunchpadIconPicker: View {
++    @Environment(\.colorScheme) private var colorScheme
++    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
++    @Binding var selection: String
++    let isSideButton: Bool
++    @State private var isShowingPicker = false
++
++    private let icons = [
++        "sparkles", "plus.bubble", "message", "mic", "paperplane", "globe",
++        "safari", "folder", "note.text", "calendar", "magnifyingglass", "camera.viewfinder",
++        "lock", "play.fill", "pause.fill", "stop.fill", "record.circle", "speaker.wave.2", "speaker.wave.1",
++        "speaker.slash", "headphones", "slider.horizontal.3", "gearshape", "terminal", "bolt.fill",
++        "app.fill", "doc", "doc.text", "doc.on.doc", "photo", "video", "film", "camera",
++        "tray.full", "archivebox", "externaldrive", "icloud", "link", "bookmark", "house",
++        "building.2", "person", "person.2", "person.crop.circle", "envelope", "phone", "bell",
++        "clock", "timer", "checkmark", "xmark", "exclamationmark.triangle", "questionmark.circle",
++        "info.circle", "arrow.triangle.2.circlepath", "arrow.clockwise", "arrow.up.right.square",
++        "square.and.arrow.up", "scissors", "pencil", "paintbrush", "wand.and.stars", "puzzlepiece",
++        "command", "keyboard", "computermouse", "display", "laptopcomputer", "desktopcomputer",
++        "cpu", "memorychip", "network", "wifi", "antenna.radiowaves.left.and.right", "battery.100",
++        "power", "lightbulb", "moon", "sun.max", "flame", "heart.fill", "star.fill", "flag.fill",
++        "cart.fill", "creditcard", "map", "location.fill", "car.fill", "airplane", "leaf.fill"
++    ]
++
++    private struct IconCategory: Identifiable {
++        let title: String
++        let icons: [String]
++        var id: String { title }
++    }
++
++    private var iconCategories: [IconCategory] {
++        guard isSideButton else { return [IconCategory(title: "아이콘", icons: icons)] }
++
++        let volume = ["speaker.wave.2", "speaker.wave.1", "speaker.slash"]
++        let media = ["play.fill", "pause.fill", "stop.fill", "record.circle", "headphones", "video", "film", "camera"]
++        let macControls = ["command", "keyboard", "computermouse", "display", "desktopcomputer", "gearshape", "power", "moon", "sun.max"]
++        let grouped = Set(volume + media + macControls)
++        let remaining = icons.filter { !grouped.contains($0) }
++        return [
++            IconCategory(title: "볼륨", icons: volume),
++            IconCategory(title: "미디어", icons: media),
++            IconCategory(title: "macOS 제어", icons: macControls),
++            IconCategory(title: "기타", icons: remaining)
++        ]
++    }
++
++    var body: some View {
++        Button {
++            isShowingPicker.toggle()
++        } label: {
++            HStack(spacing: 10) {
++                Image(systemName: selection.isEmpty ? "square.dashed" : selection)
++                    .font(.system(size: 16, weight: .medium))
++                    .frame(width: 25, height: 25)
++                    .foregroundStyle(selection.isEmpty ? Color.secondary : theme.accent)
++                    .background(theme.foreground.opacity(0.07), in: RoundedRectangle(cornerRadius: 6))
++                Text(selection.isEmpty ? "아이콘 없음" : iconTitle(for: selection))
++                    .font(.system(size: 13, weight: .medium))
++                Spacer()
++                Image(systemName: "chevron.up.chevron.down")
++                    .font(.system(size: 10, weight: .bold))
++                    .foregroundStyle(.secondary)
++            }
++            .foregroundStyle(theme.foreground)
++            .padding(.horizontal, 9)
++            .frame(height: 38)
++            .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
++            .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
++        }
++        .buttonStyle(.plain)
++        .popover(isPresented: $isShowingPicker, arrowEdge: .bottom) {
++            VStack(alignment: .leading, spacing: 12) {
++                HStack {
++                    Text("아이콘 선택").font(.system(size: 13, weight: .bold))
++                    Spacer()
++                    Button("없음") {
++                        selection = ""
++                        isShowingPicker = false
++                    }
++                    .buttonStyle(.bordered)
++                }
++                ScrollView {
++                    VStack(alignment: .leading, spacing: 13) {
++                        ForEach(iconCategories) { category in
++                            if isSideButton {
++                                Text(category.title)
++                                    .font(.system(size: 11, weight: .bold))
++                                    .foregroundStyle(theme.accent)
++                            }
++                            LazyVGrid(columns: Array(repeating: GridItem(.fixed(42), spacing: 8), count: 6), spacing: 8) {
++                                ForEach(category.icons, id: \.self) { icon in
++                                    iconButton(icon)
++                                }
++                            }
++                        }
++                    }
++                }
++                .frame(maxHeight: 300)
++            }
++            .padding(14)
++            .frame(width: 322)
++            .background(theme.panel)
++        }
++    }
++
++    private func iconButton(_ icon: String) -> some View {
++        Button {
++            selection = icon
++            isShowingPicker = false
++        } label: {
++            Image(systemName: icon)
++                .font(.system(size: 17, weight: .medium))
++                .frame(width: 42, height: 38)
++                .foregroundStyle(selection == icon ? theme.accentForeground : theme.foreground)
++                .background(selection == icon ? theme.accent : theme.control, in: RoundedRectangle(cornerRadius: 8))
++                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selection == icon ? theme.accent : theme.foreground.opacity(0.15)))
++        }
++        .buttonStyle(.plain)
++        .help(iconTitle(for: icon))
++    }
++
++    private func iconTitle(for icon: String) -> String {
++        switch icon {
++        case "sparkles": "반짝임"
++        case "plus.bubble": "새 대화"
++        case "message": "메시지"
++        case "mic": "마이크"
++        case "paperplane": "전송"
++        case "globe": "웹"
++        case "safari": "Safari"
++        case "folder": "폴더"
++        case "note.text": "메모"
++        case "calendar": "캘린더"
++        case "magnifyingglass": "검색"
++        case "camera.viewfinder": "캡처"
++        case "lock": "잠금"
++        case "play.fill": "재생"
++        case "pause.fill": "일시 정지"
++        case "stop.fill": "중지"
++        case "record.circle": "녹화"
++        case "speaker.wave.2": "볼륨"
++        case "speaker.wave.1": "볼륨 내리기"
++        case "speaker.slash": "음소거"
++        case "headphones": "헤드폰"
++        case "slider.horizontal.3": "조절"
++        case "gearshape": "설정"
++        case "terminal": "터미널"
++        case "bolt.fill": "빠른 실행"
++        default: icon
++        }
++    }
++
++}
++
++struct DarkTextField: View {
++    @Environment(\.colorScheme) private var colorScheme
++    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
++    @Binding var text: String
++    var placeholder = ""
++
++    var body: some View {
++        TextField(placeholder, text: $text)
++            .textFieldStyle(.plain)
++            .font(.system(size: 13, weight: .medium))
++            .foregroundStyle(theme.foreground)
++            .padding(.horizontal, 13)
++            .frame(height: 34)
++            .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
++            .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
++    }
++}
+--- a/Native/Views/PadButton.swift
++++ b/Native/Views/PadButton.swift
+@@ -0,0 +1,88 @@
++import SwiftUI
++
++struct PadButton: View {
++    let pad: Pad
++    let selected: Bool
++    var circular = false
++    var executeOnPress = false
++    var displayColor: String?
++    let action: () -> Void
++    var runAction: (() -> Void)? = nil
++
++    @State private var pressed = false
++
++    var body: some View {
++        Button {
++            pressed = true
++            action()
++            if executeOnPress { runAction?() }
++            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { pressed = false }
++        } label: {
++            VStack(spacing: 1) {
++                if let appIcon {
++                    Image(nsImage: appIcon)
++                        .resizable().scaledToFit()
++                        .frame(width: circular ? 18 : 20, height: circular ? 18 : 20)
++                } else if !pad.activeTitle.isEmpty || !pad.activeSymbol.isEmpty {
++                    Image(systemName: pad.activeSymbol)
++                        .font(.system(size: circular ? 15 : 14, weight: .medium))
++                }
++                if !pad.activeTitle.isEmpty {
++                    Text(pad.activeTitle)
++                        .font(.system(size: circular ? 8 : 9, weight: .bold))
++                        .lineLimit(2)
++                        .minimumScaleFactor(0.65)
++                        .multilineTextAlignment(.center)
++                }
++            }
++            .foregroundStyle(.white)
++            .frame(maxWidth: .infinity, maxHeight: .infinity)
++            .padding(3)
++            .background {
++                if circular {
++                    Circle().fill(padColor)
++                } else {
++                    RoundedRectangle(cornerRadius: 8).fill(padColor)
++                }
++            }
++            .overlay {
++                if circular {
++                    Circle().stroke(selected ? Color.orange : .white.opacity(0.18), lineWidth: selected ? 2 : 1.5)
++                } else {
++                    RoundedRectangle(cornerRadius: 8).stroke(selected ? Color.orange : .white.opacity(0.18), lineWidth: selected ? 2 : 1.5)
++                }
++            }
++            .overlay(alignment: .topTrailing) {
++                if pad.secondAction != nil {
++                    Text(pad.isSecondActionActive ? "B" : "A")
++                        .font(.system(size: 8, weight: .heavy, design: .rounded))
++                        .foregroundStyle(.white)
++                        .padding(.horizontal, 4)
++                        .padding(.vertical, 2)
++                        .background(.black.opacity(0.55), in: Capsule())
++                        .padding(4)
++                        .accessibilityHidden(true)
++                }
++            }
++            .shadow(color: selected ? .orange.opacity(0.8) : (pad.stateColor == "off" ? .clear : padColor.opacity(0.62)), radius: selected ? 11 : 8)
++            .scaleEffect(pressed ? 0.96 : (selected ? 1.035 : 1))
++        }
++        .buttonStyle(.plain)
++        .focusEffectDisabled()
++        .contextMenu {
++            if let runAction {
++                Button("동작 실행", action: runAction)
++            }
++        }
++    }
++
++    private var appIcon: NSImage? {
++        let configuredAction = pad.secondAction != nil && pad.isSecondActionActive ? pad.secondAction ?? pad.action : pad.action
++        guard pad.activeSymbol.isEmpty, configuredAction.kind == .app else { return nil }
++        return AppRegistrationService.icon(for: configuredAction.value)
++    }
++
++    private var padColor: Color {
++        PadColor(rawValue: pressed ? pad.activeColor : (displayColor ?? pad.stateColor))?.color ?? .gray
++    }
++}
+--- a/Native/Views/CodexMotionRuleCard.swift
++++ b/Native/Views/CodexMotionRuleCard.swift
+@@ -0,0 +1,195 @@
++import SwiftUI
++
++struct CodexMotionRuleCard: View {
++    @Bindable var store: LaunchpadStore
++    let midi: LaunchpadMIDIManager
++    let activity: CodexActivity
++
++    var body: some View {
++        HStack(spacing: 8) {
++            HStack(spacing: 6) {
++                Image(systemName: symbol)
++                    .foregroundStyle(color)
++                    .frame(width: 17)
++                Text(activity.title)
++                    .font(.system(size: 11, weight: .semibold))
++                    .lineLimit(1)
++            }
++            .frame(width: 74, alignment: .leading)
++
++            Picker("\(activity.title) 모션", selection: presetBinding) {
++                Text("모션 없음").tag(UUID?.none)
++                ForEach(store.motionPresets) { preset in
++                    Text(preset.name).tag(Optional(preset.id))
++                }
++            }
++            .labelsHidden()
++            .frame(width: 104)
++
++            Button("미리보기") { preview() }
++                .font(.system(size: 10, weight: .medium))
++                .frame(width: 58)
++                .disabled(selectedPresetExists == false)
++
++            Picker("\(activity.title) 종료 방식", selection: dismissalBinding) {
++                ForEach(CodexMotionDismissal.allCases) { dismissal in
++                    Text(dismissal.title).tag(dismissal)
++                }
++            }
++            .labelsHidden()
++            .frame(width: 108)
++
++            dismissalDetail
++                .frame(width: 70, alignment: .leading)
++
++            if CodexMotionRuleLayout.holdTogglePlacement(for: activity) == .mainRuleRow {
++                Toggle("계속 표시", isOn: keepsRunningBinding)
++                    .font(.system(size: 10))
++                    .lineLimit(1)
++                    .toggleStyle(.switch)
++                    .fixedSize()
++                    .accessibilityLabel("작업이 끝날 때까지 계속 표시")
++                    .accessibilityIdentifier("codex-motion-running-hold-toggle")
++            } else {
++                Spacer(minLength: 0)
++            }
++        }
++        .frame(height: 50)
++    }
++
++    private var presentation: CodexMotionPresentation { store.codexMotionPresentation(for: activity) }
++
++    private var presetBinding: Binding<UUID?> {
++        Binding(
++            get: { presentation.presetID },
++            set: { value in
++                var updated = presentation
++                updated.presetID = value
++                store.setCodexMotionPresentation(updated, for: activity)
++            }
++        )
++    }
++
++    private var dismissalBinding: Binding<CodexMotionDismissal> {
++        Binding(
++            get: { presentation.dismissal },
++            set: { value in
++                var updated = presentation
++                updated.dismissal = value
++                store.setCodexMotionPresentation(updated, for: activity)
++            }
++        )
++    }
++
++    private var keepsRunningBinding: Binding<Bool> {
++        Binding(
++            get: { presentation.keepsRunningUntilActivityChanges },
++            set: { value in
++                var updated = presentation
++                updated.keepsRunningUntilActivityChanges = value
++                store.setCodexMotionPresentation(updated, for: activity)
++            }
++        )
++    }
++
++    @ViewBuilder private var dismissalDetail: some View {
++        switch presentation.dismissal {
++        case .afterDuration:
++            Stepper(value: durationBinding, in: 1...120) {
++                Text("\(presentation.durationSeconds)초")
++                    .font(.system(size: 11, design: .monospaced))
++            }
++        case .anyPad:
++            Text("아무 버튼")
++                .font(.system(size: 11))
++                .foregroundStyle(.secondary)
++        case .assignedPad:
++            Picker("종료 버튼", selection: dismissPadBinding) {
++                ForEach(CodexMotionPadChoice.all) { choice in
++                    Text(choice.title).tag(choice.id)
++                }
++            }
++            .labelsHidden()
++        }
++    }
++
++    private var durationBinding: Binding<Int> {
++        Binding(
++            get: { presentation.durationSeconds },
++            set: { value in
++                var updated = presentation
++                updated.durationSeconds = value
++                store.setCodexMotionPresentation(updated, for: activity)
++            }
++        )
++    }
++
++    private var dismissPadBinding: Binding<String> {
++        Binding(
++            get: { presentation.dismissPadID },
++            set: { value in
++                var updated = presentation
++                updated.dismissPadID = value
++                store.setCodexMotionPresentation(updated, for: activity)
++            }
++        )
++    }
++
++    private func preview() {
++        guard let preset = store.codexMotionPreset(for: activity) else { return }
++        let loopingPreset = MotionPreset(
++            name: preset.name,
++            loop: true,
++            frameDurationMs: preset.frameDurationMs,
++            frames: preset.frames
++        )
++        let sessionID = midi.playMotion(
++            loopingPreset,
++            preservingPadLEDs: store.shouldPreservePadLEDsDuringCodexMotion(for: activity)
++        )
++        guard let delay = presentation.automaticStopDelay else { return }
++        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak midi] in
++            midi?.stopMotion(ifCurrent: sessionID)
++        }
++    }
++
++    private var selectedPresetExists: Bool { store.codexMotionPreset(for: activity) != nil }
++
++    private var symbol: String {
++        switch activity {
++        case .idle: "circle"
++        case .connecting: "arrow.triangle.2.circlepath"
++        case .running: "gearshape.2"
++        case .waitingForApproval: "exclamationmark.triangle.fill"
++        case .completed: "checkmark.circle.fill"
++        case .failed: "xmark.octagon.fill"
++        }
++    }
++
++    private var color: Color {
++        switch activity {
++        case .idle: .gray
++        case .connecting: .yellow
++        case .running: .green
++        case .waitingForApproval: .orange
++        case .completed: .green
++        case .failed: .red
++        }
++    }
++}
++
++struct CodexMotionPadChoice: Identifiable {
++    let id: String
++    let title: String
++
++    static let all: [CodexMotionPadChoice] = {
++        let top = (0..<8).map { CodexMotionPadChoice(id: "top_\($0)", title: "상단 P\($0 + 1)") }
++        let grid = (0..<8).flatMap { row in
++            (0..<8).map { column in
++                CodexMotionPadChoice(id: "grid_\(row)_\(column)", title: "그리드 \(row + 1)행 \(column + 1)열")
++            }
++        }
++        let side = (0..<8).map { CodexMotionPadChoice(id: "side_\($0)", title: "우측 \(Character(UnicodeScalar(65 + $0)!))") }
++        return top + grid + side
++    }()
++}
+--- a/Native/Views/MotionPresetView.swift
++++ b/Native/Views/MotionPresetView.swift
+@@ -0,0 +1,323 @@
++import SwiftUI
++
++struct MotionPresetView: View {
++    @Bindable var store: LaunchpadStore
++    let midi: LaunchpadMIDIManager
++    let isEmbedded: Bool
++
++    @Environment(\.dismiss) private var dismiss
++    @State private var jsonText = ""
++    @State private var selectedPresetID: UUID?
++    @State private var previewFrameIndex = 0
++    @State private var isPlaying = false
++    @State private var importMessage = ""
++    @State private var isImportError = false
++    @State private var previewTimer: Timer?
++    @State private var editingPresetID: UUID?
++    @State private var editedPresetName = ""
++    @FocusState private var focusedPresetID: UUID?
++
++    init(store: LaunchpadStore, midi: LaunchpadMIDIManager, isEmbedded: Bool = false) {
++        self.store = store
++        self.midi = midi
++        self.isEmbedded = isEmbedded
++    }
++
++    var body: some View {
++        HStack(spacing: 0) {
++            presetSidebar
++                .frame(width: isEmbedded ? 190 : 220)
++            Divider().overlay(.white.opacity(0.12))
++            editor
++                .frame(minWidth: isEmbedded ? 0 : 520)
++        }
++        .frame(
++            width: isEmbedded ? nil : 820,
++            height: isEmbedded ? nil : 620
++        )
++        .frame(maxWidth: isEmbedded ? .infinity : nil, maxHeight: isEmbedded ? .infinity : nil)
++        .background(Color(red: 0.035, green: 0.035, blue: 0.045))
++        .onAppear { selectedPresetID = store.motionPresets.first?.id }
++        .onDisappear { stopPreview() }
++    }
++
++    private var presetSidebar: some View {
++        VStack(alignment: .leading, spacing: 12) {
++            HStack {
++                Text("프리셋 목록").font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
++                Spacer()
++                Button(action: { selectedPresetID = nil; jsonText = "" }) {
++                    Image(systemName: "plus").frame(width: 28, height: 28)
++                }
++                .buttonStyle(.plain)
++                .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 7))
++            }
++
++            if store.motionPresets.isEmpty {
++                VStack(spacing: 9) {
++                    Image(systemName: "sparkles.square.filled.on.square").font(.system(size: 28)).foregroundStyle(.orange)
++                    Text("아직 프리셋이 없습니다").font(.system(size: 12, weight: .semibold)).foregroundStyle(.white.opacity(0.75))
++                }
++                .frame(maxWidth: .infinity, maxHeight: .infinity)
++            } else {
++                ScrollView {
++                    LazyVStack(spacing: 7) {
++                        ForEach(store.motionPresets) { preset in
++                            Button { select(preset) } label: {
++                                HStack(spacing: 9) {
++                                    MiniMotionPreview(preset: preset)
++                                        .fixedSize()
++                                    VStack(alignment: .leading, spacing: 3) {
++                                        if editingPresetID == preset.id {
++                                            TextField("프리셋 이름", text: $editedPresetName)
++                                                .textFieldStyle(.roundedBorder)
++                                                .focused($focusedPresetID, equals: preset.id)
++                                                .onSubmit { finishRenaming(preset) }
++                                                .onExitCommand { cancelRenaming() }
++                                        } else {
++                                            Text(preset.name)
++                                                .font(.system(size: 12, weight: .semibold))
++                                                .lineLimit(2)
++                                                .fixedSize(horizontal: false, vertical: true)
++                                        }
++                                    }
++                                    .frame(maxWidth: .infinity, alignment: .leading)
++                                    Spacer(minLength: 0)
++                                }
++                                .padding(8)
++                                .frame(maxWidth: .infinity, alignment: .leading)
++                                .foregroundStyle(.white)
++                                .background(selectedPresetID == preset.id ? .orange.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 8))
++                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(selectedPresetID == preset.id ? .orange : .white.opacity(0.1)))
++                            }
++                            .buttonStyle(.plain)
++                            .contextMenu {
++                                Button("이름 변경") {
++                                    beginRenaming(preset)
++                                }
++                                Button("삭제", role: .destructive) {
++                                    if selectedPresetID == preset.id { stopPreview(); selectedPresetID = nil }
++                                    store.removeMotionPreset(preset)
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++            Spacer()
++        }
++        .padding(isEmbedded ? 12 : 16)
++        .background(Color(red: 0.055, green: 0.055, blue: 0.07))
++    }
++
++    private var editor: some View {
++        VStack(alignment: .leading, spacing: 14) {
++            HStack {
++                VStack(alignment: .leading, spacing: 3) {
++                    Text("CHATGPT 모션 가져오기").font(.system(size: 18, weight: .bold)).foregroundStyle(.white)
++                }
++                Spacer()
++                if !isEmbedded {
++                    Button("닫기") { dismiss() }.buttonStyle(.bordered)
++                }
++            }
++
++            ScrollView {
++                VStack(alignment: .leading, spacing: 14) {
++                    Text("프리셋 가져오기")
++                        .font(.headline)
++                        .foregroundStyle(.white)
++                    HStack(spacing: 10) {
++                        Button("제작 프롬프트 복사") {
++                            NSPasteboard.general.clearContents()
++                            NSPasteboard.general.setString(MotionPresetImportService.chatGPTPrompt, forType: .string)
++                            importMessage = "프롬프트를 복사했습니다. ChatGPT에 붙여 넣고 마지막 ‘요청:’ 뒤에 원하는 모션을 쓰세요."
++                            isImportError = false
++                        }
++                        .buttonStyle(.borderedProminent)
++                        .tint(.orange)
++                        Button("클립보드 붙여넣기") {
++                            jsonText = NSPasteboard.general.string(forType: .string) ?? ""
++                        }
++                        .buttonStyle(.bordered)
++                        Spacer()
++                    }
++
++                    TextEditor(text: $jsonText)
++                        .font(.system(size: 11, design: .monospaced))
++                        .scrollContentBackground(.hidden)
++                        .foregroundStyle(.white.opacity(0.92))
++                        .padding(8)
++                        .frame(height: 150)
++                        .background(Color.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
++                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.17)))
++
++                    HStack {
++                        Button("프리셋으로 등록") { importPreset() }
++                            .buttonStyle(.borderedProminent)
++                            .tint(.green)
++                        if !importMessage.isEmpty {
++                            Text(importMessage)
++                                .font(.system(size: 11))
++                                .foregroundStyle(isImportError ? .red : .green)
++                                .lineLimit(2)
++                        }
++                        Spacer()
++                    }
++
++                    Divider().overlay(.white.opacity(0.14))
++                    previewSection
++                }
++            }
++        }
++        .padding(20)
++    }
++
++    @ViewBuilder private var previewSection: some View {
++        if let preset = selectedPreset {
++            VStack(alignment: .leading, spacing: 10) {
++                HStack {
++                    Text("\(preset.name) 미리보기").font(.system(size: 13, weight: .semibold)).foregroundStyle(.white)
++                    Spacer()
++                    Button(isPlaying ? "재생 중지" : "실제 Launchpad에서 재생") {
++                        isPlaying ? stopPreview() : startPreview(preset)
++                    }
++                    .buttonStyle(.borderedProminent)
++                    .tint(isPlaying ? .red : .orange)
++                }
++                MotionMatrix(frame: preset.frames[previewFrameIndex])
++            }
++        } else {
++            ContentUnavailableView("프리셋을 선택하세요", systemImage: "square.grid.3x3")
++                .frame(maxWidth: .infinity, minHeight: 160)
++                .foregroundStyle(.secondary)
++        }
++    }
++
++    private var selectedPreset: MotionPreset? {
++        store.motionPresets.first { $0.id == selectedPresetID }
++    }
++
++    private func select(_ preset: MotionPreset) {
++        stopPreview()
++        selectedPresetID = preset.id
++        previewFrameIndex = 0
++    }
++
++    private func beginRenaming(_ preset: MotionPreset) {
++        selectedPresetID = preset.id
++        editingPresetID = preset.id
++        editedPresetName = preset.name
++        DispatchQueue.main.async { focusedPresetID = preset.id }
++    }
++
++    private func finishRenaming(_ preset: MotionPreset) {
++        if store.renameMotionPreset(id: preset.id, to: editedPresetName) {
++            editingPresetID = nil
++            focusedPresetID = nil
++        }
++    }
++
++    private func cancelRenaming() {
++        editingPresetID = nil
++        focusedPresetID = nil
++    }
++
++    private func importPreset() {
++        do {
++            let preset = try MotionPresetImportService.decode(jsonText)
++            stopPreview()
++            store.addMotionPreset(preset)
++            selectedPresetID = preset.id
++            previewFrameIndex = 0
++            importMessage = "‘\(preset.name)’ 프리셋을 등록했습니다."
++            isImportError = false
++        } catch {
++            importMessage = error.localizedDescription
++            isImportError = true
++        }
++    }
++
++    private func startPreview(_ preset: MotionPreset) {
++        stopPreview(restoreMIDI: false)
++        isPlaying = true
++        previewFrameIndex = 0
++        midi.playMotion(preset)
++        scheduleNextPreviewFrame(for: preset)
++    }
++
++    private func scheduleNextPreviewFrame(for preset: MotionPreset) {
++        previewTimer?.invalidate()
++        previewTimer = Timer.scheduledTimer(withTimeInterval: Double(preset.frameDurationMs) / 1000, repeats: false) { _ in
++            Task { @MainActor in
++                advancePreview(for: preset)
++            }
++        }
++    }
++
++    private func advancePreview(for preset: MotionPreset) {
++        guard isPlaying, selectedPresetID == preset.id else { return }
++        if previewFrameIndex + 1 < preset.frames.count {
++            previewFrameIndex += 1
++            scheduleNextPreviewFrame(for: preset)
++        } else if preset.loop {
++            previewFrameIndex = 0
++            scheduleNextPreviewFrame(for: preset)
++        } else {
++            stopPreview()
++        }
++    }
++
++    private func stopPreview(restoreMIDI: Bool = true) {
++        previewTimer?.invalidate()
++        previewTimer = nil
++        isPlaying = false
++        if restoreMIDI { midi.stopMotion() }
++    }
++}
++
++private struct MotionMatrix: View {
++    let frame: MotionFrame
++
++    var body: some View {
++        let colors = pixelColors(from: frame)
++        LazyVGrid(columns: Array(repeating: GridItem(.fixed(23), spacing: 4), count: 8), spacing: 4) {
++            ForEach(1...64, id: \.self) { index in
++                let row = (index - 1) / 8 + 1
++                let column = (index - 1) % 8 + 1
++                RoundedRectangle(cornerRadius: 4)
++                    .fill((PadColor(rawValue: colors["\(row)_\(column)"] ?? "off") ?? .off).color)
++                    .frame(width: 23, height: 23)
++                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(.white.opacity(0.12)))
++            }
++        }
++        .padding(10)
++        .background(Color.black.opacity(0.42), in: RoundedRectangle(cornerRadius: 10))
++    }
++}
++
++private struct MiniMotionPreview: View {
++    let preset: MotionPreset
++
++    var body: some View {
++        let frame = preset.frames.first ?? MotionFrame(pixels: [])
++        let colors = pixelColors(from: frame)
++        LazyVGrid(columns: Array(repeating: GridItem(.fixed(5), spacing: 1), count: 8), spacing: 1) {
++            ForEach(1...64, id: \.self) { index in
++                let row = (index - 1) / 8 + 1
++                let column = (index - 1) % 8 + 1
++                Rectangle().fill((PadColor(rawValue: colors["\(row)_\(column)"] ?? "off") ?? .off).color)
++                    .frame(width: 5, height: 5)
++            }
++        }
++        .frame(width: 47, height: 47)
++        .padding(4)
++        .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
++    }
++}
++
++private func pixelColors(from frame: MotionFrame) -> [String: String] {
++    frame.pixels.reduce(into: [:]) { result, pixel in
++        result["\(pixel.row)_\(pixel.column)"] = pixel.color
++    }
++}
+--- a/Native/Views/LaunchpadLEDStatusBubble.swift
++++ b/Native/Views/LaunchpadLEDStatusBubble.swift
+@@ -0,0 +1,215 @@
++import AppKit
++import SwiftUI
++
++@MainActor
++final class LaunchpadLEDStatusBubble: NSObject, NSWindowDelegate {
++    static func contentSize(for size: LaunchpadLEDBubbleSize) -> NSSize {
++        let points = CGFloat(size.points)
++        return NSSize(width: points, height: points)
++    }
++
++    private let panel: NSPanel
++    private weak var statusButton: NSStatusBarButton?
++    private weak var store: LaunchpadStore?
++    private weak var midi: LaunchpadMIDIManager?
++    private var saveOrigin: ((CGPoint) -> Void)?
++    private var hasInstalledContent = false
++    private var displayedSize: LaunchpadLEDBubbleSize?
++    var onVisibilityPreferenceChanged: ((Bool, Bool) -> Void)?
++    var onSelectPage: ((Int) -> Void)?
++
++    override init() {
++        panel = NSPanel(
++            contentRect: NSRect(origin: .zero, size: Self.contentSize(for: .regular)),
++            styleMask: [.borderless, .nonactivatingPanel],
++            backing: .buffered,
++            defer: false
++        )
++        super.init()
++        panel.delegate = self
++        panel.level = .floating
++        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
++        panel.isOpaque = false
++        panel.backgroundColor = .clear
++        panel.hasShadow = true
++        panel.hidesOnDeactivate = false
++        panel.isMovableByWindowBackground = true
++    }
++
++    func attach(to button: NSStatusBarButton?) {
++        statusButton = button
++    }
++
++    func update(midi: LaunchpadMIDIManager, store: LaunchpadStore) {
++        self.midi = midi
++        self.store = store
++        saveOrigin = { [weak store] origin in store?.setLaunchpadLEDBubbleOrigin(origin) }
++        let isVisible = store.codexMotionDisplaySettings.showsLaunchpadLEDBubble
++        onVisibilityPreferenceChanged?(isVisible, true)
++        guard isVisible else {
++            close()
++            return
++        }
++
++        let size = store.codexMotionDisplaySettings.launchpadLEDBubbleSize
++        if !hasInstalledContent || displayedSize != size {
++            panel.contentView = LaunchpadBubbleHostingView(
++                rootView: LaunchpadLEDStatusBubbleView(
++                    midi: midi,
++                    store: store,
++                    size: size,
++                    onSelectPage: { [weak self] index in self?.onSelectPage?(index) }
++                )
++            )
++            hasInstalledContent = true
++            displayedSize = size
++            resize(to: Self.contentSize(for: size))
++            setFrameOrigin(panel.frame.origin)
++        }
++        if !panel.isVisible {
++            setFrameOrigin(restoredOrigin(from: store))
++            panel.orderFrontRegardless()
++        }
++    }
++
++    func close() {
++        if panel.isVisible {
++            saveOrigin?(panel.frame.origin)
++        }
++        panel.orderOut(nil)
++    }
++
++    func windowDidMove(_ notification: Notification) {
++        guard panel.isVisible,
++              CGEventSource.buttonState(.combinedSessionState, button: .left) else { return }
++        saveOrigin?(panel.frame.origin)
++    }
++
++    func toggleVisibilityPreference() {
++        guard let store, let midi else { return }
++        let isVisible = !store.codexMotionDisplaySettings.showsLaunchpadLEDBubble
++        store.setLaunchpadLEDBubbleVisible(isVisible)
++        onVisibilityPreferenceChanged?(isVisible, true)
++        if isVisible {
++            update(midi: midi, store: store)
++        } else {
++            close()
++        }
++    }
++
++    private func restoredOrigin(from store: LaunchpadStore) -> CGPoint {
++        let settings = store.codexMotionDisplaySettings
++        if let x = settings.launchpadLEDBubbleOriginX,
++           let y = settings.launchpadLEDBubbleOriginY {
++            return clamped(CGPoint(x: x, y: y))
++        }
++        return defaultOrigin()
++    }
++
++    private func defaultOrigin() -> CGPoint {
++        if let button = statusButton,
++           let window = button.window {
++            let buttonFrame = button.convert(button.bounds, to: nil)
++            let screenFrame = window.convertToScreen(buttonFrame)
++            return CGPoint(
++                x: screenFrame.midX - panel.frame.width / 2,
++                y: screenFrame.minY - panel.frame.height - 8
++            )
++        }
++        let frame = NSScreen.main?.visibleFrame ?? .zero
++        return CGPoint(x: frame.maxX - panel.frame.width - 18, y: frame.maxY - panel.frame.height - 18)
++    }
++
++    private func clamped(_ origin: CGPoint) -> CGPoint {
++        let visibleFrame = (NSScreen.screens.first { $0.visibleFrame.intersects(NSRect(origin: origin, size: panel.frame.size)) } ?? NSScreen.main)?.visibleFrame
++            ?? .zero
++        let maximumX = max(visibleFrame.minX, visibleFrame.maxX - panel.frame.width)
++        let maximumY = max(visibleFrame.minY, visibleFrame.maxY - panel.frame.height)
++        return CGPoint(
++            x: min(max(origin.x, visibleFrame.minX), maximumX),
++            y: min(max(origin.y, visibleFrame.minY), maximumY)
++        )
++    }
++
++    private func setFrameOrigin(_ origin: CGPoint) {
++        panel.setFrameOrigin(clamped(origin))
++    }
++
++    private func resize(to size: NSSize) {
++        panel.setFrame(NSRect(origin: panel.frame.origin, size: size), display: true)
++    }
++}
++
++private final class LaunchpadBubbleHostingView<Content: View>: NSHostingView<Content> {
++    override var mouseDownCanMoveWindow: Bool { true }
++}
++
++private struct LaunchpadLEDStatusBubbleView: View {
++    let midi: LaunchpadMIDIManager
++    @Bindable var store: LaunchpadStore
++    let size: LaunchpadLEDBubbleSize
++    let onSelectPage: (Int) -> Void
++
++    var body: some View {
++        let state = midi.ledState
++        VStack(spacing: gap) {
++            ForEach(0..<8, id: \.self) { row in
++                HStack(spacing: gap) {
++                    ForEach(0..<8, id: \.self) { column in
++                        led(state.grid[row * 8 + column])
++                    }
++                }
++            }
++        }
++        .padding(padding)
++        .frame(width: points, height: points)
++        .background(.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
++        .overlay {
++            RoundedRectangle(cornerRadius: 16, style: .continuous)
++                .stroke(.white.opacity(0.16))
++        }
++        .contextMenu {
++            ForEach(Array(store.pages.enumerated()), id: \.element.id) { index, page in
++                Button {
++                    onSelectPage(index)
++                } label: {
++                    if index == store.selectedPage {
++                        Label("P\(index + 1) · \(page.name)", systemImage: "checkmark")
++                    } else {
++                        Text("P\(index + 1) · \(page.name)")
++                    }
++                }
++            }
++        }
++    }
++
++    private var points: CGFloat { CGFloat(size.points) }
++    private var scale: CGFloat { points / 156 }
++    private var padding: CGFloat { 15 * scale }
++    private var gap: CGFloat { 3 * scale }
++
++    private func led(_ value: UInt8) -> some View {
++        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
++            .fill(color(for: value))
++            .frame(width: 12 * scale, height: 12 * scale)
++            .shadow(color: color(for: value).opacity(value == 12 ? 0 : 0.75), radius: 3)
++    }
++
++    private var cornerRadius: CGFloat { 2 * scale }
++
++    private func color(for value: UInt8) -> Color {
++        switch value {
++        case 13: .red.opacity(0.36)
++        case 14: .red.opacity(0.72)
++        case 15: .red
++        case 28: .green.opacity(0.36)
++        case 44: .green.opacity(0.72)
++        case 60: .green
++        case 29: .orange.opacity(0.4)
++        case 46: .orange.opacity(0.78)
++        case 62: .yellow
++        case 63: .orange
++        default: Color.white.opacity(0.08)
++        }
++    }
++}
+--- a/Tests/ChatGPTMicroLaunchpadTests/CodexMotionLEDCompositionTests.swift
++++ b/Tests/ChatGPTMicroLaunchpadTests/CodexMotionLEDCompositionTests.swift
+@@ -0,0 +1,497 @@
++import XCTest
++@testable import ChatGPTMicroLaunchpad
++
++final class CodexMotionLEDCompositionTests: XCTestCase {
++    func testMotionReentry_whenWorkIsStillActive_restartsOnlyForLiveActivities() {
++        XCTAssertTrue(CodexMotionReentryPolicy.shouldRestart(for: .running))
++        XCTAssertTrue(CodexMotionReentryPolicy.shouldRestart(for: .connecting))
++        XCTAssertTrue(CodexMotionReentryPolicy.shouldRestart(for: .waitingForApproval))
++        XCTAssertFalse(CodexMotionReentryPolicy.shouldRestart(for: .completed))
++        XCTAssertFalse(CodexMotionReentryPolicy.shouldRestart(for: .idle))
++    }
++
++    func testWeeklyUsageGrid_whenWeeklyLimitIsUsed_calculatesRemainingCells() {
++        XCTAssertEqual(CodexWeeklyUsageGrid.remainingCellCount(usedPercent: 0), 64)
++        XCTAssertEqual(CodexWeeklyUsageGrid.remainingCellCount(usedPercent: 77), 15)
++        XCTAssertEqual(CodexWeeklyUsageGrid.remainingCellCount(usedPercent: 100), 0)
++    }
++
++    func testWeeklyUsageGrid_whenRemainingCellsAreShown_fillsFromBottomToTop() {
++        XCTAssertFalse(CodexWeeklyUsageGrid.isRemainingCellActive(index: 48, remainingCellCount: 15))
++        XCTAssertTrue(CodexWeeklyUsageGrid.isRemainingCellActive(index: 49, remainingCellCount: 15))
++        XCTAssertTrue(CodexWeeklyUsageGrid.isRemainingCellActive(index: 63, remainingCellCount: 15))
++    }
++
++    func testWeeklyUsageGrid_whenAtExtremes_rendersZeroAndDoubleZero() {
++        let zero = CodexWeeklyUsageGrid.numericPixels(remainingPercent: 0)
++        let hundred = CodexWeeklyUsageGrid.numericPixels(remainingPercent: 100)
++
++        XCTAssertEqual(zero.filter { $0 }.count, 12)
++        XCTAssertEqual(hundred.filter { $0 }.count, 24)
++    }
++
++    func testDisplaySettings_whenWeeklyUsageIsLimitedToOnePage_roundTripsThePage() throws {
++        let pageID = UUID()
++        let settings = CodexMotionDisplaySettings(
++            scope: .specificPage,
++            pageID: pageID,
++            weeklyUsageDisplay: CodexWeeklyUsageDisplaySettings(
++                isEnabled: true,
++                scope: .specificPage,
++                pageID: pageID
++            )
++        )
++
++        let restored = try JSONDecoder().decode(
++            CodexMotionDisplaySettings.self,
++            from: JSONEncoder().encode(settings)
++        )
++
++        XCTAssertTrue(restored.weeklyUsageDisplay.isEnabled)
++        XCTAssertTrue(restored.allowsPresentation(on: pageID))
++        XCTAssertTrue(restored.weeklyUsageDisplay.allowsPresentation(on: pageID))
++        XCTAssertFalse(restored.weeklyUsageDisplay.allowsPresentation(on: UUID()))
++    }
++
++    func testWeeklyUsageDisplaySettings_whenStoredBeforeNumberMode_defaultsToLevelStyle() throws {
++        // Given
++        let data = """
++        {"isEnabled":true,"scope":"allPages"}
++        """.data(using: .utf8)!
++
++        // When
++        let restored = try JSONDecoder().decode(CodexWeeklyUsageDisplaySettings.self, from: data)
++
++        // Then
++        XCTAssertTrue(restored.isEnabled)
++        XCTAssertEqual(restored.style, .level)
++    }
++
++    @MainActor
++    func testLEDState_whenLaunchpadOutputChanges_keepsTheExactVisibleButtonValues() {
++        // Given
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false, messageSink: { _ in })
++        let pages = eightPages(first: page(gridColors: ["green"]))
++
++        // When
++        midi.updateLEDs(for: pages, activePage: 0)
++
++        // Then
++        XCTAssertEqual(midi.ledState.grid[0], 44)
++        XCTAssertEqual(midi.ledState.side[0], 12)
++        XCTAssertEqual(midi.ledState.top[0], 60)
++    }
++
++    @MainActor
++    func testLEDState_whenLaunchpadIsDisconnected_tracksPageAndMotionFramesForTheBubble() {
++        // Given
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false)
++        let pages = eightPages(first: page(gridColors: ["green"]))
++        let motion = MotionPreset(
++            name: "테스트",
++            loop: true,
++            frameDurationMs: 1_000,
++            frames: [MotionFrame(pixels: [MotionPixel(row: 1, column: 1, color: "brightRed")])]
++        )
++
++        // When
++        midi.updateLEDs(for: pages, activePage: 0)
++        midi.playMotion(motion)
++
++        // Then
++        XCTAssertEqual(midi.ledState.top[0], 60)
++        XCTAssertEqual(midi.ledState.grid[0], 15)
++        midi.stopMotion()
++    }
++
++    func testDisplaySettings_whenLEDBubbleIsEnabled_roundTripsItsVisibilityAndPosition() throws {
++        // Given
++        let settings = CodexMotionDisplaySettings(
++            showsLaunchpadLEDBubble: true,
++            launchpadLEDBubbleOriginX: 320,
++            launchpadLEDBubbleOriginY: 540
++        )
++
++        // When
++        let restored = try JSONDecoder().decode(
++            CodexMotionDisplaySettings.self,
++            from: JSONEncoder().encode(settings)
++        )
++
++        // Then
++        XCTAssertTrue(restored.showsLaunchpadLEDBubble)
++        XCTAssertEqual(restored.launchpadLEDBubbleOriginX, 320)
++        XCTAssertEqual(restored.launchpadLEDBubbleOriginY, 540)
++    }
++
++    func testDisplaySettings_whenLEDBubbleSizeIsChosen_roundTripsTheSize() throws {
++        // Given
++        let settings = CodexMotionDisplaySettings(launchpadLEDBubbleSize: .large)
++
++        // When
++        let restored = try JSONDecoder().decode(
++            CodexMotionDisplaySettings.self,
++            from: JSONEncoder().encode(settings)
++        )
++
++        // Then
++        XCTAssertEqual(restored.launchpadLEDBubbleSize, .large)
++    }
++
++    func testDisplaySettings_whenIdleScreensaverIsConfigured_roundTripsItsSettings() throws {
++        let presetID = UUID()
++        let settings = CodexMotionDisplaySettings(
++            idleScreensaver: LaunchpadIdleScreensaverSettings(
++                isEnabled: true,
++                inputScope: .macAndCodex,
++                delaySeconds: 45,
++                durationSeconds: 20,
++                presetID: presetID
++            )
++        )
++
++        let restored = try JSONDecoder().decode(
++            CodexMotionDisplaySettings.self,
++            from: JSONEncoder().encode(settings)
++        )
++
++        XCTAssertTrue(restored.idleScreensaver.isEnabled)
++        XCTAssertEqual(restored.idleScreensaver.inputScope, .macAndCodex)
++        XCTAssertEqual(restored.idleScreensaver.delaySeconds, 45)
++        XCTAssertEqual(restored.idleScreensaver.durationSeconds, 20)
++        XCTAssertEqual(restored.idleScreensaver.presetID, presetID)
++    }
++
++    func testDisplaySettings_whenDecodingLegacyJSON_disablesIdleScreensaverByDefault() throws {
++        let data = Data("""
++        {
++          "scope": "allPages"
++        }
++        """.utf8)
++
++        let settings = try JSONDecoder().decode(CodexMotionDisplaySettings.self, from: data)
++
++        XCTAssertFalse(settings.idleScreensaver.isEnabled)
++        XCTAssertEqual(settings.idleScreensaver.delaySeconds, 300)
++        XCTAssertEqual(settings.idleScreensaver.durationSeconds, 60)
++    }
++
++    func testDisplaySettings_whenDecodingExistingScreensaverSettings_defaultsDurationToOneMinute() throws {
++        let data = Data("""
++        {
++          "scope": "allPages",
++          "idleScreensaver": {
++            "isEnabled": true,
++            "inputScope": "launchpadAndCodex",
++            "delaySeconds": 120
++          }
++        }
++        """.utf8)
++
++        let settings = try JSONDecoder().decode(CodexMotionDisplaySettings.self, from: data)
++
++        XCTAssertTrue(settings.idleScreensaver.isEnabled)
++        XCTAssertEqual(settings.idleScreensaver.delaySeconds, 120)
++        XCTAssertEqual(settings.idleScreensaver.durationSeconds, 60)
++    }
++
++    func testIdleScreensaverPolicy_whenUsingLaunchpadScope_ignoresRecentMacInput() {
++        let settings = LaunchpadIdleScreensaverSettings(
++            isEnabled: true,
++            inputScope: .launchpadAndCodex,
++            delaySeconds: 30,
++            presetID: UUID()
++        )
++
++        let shouldPlay = LaunchpadIdleScreensaverPolicy.shouldPlay(
++            settings: settings,
++            hasPreset: true,
++            codexIsBusy: false,
++            launchpadAndCodexIdleSeconds: 31,
++            macIdleSeconds: 1
++        )
++
++        XCTAssertTrue(shouldPlay)
++    }
++
++    func testIdleScreensaverPolicy_whenUsingMacScope_stopsForRecentMacInputAndCodexWork() {
++        let settings = LaunchpadIdleScreensaverSettings(
++            isEnabled: true,
++            inputScope: .macAndCodex,
++            delaySeconds: 30,
++            presetID: UUID()
++        )
++
++        XCTAssertFalse(LaunchpadIdleScreensaverPolicy.shouldPlay(
++            settings: settings,
++            hasPreset: true,
++            codexIsBusy: false,
++            launchpadAndCodexIdleSeconds: 60,
++            macIdleSeconds: 2
++        ))
++        XCTAssertFalse(LaunchpadIdleScreensaverPolicy.shouldPlay(
++            settings: settings,
++            hasPreset: true,
++            codexIsBusy: true,
++            launchpadAndCodexIdleSeconds: 60,
++            macIdleSeconds: 60
++        ))
++    }
++
++    func testDisplaySettings_whenDecodingLegacyJSON_defaultsGlobalPadLEDPreservationToFalse() throws {
++        // Given
++        let data = Data("""
++        {
++          "scope": "allPages"
++        }
++        """.utf8)
++
++        // When
++        let settings = try JSONDecoder().decode(CodexMotionDisplaySettings.self, from: data)
++
++        // Then
++        XCTAssertFalse(settings.preservesPadLEDsDuringMotion)
++    }
++
++    func testDisplaySettings_whenLegacyPresentationPreservesPadLEDs_migratesTheGlobalPreference() {
++        // Given
++        let legacySettingsData = Data("""
++        {
++          "scope": "allPages"
++        }
++        """.utf8)
++        let legacyPresentations = [
++            CodexActivity.connecting.rawValue: CodexMotionPresentation(preservesPadLEDsDuringMotion: false),
++            CodexActivity.completed.rawValue: CodexMotionPresentation(preservesPadLEDsDuringMotion: true)
++        ]
++
++        // When
++        let restored = CodexMotionDisplaySettings.restored(
++            from: legacySettingsData,
++            legacyPresentations: legacyPresentations
++        )
++
++        // Then
++        XCTAssertTrue(restored.settings.preservesPadLEDsDuringMotion)
++        XCTAssertTrue(restored.didMigrateLegacyPreservation)
++    }
++
++    func testDisplaySettings_whenGlobalPreservationIsEnabled_usesItForEveryStatus() {
++        // Given
++        let settings = CodexMotionDisplaySettings(preservesPadLEDsDuringMotion: true)
++
++        // When
++        let preservationByActivity = Dictionary(
++            uniqueKeysWithValues: CodexActivity.allCases.map { activity in
++                (activity, settings.shouldPreservePadLEDsDuringMotion(for: activity))
++            }
++        )
++
++        // Then
++        XCTAssertEqual(Set(preservationByActivity.values), [true])
++    }
++
++    func testRuleLayout_whenRunning_keepsTheHoldToggleOnTheMainRuleRowOnly() {
++        // Given
++        let activities = CodexActivity.allCases
++
++        // When
++        let placementByActivity = Dictionary(
++            uniqueKeysWithValues: activities.map { activity in
++                (activity, CodexMotionRuleLayout.holdTogglePlacement(for: activity))
++            }
++        )
++
++        // Then
++        XCTAssertEqual(placementByActivity[.running], .mainRuleRow)
++        XCTAssertTrue(activities.filter { $0 != .running }.allSatisfy {
++            placementByActivity[$0] == .hidden
++        })
++    }
++
++    func testPresentation_whenDecodingLegacyJSON_defaultsToReplacingOrdinaryPadLEDs() throws {
++        // Given
++        let data = Data("""
++        {
++          "presetID": null,
++          "dismissal": "afterDuration",
++          "durationSeconds": 5,
++          "dismissPadID": "grid_0_0"
++        }
++        """.utf8)
++
++        // When
++        let presentation = try JSONDecoder().decode(CodexMotionPresentation.self, from: data)
++
++        // Then
++        XCTAssertFalse(presentation.preservesPadLEDsDuringMotion)
++    }
++
++    func testPresentation_whenPreservationIsEnabled_roundTripsThePersistedOption() throws {
++        // Given
++        let presentation = CodexMotionPresentation(preservesPadLEDsDuringMotion: true)
++
++        // When
++        let decoded = try JSONDecoder().decode(
++            CodexMotionPresentation.self,
++            from: JSONEncoder().encode(presentation)
++        )
++
++        // Then
++        XCTAssertTrue(decoded.preservesPadLEDsDuringMotion)
++    }
++
++    @MainActor
++    func testMotionFrame_whenPreservationIsEnabled_keepsAbsentPadAndOverridesPresentPad() {
++        // Given
++        var sent: [[LaunchpadMIDIMessage]] = []
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false, messageSink: { sent.append($0) })
++        let page = page(gridColors: ["green", "darkRed"])
++        midi.updateLEDs(for: eightPages(first: page), activePage: 0)
++        sent.removeAll()
++        let motion = MotionPreset(
++            name: "Overlay",
++            loop: true,
++            frameDurationMs: 60_000,
++            frames: [MotionFrame(pixels: [MotionPixel(row: 1, column: 2, color: "yellow")])]
++        )
++
++        // When
++        _ = midi.playMotion(motion, preservingPadLEDs: true)
++
++        // Then
++        XCTAssertEqual(value(forNote: 0, in: sent.last), 44)
++        XCTAssertEqual(value(forNote: 1, in: sent.last), 62)
++        midi.stopMotion(restorePage: false)
++    }
++
++    @MainActor
++    func testMotionFrame_whenPreservationIsDisabled_replacesAbsentPadWithOff() {
++        // Given
++        var sent: [[LaunchpadMIDIMessage]] = []
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false, messageSink: { sent.append($0) })
++        midi.updateLEDs(for: eightPages(first: page(gridColors: ["green"])), activePage: 0)
++        sent.removeAll()
++        let motion = MotionPreset(
++            name: "Replace",
++            loop: true,
++            frameDurationMs: 60_000,
++            frames: [MotionFrame(pixels: [MotionPixel(row: 1, column: 2, color: "yellow")])]
++        )
++
++        // When
++        _ = midi.playMotion(motion, preservingPadLEDs: false)
++
++        // Then
++        XCTAssertEqual(value(forNote: 0, in: sent.last), 12)
++        XCTAssertEqual(value(forNote: 1, in: sent.last), 62)
++        midi.stopMotion(restorePage: false)
++    }
++
++    @MainActor
++    func testMotionFrame_whenPreservationIsEnabled_treatsExplicitOffAsAuthoritative() {
++        // Given
++        var sent: [[LaunchpadMIDIMessage]] = []
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false, messageSink: { sent.append($0) })
++        midi.updateLEDs(for: eightPages(first: page(gridColors: ["green"])), activePage: 0)
++        sent.removeAll()
++        let motion = MotionPreset(
++            name: "Black pixel",
++            loop: true,
++            frameDurationMs: 60_000,
++            frames: [MotionFrame(pixels: [MotionPixel(row: 1, column: 1, color: "off")])]
++        )
++
++        // When
++        _ = midi.playMotion(motion, preservingPadLEDs: true)
++
++        // Then
++        XCTAssertEqual(value(forNote: 0, in: sent.last), 12)
++        midi.stopMotion(restorePage: false)
++    }
++
++    @MainActor
++    func testMotionStop_whenPageChanges_restoresNewPageWithoutMutatingSavedPads() {
++        // Given
++        var sent: [[LaunchpadMIDIMessage]] = []
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false, messageSink: { sent.append($0) })
++        let first = page(gridColors: ["green"])
++        let second = page(gridColors: ["red"])
++        var pages = eightPages(first: first)
++        pages[1] = second
++        midi.updateLEDs(for: pages, activePage: 0)
++        let motion = MotionPreset(
++            name: "Overlay",
++            loop: true,
++            frameDurationMs: 60_000,
++            frames: [MotionFrame(pixels: [MotionPixel(row: 1, column: 2, color: "yellow")])]
++        )
++        _ = midi.playMotion(motion, preservingPadLEDs: true)
++        let savedPages = pages
++        sent.removeAll()
++
++        // When
++        midi.updateLEDs(for: pages, activePage: 1)
++        midi.stopMotion()
++
++        // Then
++        XCTAssertEqual(value(forNote: 0, in: sent.last), 14)
++        XCTAssertEqual(pages, savedPages)
++    }
++
++    @MainActor
++    func testSideLEDs_whenPageChanges_keepTheirExistingValues() {
++        // Given
++        var sent: [[LaunchpadMIDIMessage]] = []
++        let midi = LaunchpadMIDIManager(startsMIDIClient: false, messageSink: { sent.append($0) })
++        var pages = eightPages(first: page(gridColors: [], sideColors: ["green"]))
++        pages[1] = page(gridColors: [], sideColors: ["red"])
++        midi.updateLEDs(for: pages, activePage: 0)
++        sent.removeAll()
++
++        // When
++        midi.updateLEDs(for: pages, activePage: 1)
++
++        // Then
++        XCTAssertEqual(value(forNote: 8, in: sent.last), 44)
++        XCTAssertEqual(midi.ledState.side[0], 44)
++    }
++
++    @MainActor
++    func testVirtualMotionFrame_whenPreservationIsEnabled_matchesHardwareComposition() {
++        // Given
++        let player = VirtualMotionPlayer()
++        let underlyingPage = page(gridColors: ["green", "darkRed"])
++        let motion = MotionPreset(
++            name: "Virtual overlay",
++            loop: true,
++            frameDurationMs: 60_000,
++            frames: [MotionFrame(pixels: [MotionPixel(row: 1, column: 2, color: "yellow")])]
++        )
++
++        // When
++        player.play(motion, over: underlyingPage, preservingPadLEDs: true)
++
++        // Then
++        XCTAssertEqual(player.frame?.pixels.first(where: { $0.row == 1 && $0.column == 1 })?.color, "green")
++        XCTAssertEqual(player.frame?.pixels.first(where: { $0.row == 1 && $0.column == 2 })?.color, "yellow")
++        player.stop()
++    }
++
++    private func page(gridColors: [String], sideColors: [String] = []) -> LaunchPage {
++        let pads = (0..<64).map { index in
++            Pad(id: "grid_\(index / 8)_\(index % 8)", idleColor: gridColors.indices.contains(index) ? gridColors[index] : "off")
++        } + (0..<8).map { index in
++            Pad(id: "side_\(index)", idleColor: sideColors.indices.contains(index) ? sideColors[index] : "off")
++        }
++        return LaunchPage(name: "Test", pads: pads)
++    }
++
++    private func eightPages(first: LaunchPage) -> [LaunchPage] {
++        [first] + (1..<8).map { _ in page(gridColors: []) }
++    }
++
++    private func value(forNote note: UInt8, in messages: [LaunchpadMIDIMessage]?) -> UInt8? {
++        messages?.last(where: { $0.status == 0x90 && $0.number == note })?.value
++    }
++}
+--- a/Tests/ChatGPTMicroLaunchpadTests/CodexStatusBarIndicatorTests.swift
++++ b/Tests/ChatGPTMicroLaunchpadTests/CodexStatusBarIndicatorTests.swift
+@@ -0,0 +1,34 @@
++import AppKit
++import XCTest
++@testable import ChatGPTMicroLaunchpad
++
++@MainActor
++final class CodexStatusBarIndicatorTests: XCTestCase {
++    func testLEDBubbleMenuItemVisibility_defaultsToHiddenAndFollowsPreference() {
++        let suite = "LEDBubbleMenuItemTests.\(UUID().uuidString)"
++        let preferences = UserDefaults(suiteName: suite)!
++        defer { preferences.removePersistentDomain(forName: suite) }
++        let menu = NSMenu()
++        let item = NSMenuItem(title: "LED 말풍선 표시", action: nil, keyEquivalent: "")
++        item.identifier = NSUserInterfaceItemIdentifier(AppDelegate.ledBubbleMenuItemPreferenceKey)
++        menu.addItem(item)
++
++        AppDelegate.updateLEDBubbleMenuItemVisibility(in: menu, preferences: preferences)
++        XCTAssertTrue(item.isHidden)
++        preferences.set(false, forKey: AppDelegate.ledBubbleMenuItemPreferenceKey)
++        AppDelegate.updateLEDBubbleMenuItemVisibility(in: menu, preferences: preferences)
++        XCTAssertTrue(item.isHidden)
++        preferences.set(true, forKey: AppDelegate.ledBubbleMenuItemPreferenceKey)
++        AppDelegate.updateLEDBubbleMenuItemVisibility(in: menu, preferences: preferences)
++        XCTAssertFalse(item.isHidden)
++    }
++
++    func testAnimationStates_includeWorkAndAttentionStatesOnly() {
++        XCTAssertTrue(CodexStatusBarIndicator.isAnimatedActivity(.connecting))
++        XCTAssertTrue(CodexStatusBarIndicator.isAnimatedActivity(.running))
++        XCTAssertTrue(CodexStatusBarIndicator.isAnimatedActivity(.waitingForApproval))
++        XCTAssertTrue(CodexStatusBarIndicator.isAnimatedActivity(.failed))
++        XCTAssertFalse(CodexStatusBarIndicator.isAnimatedActivity(.idle))
++        XCTAssertFalse(CodexStatusBarIndicator.isAnimatedActivity(.completed))
++    }
++}

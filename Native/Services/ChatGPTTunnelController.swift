@@ -150,12 +150,12 @@ final class ChatGPTTunnelController {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-tunnel-\(UUID())")
         let healthFile = directory.appendingPathComponent("health.url")
         let server = LinkDeckMCPServer()
-        let whisper = StableWhisperMCPClient()
-        let appAPIs = AppAPIMCPBridge()
+        let pipeline = SubtitlePipelineRuntime.shared
+        let whisper = pipeline.whisper
         self.server = server
         server.handle = { [weak self] data in
             let catalog = LinkDeckMCPHandler.buttons(macPages: store.pages, phonePages: store.smartphonePages)
-            return await appAPIs.response(to: data, apps: RegisteredAppAPI.discover(buttons: catalog)) {
+            return await pipeline.response(to: data, apps: RegisteredAppAPI.discover(buttons: catalog)) {
                 await StableWhisperMCPBridge.response(to: data, client: whisper, executable: StableWhisperMCPBridge.executable()) {
                     LinkDeckMCPHandler.response(to: data, buttons: catalog, folderSyncStore: folderSyncStore) { button in
                         let result = try runner.execute(button.action, commandFileID: button.commandFileID)
@@ -165,7 +165,6 @@ final class ChatGPTTunnelController {
                 }
             }
         }
-        defer { Task { await whisper.stop(); await appAPIs.stop() } }
         server.onFailure = { [weak self] in self?.disconnect() }
         server.onRequestRejected = { [weak self] reason in self?.lastAction = "연결 요청 거부: " + reason }
         do {

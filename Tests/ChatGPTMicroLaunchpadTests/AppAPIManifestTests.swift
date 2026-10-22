@@ -33,10 +33,19 @@ final class AppAPIManifestTests: XCTestCase {
         defer { UserDefaults.standard.removeObject(forKey: preference) }
         try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": bundleID, "CFBundleExecutable": "Fixture", "CFBundlePackageType": "APPL"], format: .xml, options: 0).write(to: directory.appendingPathComponent("Contents/Info.plist"))
         try FileManager.default.copyItem(at: URL(fileURLWithPath: "/bin/cat"), to: executable)
+        let suite = "test.linkdeck.api-drop.\(UUID())"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { preferences.removePersistentDomain(forName: suite) }
+        XCTAssertThrowsError(try RegisteredAppAPI.register(appURL: directory, preferences: preferences))
+        XCTAssertTrue(RegisteredAppAPI.discover(buttons: [], preferences: preferences).isEmpty)
         XCTAssertNil(try RegisteredAppAPI.load(appURL: directory))
         let file = resources.appendingPathComponent("linkdeck.json")
         try JSONEncoder().encode(manifest()).write(to: file)
         let app = try XCTUnwrap(RegisteredAppAPI.load(appURL: directory))
+        XCTAssertEqual(try RegisteredAppAPI.register(appURL: directory, preferences: preferences).bundleID, bundleID)
+        _ = try RegisteredAppAPI.register(appURL: directory, preferences: preferences)
+        let reloadedPreferences = try XCTUnwrap(UserDefaults(suiteName: suite))
+        XCTAssertEqual(RegisteredAppAPI.discover(buttons: [], preferences: reloadedPreferences).map(\.bundleID), [bundleID])
         XCTAssertFalse(app.approved)
         UserDefaults.standard.set(app.approvalKey, forKey: preference)
         XCTAssertTrue(app.approved)
@@ -44,6 +53,8 @@ final class AppAPIManifestTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(RegisteredAppAPI.load(appURL: directory)).approved)
         try Data("invalid".utf8).write(to: file)
         XCTAssertThrowsError(try RegisteredAppAPI.load(appURL: directory))
+        XCTAssertThrowsError(try RegisteredAppAPI.register(appURL: directory, preferences: preferences))
+        XCTAssertTrue(RegisteredAppAPI.discover(buttons: [], preferences: preferences).isEmpty)
     }
 
     func testBridgeDiscoversPagesForwardsAllowedToolsAndRevokesAccess() async throws {
@@ -62,9 +73,15 @@ final class AppAPIManifestTests: XCTestCase {
         }
         func toolNames(_ reply: [String: Any]) -> [String] { ((reply["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String } }
         let unapproved = try await invoke("tools/list")
+        let approvalStatus = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(approvalStatus, .approvalRequired)
         XCTAssertFalse(toolNames(unapproved).contains(configuration.prefix + "echo"))
         UserDefaults.standard.set(app.approvalKey, forKey: preference)
+        let idleStatus = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(idleStatus, .idle)
         let listed = try await invoke("tools/list")
+        let connectedStatus = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(connectedStatus, .connected)
         XCTAssertTrue(toolNames(listed).contains(configuration.prefix + "echo"))
         XCTAssertFalse(toolNames(listed).contains(configuration.prefix + "hidden"))
         let called = try await invoke("tools/call", ["name": configuration.prefix + "echo", "arguments": ["text": "hello"]])
@@ -86,9 +103,14 @@ final class AppAPIManifestTests: XCTestCase {
         let statusObject = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(statusText.utf8)) as? [String: Any])
         let statuses = try XCTUnwrap(statusObject["apps"] as? [[String: Any]])
         XCTAssertTrue(statuses.allSatisfy { ($0["error"] as? String ?? "").contains("중복") })
+        let failureStatus = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(failureStatus, .failed)
         UserDefaults.standard.removeObject(forKey: preference)
         let revoked = try await invoke("tools/call", ["name": configuration.prefix + "echo", "arguments": [:]])
         XCTAssertEqual((revoked["result"] as? [String: Any])?["isError"] as? Bool, true)
         await bridge.stop()
+        UserDefaults.standard.set(app.approvalKey, forKey: preference)
+        let stoppedStatus = await AppAPIMCPBridge().connectionStatus(for: app)
+        XCTAssertEqual(stoppedStatus, .idle)
     }
 }

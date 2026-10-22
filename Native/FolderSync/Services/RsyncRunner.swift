@@ -28,6 +28,9 @@ enum RsyncCommandBuilder {
         if !options.includeHiddenFiles {
             arguments.append("--exclude=.*")
         }
+        if options.excludeGitMetadata {
+            arguments.append("--exclude=.git")
+        }
         if let maxFileSize = options.maxFileSize.rsyncValue {
             arguments.append("--max-size=\(maxFileSize)")
         }

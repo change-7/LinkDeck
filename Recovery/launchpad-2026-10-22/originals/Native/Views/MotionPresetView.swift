@@ -124,6 +124,9 @@ struct MotionPresetView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    Text("프리셋 가져오기")
+                        .font(.headline)
+                        .foregroundStyle(.white)
                     HStack(spacing: 10) {
                         Button("제작 프롬프트 복사") {
                             NSPasteboard.general.clearContents()

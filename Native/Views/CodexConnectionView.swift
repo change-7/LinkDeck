@@ -5,37 +5,34 @@ import UniformTypeIdentifiers
 
 struct CodexConnectionView: View {
     enum Tab: String, CaseIterable, Identifiable {
+        case connection
+        case registeredAppAPIs
         case display
-        case motion
-        case presets
         case theme
         case completionSound
         case approvalSound
-        case chatGPTTunnel
 
         var id: Self { self }
 
         var title: String {
             switch self {
+            case .connection: "연결 설정"
+            case .registeredAppAPIs: "등록된 앱 API"
             case .display: "표시 설정"
-            case .motion: "상태별 모션"
-            case .presets: "모션 프리셋"
             case .theme: "휴대폰 스킨"
             case .completionSound: "완료 사운드"
             case .approvalSound: "승인 사운드"
-            case .chatGPTTunnel: "ChatGPT 연결"
             }
         }
 
         var symbol: String {
             switch self {
+            case .connection: "network"
+            case .registeredAppAPIs: "app.connected.to.app.below.fill"
             case .display: "display"
-            case .motion: "waveform.path"
-            case .presets: "square.grid.3x3"
             case .theme: "paintpalette"
             case .completionSound: "speaker.wave.2"
             case .approvalSound: "bell.badge.waveform"
-            case .chatGPTTunnel: "network"
             }
         }
     }
@@ -44,13 +41,13 @@ struct CodexConnectionView: View {
 
     @Bindable var store: LaunchpadStore
     let folderSyncStore: FolderPairStore
-    let midi: LaunchpadMIDIManager
     let codex: CodexAppServerClient
     let chatGPTTunnel: ChatGPTTunnelController
 
     @Environment(\.dismiss) private var dismiss
     @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
-    @State private var selectedTab: Tab = .display
+    @State private var selectedTab: Tab = .connection
+    @State private var copiedSkinInstructions = false
     @State private var showingSoundError = false
     @State private var soundError = ""
     @State private var previewPlayer: AVAudioPlayer?
@@ -79,20 +76,18 @@ struct CodexConnectionView: View {
                 Divider()
 
                 switch selectedTab {
+                case .connection:
+                    connectionPane
+                case .registeredAppAPIs:
+                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, folderSyncStore: folderSyncStore, showsRegisteredAppAPIsOnly: true)
                 case .display:
                     displayPane
-                case .motion:
-                    motionRulesPane
-                case .presets:
-                    MotionPresetView(store: store, midi: midi, isEmbedded: true)
                 case .theme:
                     phoneThemePane
                 case .completionSound:
                     completionSoundPane
                 case .approvalSound:
                     approvalSoundPane
-                case .chatGPTTunnel:
-                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, folderSyncStore: folderSyncStore)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -158,30 +153,19 @@ struct CodexConnectionView: View {
                 .pickerStyle(.segmented)
             }
 
-            Section("Codex 연결") {
-                connectionCard
-            }
-
-            Section("LED 표시") {
-                motionDisplayLocation
-                weeklyUsageDisplaySetting
-            }
-
-            Section("말풍선") {
-                launchpadLEDBubbleSetting
-            }
-
-            Section("LED 화면보호기") {
-                idleScreensaverSetting
-            }
-
-            Section {
-                Text("이 앱에서 시작한 Codex 작업만 상태·모션으로 추적합니다. 기존 ChatGPT 앱 작업은 포함되지 않습니다.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
+    }
+
+    private var connectionPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            GroupBox("Codex 연결") {
+                connectionCard.padding(8)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, folderSyncStore: folderSyncStore)
+        }
     }
 
     private var phoneThemePane: some View {
@@ -191,12 +175,29 @@ struct CodexConnectionView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
+                DisclosureGroup("스킨 제작 요구사항") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("요구사항을 복사해 붙여 넣은 후, 마지막 ‘디자인 요청:’에 원하는 디자인을 적으세요.")
+                            .font(.callout).foregroundStyle(.secondary)
+                        Button(copiedSkinInstructions ? "복사됨" : "스킨 제작 요구사항 복사") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(CodexPhoneTheme.authoringInstructions, forType: .string)
+                            copiedSkinInstructions = true
+                        }
+                        Text(CodexPhoneTheme.authoringInstructions)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Divider()
+                Text("스킨 선택").font(.headline)
                 LazyVGrid(
                     columns: [GridItem(.adaptive(minimum: 280, maximum: 420), alignment: .top)],
                     alignment: .leading,
                     spacing: 14
                 ) {
-                    ForEach(CodexPhoneTheme.allCases) { theme in
+                    ForEach(store.availableCodexPhoneThemes) { theme in
                         let isSelected = store.codexPhoneTheme == theme
                         Button {
                             store.setCodexPhoneTheme(theme)
@@ -235,10 +236,27 @@ struct CodexConnectionView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("codex-phone-theme-\(theme.rawValue)")
+                        .overlay(alignment: .topTrailing) {
+                            if theme != .classic {
+                                Button(role: .destructive) { store.deleteCodexPhoneTheme(theme) } label: {
+                                    Image(systemName: "trash")
+                                        .padding(7)
+                                        .background(.regularMaterial, in: Circle())
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(theme.title) 스킨 삭제")
+                                .help("스킨 삭제")
+                                .padding(15)
+                            }
+                        }
                     }
                 }
 
-                Label("선택한 스킨은 Mac에 저장되며, 휴대폰이 다시 연결되면 자동으로 동기화됩니다.", systemImage: "iphone.and.arrow.forward")
+                if !store.deletedCodexPhoneThemes.isEmpty {
+                    Button("삭제한 스킨 복원") { store.restoreCodexPhoneThemes() }
+                }
+                Divider()
+                Label("사용 중인 스킨을 삭제하면 기본 스킨으로 전환됩니다. 삭제한 스킨은 복원할 수 있습니다.", systemImage: "iphone.and.arrow.forward")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -254,6 +272,8 @@ struct CodexConnectionView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
+                Divider()
+                Text("재생 설정").font(.headline)
                 Picker("재생 기기", selection: Binding(
                     get: { store.codexCompletionSounds.outputTarget },
                     set: { target in
@@ -288,6 +308,8 @@ struct CodexConnectionView: View {
                     previewPlayer?.volume = Float(value) / 100
                 }
 
+                Divider()
+                Text("사운드 선택·미리듣기").font(.headline)
                 VStack(spacing: 8) {
                     ForEach(store.codexCompletionSounds.options) { option in
                         HStack(spacing: 8) {
@@ -332,6 +354,8 @@ struct CodexConnectionView: View {
                     }
                 }
 
+                Divider()
+                Text("사용자 사운드").font(.headline)
                 Button { importCompletionSound() } label: {
                     Label("음성 파일 추가…", systemImage: "plus")
                 }
@@ -359,10 +383,12 @@ struct CodexConnectionView: View {
     private var approvalSoundPane: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("승인·확인 요청이 오면 선택한 위치에서 사운드를 재생합니다. 미리듣기는 Mac에서 재생됩니다.")
+                Text("항상 허용·이 대화에서만 허용·거부 등의 선택이 필요한 Codex 승인 요청에도 이 소리를 사용합니다. 선택한 기기에서 재생하며, 미리듣기는 Mac에서 재생됩니다.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
 
+                Divider()
+                Text("재생 설정").font(.headline)
                 Picker("재생 기기", selection: Binding(
                     get: { store.codexCompletionSounds.approvalSoundOutputTarget },
                     set: { target in
@@ -397,6 +423,8 @@ struct CodexConnectionView: View {
                     previewPlayer?.volume = Float(value) / 100
                 }
 
+                Divider()
+                Text("사운드 선택·미리듣기").font(.headline)
                 VStack(spacing: 8) {
                     ForEach(store.codexCompletionSounds.options) { option in
                         HStack(spacing: 8) {
@@ -441,6 +469,8 @@ struct CodexConnectionView: View {
                     }
                 }
 
+                Divider()
+                Text("사용자 사운드").font(.headline)
                 Button { importCompletionSound(selectForApproval: true) } label: {
                     Label("승인 사운드 파일 추가…", systemImage: "plus")
                 }
@@ -540,6 +570,39 @@ struct CodexConnectionView: View {
     @ViewBuilder
     private func phoneThemePreview(_ theme: CodexPhoneTheme) -> some View {
         switch theme {
+        case .dotConsole:
+            ZStack {
+                Color(red: 0.025, green: 0.04, blue: 0.065)
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 9) {
+                        Text("DOT CONSOLE").font(.system(size: 8, weight: .bold, design: .monospaced))
+                        dotMatrixCompletionMark
+                        Text("RUNNING").font(.system(size: 12, weight: .bold, design: .monospaced))
+                    }
+                    .foregroundStyle(.cyan)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(spacing: 8) {
+                        ForEach(["5-HOUR", "1-WEEK"], id: \.self) { label in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("\(label)  76%").font(.system(size: 8, weight: .bold, design: .monospaced))
+                                HStack(spacing: 2) {
+                                    ForEach(0..<12) { index in
+                                        Circle().fill(index < 9 ? Color.cyan : Color.cyan.opacity(0.15)).frame(width: 4, height: 4)
+                                    }
+                                }
+                                Text(label == "5-HOUR" ? "03:15  ·  3시간 4분" : "10월 27일 15:35  ·  6일+15시간")
+                                    .font(.system(size: 6, design: .monospaced))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color.cyan.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                            .overlay(RoundedRectangle(cornerRadius: 5).stroke(Color.cyan.opacity(0.4)))
+                        }
+                    }
+                    .foregroundStyle(.white)
+                }
+                .padding(14)
+            }
         case .controlCabinet:
             ZStack {
                 if let url = Bundle.module.url(forResource: "ControlCabinetBackground", withExtension: "png"),
@@ -831,242 +894,6 @@ struct CodexConnectionView: View {
             }
             .frame(height: 4)
         }
-    }
-
-    private var motionRulesPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
-                Text("상태").frame(width: 74, alignment: .leading)
-                Text("모션").frame(width: 104, alignment: .leading)
-                Text("").frame(width: 58)
-                Text("종료 방식").frame(width: 108, alignment: .leading)
-                Text("조건").frame(width: 70, alignment: .leading)
-                Text("옵션").frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.bottom, 7)
-
-            GroupBox {
-                VStack(spacing: 0) {
-                    ForEach(Array(motionActivities.enumerated()), id: \.element.id) { index, activity in
-                        CodexMotionRuleCard(store: store, midi: midi, activity: activity)
-                        if index < motionActivities.count - 1 {
-                            Divider()
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    private var motionActivities: [CodexActivity] {
-        [.connecting, .running, .waitingForApproval, .completed, .failed]
-    }
-
-    private var motionDisplayLocation: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            LabeledContent("상태 모션 페이지") {
-                Picker("Codex 상태 모션 표시 페이지", selection: motionDisplayPageBinding) {
-                    ForEach(Array(store.pages.enumerated()), id: \.element.id) { index, page in
-                        Text("P\(index + 1) · \(page.name)").tag(page.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 180)
-            }
-            Toggle("모션 재생 중에도 기존 패드 LED 유지", isOn: preservesPadLEDsBinding)
-                .accessibilityIdentifier("codex-motion-preserve-pad-leds-toggle")
-        }
-    }
-
-    private var launchpadLEDBubbleSetting: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("Launchpad LED 말풍선 표시", isOn: launchpadLEDBubbleBinding)
-                .accessibilityIdentifier("launchpad-led-bubble-toggle")
-            LabeledContent("크기") {
-                Picker("Launchpad LED 말풍선 크기", selection: launchpadLEDBubbleSizeBinding) {
-                    ForEach(LaunchpadLEDBubbleSize.allCases) { size in
-                        Text(size.title).tag(size)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 120)
-                .accessibilityIdentifier("launchpad-led-bubble-size-picker")
-            }
-            .disabled(!store.codexMotionDisplaySettings.showsLaunchpadLEDBubble)
-        }
-    }
-
-    private var idleScreensaverSetting: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("사용", isOn: idleScreensaverEnabledBinding)
-                .accessibilityIdentifier("idle-screensaver-toggle")
-
-            LabeledContent("입력 기준") {
-                Picker("화면보호기 입력 기준", selection: idleScreensaverInputScopeBinding) {
-                    ForEach(LaunchpadIdleInputScope.allCases) { scope in
-                        Text(scope.title).tag(scope)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 160)
-            }
-
-            LabeledContent("시작 및 재생 시간") {
-                HStack(spacing: 6) {
-                TextField("초", value: idleScreensaverDelayBinding, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 58)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityLabel("화면보호기 시작 대기 시간(초)")
-                Text("초 후")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-
-                TextField("초", value: idleScreensaverDurationBinding, format: .number)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 58)
-                    .multilineTextAlignment(.trailing)
-                    .accessibilityLabel("화면보호기 지속 시간(초)")
-                Text("초 재생")
-                    .foregroundStyle(.secondary)
-                }
-            }
-
-            LabeledContent("재생 모션") {
-                Picker("화면보호기 모션", selection: idleScreensaverPresetBinding) {
-                    Text("모션 선택").tag(UUID?.none)
-                    ForEach(store.motionPresets) { preset in
-                        Text(preset.name).tag(Optional(preset.id))
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 180)
-            }
-            .disabled(!store.codexMotionDisplaySettings.idleScreensaver.isEnabled)
-        }
-    }
-
-    private var weeklyUsageDisplaySetting: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Toggle("주간 잔여량 표시", isOn: weeklyUsageEnabledBinding)
-                .accessibilityIdentifier("weekly-usage-display-toggle")
-
-            LabeledContent("표시 방식") {
-                Picker("주간 잔여량 표시 방식", selection: weeklyUsageStyleBinding) {
-                    ForEach(CodexWeeklyUsageDisplayStyle.allCases) { style in
-                        Text(style.title).tag(style)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 140)
-            }
-
-            LabeledContent("표시 페이지") {
-                Picker("주간 잔여량 표시 페이지", selection: weeklyUsagePageBinding) {
-                    ForEach(Array(store.pages.enumerated()), id: \.element.id) { index, page in
-                        Text("P\(index + 1) · \(page.name)").tag(page.id)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 180)
-            }
-            .disabled(!store.codexMotionDisplaySettings.weeklyUsageDisplay.isEnabled)
-            Text(store.codexMotionDisplaySettings.weeklyUsageDisplay.style == .level
-                ? "평소 사용량 표시 · 모션 종료 후 자동 복귀"
-                : "0%=0 · 100%=00 · 모션 종료 후 자동 복귀")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var motionDisplayPageBinding: Binding<UUID> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.pageID ?? store.pages[0].id },
-            set: { store.setCodexMotionDisplayPageID($0) }
-        )
-    }
-
-    private var preservesPadLEDsBinding: Binding<Bool> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.preservesPadLEDsDuringMotion },
-            set: { store.setCodexMotionPreservesPadLEDsDuringMotion($0) }
-        )
-    }
-
-    private var launchpadLEDBubbleBinding: Binding<Bool> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.showsLaunchpadLEDBubble },
-            set: { store.setLaunchpadLEDBubbleVisible($0) }
-        )
-    }
-
-    private var launchpadLEDBubbleSizeBinding: Binding<LaunchpadLEDBubbleSize> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.launchpadLEDBubbleSize },
-            set: { store.setLaunchpadLEDBubbleSize($0) }
-        )
-    }
-
-    private var idleScreensaverEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.idleScreensaver.isEnabled },
-            set: { store.setIdleScreensaverEnabled($0) }
-        )
-    }
-
-    private var idleScreensaverInputScopeBinding: Binding<LaunchpadIdleInputScope> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.idleScreensaver.inputScope },
-            set: { store.setIdleScreensaverInputScope($0) }
-        )
-    }
-
-    private var idleScreensaverDelayBinding: Binding<Int> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.idleScreensaver.delaySeconds },
-            set: { store.setIdleScreensaverDelaySeconds($0) }
-        )
-    }
-
-    private var idleScreensaverPresetBinding: Binding<UUID?> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.idleScreensaver.presetID },
-            set: { store.setIdleScreensaverPresetID($0) }
-        )
-    }
-
-    private var idleScreensaverDurationBinding: Binding<Int> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.idleScreensaver.durationSeconds },
-            set: { store.setIdleScreensaverDurationSeconds($0) }
-        )
-    }
-
-    private var weeklyUsageEnabledBinding: Binding<Bool> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.weeklyUsageDisplay.isEnabled },
-            set: { store.setWeeklyUsageDisplayEnabled($0) }
-        )
-    }
-
-    private var weeklyUsagePageBinding: Binding<UUID> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.weeklyUsageDisplay.pageID ?? store.pages[0].id },
-            set: { store.setWeeklyUsageDisplayPageID($0) }
-        )
-    }
-
-    private var weeklyUsageStyleBinding: Binding<CodexWeeklyUsageDisplayStyle> {
-        Binding(
-            get: { store.codexMotionDisplaySettings.weeklyUsageDisplay.style },
-            set: { store.setWeeklyUsageDisplayStyle($0) }
-        )
     }
 
     private var statusColor: Color {

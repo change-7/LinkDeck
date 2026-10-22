@@ -18,6 +18,7 @@ final class FolderPairStore {
     var logs: [SyncLogEntry] = []
     var states: [UUID: SyncState] = [:]
     var appSettings = AppSettings()
+    let gitSyncStore: GitSyncStore
     var githubAuthState: GitHubAuthState = .unknown
     var githubRepositories: [GitHubRepository] = []
     var githubRepositoryState: GitHubRepositoryState = .idle
@@ -31,19 +32,32 @@ final class FolderPairStore {
     var githubFreshnesses: [UUID: GitHubFreshness] = [:]
     private let githubService = GitHubSyncService()
     private let githubAuthService = GitHubAuthService()
+    private let persistsToDefaults: Bool
     @ObservationIgnored private var volumeMonitor: VolumeMonitor?
 
-    init() {
+    init(gitSyncStore: GitSyncStore = GitSyncStore(), initialPairs: [FolderPair]? = nil) {
+        self.gitSyncStore = gitSyncStore
+        persistsToDefaults = initialPairs == nil
+        if let initialPairs {
+            pairs = initialPairs
+            selectedPairID = initialPairs.first?.id
+            logs = []
+            appSettings = AppSettings()
+            pairs.forEach { _ = integratedGitConfiguration(for: $0) }
+            return
+        }
         Self.migrateWorkspaceDefaultsIfNeeded()
         pairs = Self.load([FolderPair].self, key: Key.pairs) ?? []
         selectedPairID = Self.loadSelectedPairID()
         logs = Self.load([SyncLogEntry].self, key: Key.logs) ?? []
         appSettings = Self.load(AppSettings.self, key: Key.appSettings) ?? AppSettings()
+        pairs.forEach { _ = integratedGitConfiguration(for: $0) }
         volumeMonitor = VolumeMonitor { [weak self] in self?.resumeWaitingPairs() }
     }
 
     func add(_ pair: FolderPair) {
         pairs.append(pair)
+        _ = integratedGitConfiguration(for: pair)
         if selectedPairID == nil {
             setSelectedPair(pair.id)
         }
@@ -62,6 +76,9 @@ final class FolderPairStore {
         intervalTasks[pair.id]?.cancel()
         intervalTasks[pair.id] = nil
         pairs.removeAll { $0.id == pair.id }
+        if let configuration = gitSyncStore.configurations.first(where: { $0.id == pair.id }) {
+            gitSyncStore.remove(configuration)
+        }
         states[pair.id] = nil
         githubStatuses[pair.id] = nil
         githubFreshnesses[pair.id] = nil
@@ -88,6 +105,24 @@ final class FolderPairStore {
         )
     }
 
+    func setGitSyncLink(_ link: GitSyncLink?, for pair: FolderPair) {
+        guard state(for: pair) != .syncing,
+              let index = pairs.firstIndex(where: { $0.id == pair.id }) else { return }
+        pairs[index].gitSyncLink = link
+        savePairs()
+    }
+
+    private func runGitLink(for pair: FolderPair, position: GitSyncLinkPosition) async throws {
+        guard let link = pair.gitSyncLink, link.position == position else { return }
+        let job = try gitSyncStore.start(syncID: link.syncID, direction: link.direction)
+        guard let completed = await gitSyncStore.wait(jobID: job.id), completed.success == true else {
+            let message = gitSyncStore.latestJob(syncID: link.syncID)?.errorMessage
+                ?? "연계된 Git 동기화가 완료되지 않았습니다."
+            throw NSError(domain: "LinkDeck.GitSync", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: message])
+        }
+    }
+
     private func sync(
         _ pair: FolderPair,
         waitsForStableInput: Bool,
@@ -97,6 +132,7 @@ final class FolderPairStore {
         states[pair.id] = .syncing
         appendLog(level: .info, event: SyncLogMessage(kind: .syncStarted, pairName: pair.name))
         do {
+            try await runGitLink(for: pair, position: .before)
             guard let folderAReference = pair.folderA,
                   let folderBReference = pair.folderB else {
                 throw SyncError.outputFolderIsNotDirectory(AppText.folderB)
@@ -122,6 +158,7 @@ final class FolderPairStore {
             } else {
                 try await RsyncRunner().copy(from: fromFolder, to: toFolder, options: pair.options)
             }
+            try await runGitLink(for: pair, position: .after)
             let completedAt = Date.now
             states[pair.id] = .succeeded(completedAt)
             if let index = pairs.firstIndex(where: { $0.id == pair.id }) {
@@ -170,7 +207,8 @@ final class FolderPairStore {
     func setSyncMode(_ syncMode: SyncMode, for pair: FolderPair) {
         guard let index = pairs.firstIndex(where: { $0.id == pair.id }) else { return }
         pairs[index].syncMode = syncMode
-        if syncMode.isTwoWay {
+        _ = integratedGitConfiguration(for: pairs[index])
+        if syncMode.isTwoWay && pairs[index].githubSync == nil {
             pairs[index].isRealtimeEnabled = false
         }
         savePairs()
@@ -235,6 +273,7 @@ final class FolderPairStore {
     func setGitHubSync(_ configuration: GitHubSyncConfiguration?, for pair: FolderPair) {
         guard let index = pairs.firstIndex(where: { $0.id == pair.id }) else { return }
         pairs[index].githubSync = configuration
+        _ = integratedGitConfiguration(for: pairs[index])
         savePairs()
         configureGitHubWatcher(for: pairs[index])
         if configuration != nil {
@@ -248,46 +287,79 @@ final class FolderPairStore {
         }
     }
 
+    func integratedGitConfiguration(for pair: FolderPair) -> GitSyncConfiguration? {
+        guard let endpoint = pair.githubSync,
+              let folder = githubLocalReference(for: pair, configuration: endpoint) else { return nil }
+        let direction: GitSyncDirection = pair.syncMode.isTwoWay ? .bidirectional
+            : (isGitHubPushDirection(for: pair, configuration: endpoint) ? .push : .pull)
+        var configuration = gitSyncStore.configurations.first { $0.id == pair.id }
+            ?? GitSyncConfiguration(id: pair.id, name: pair.name, folder: folder)
+        if configuration.folder != folder {
+            configuration.remote = ""
+            configuration.branch = ""
+        }
+        configuration.name = pair.name
+        configuration.folder = folder
+        configuration.direction = direction
+        if gitSyncStore.configurations.contains(where: { $0.id == pair.id }) {
+            gitSyncStore.update(configuration)
+        } else {
+            gitSyncStore.add(configuration)
+        }
+        return configuration
+    }
+
     func syncToGitHub(_ pair: FolderPair) async {
         guard let configuration = pair.githubSync else { return }
         guard state(for: pair) != .syncing else { return }
         states[pair.id] = .syncing
         appendLog(level: .info, event: SyncLogMessage(kind: .githubSyncStarted, pairName: pair.name))
         do {
-            guard try await githubAuthService.isAuthenticated() else {
-                throw GitHubSyncError.authenticationRequired
-            }
-            guard let localReference = githubLocalReference(for: pair, configuration: configuration) else {
+            guard var gitConfiguration = integratedGitConfiguration(for: pair) else {
                 throw SyncError.outputFolderIsNotDirectory(configuration.endpointSide == .a ? AppText.folderB : AppText.folderA)
             }
-            let folder = try BookmarkManager.resolve(localReference)
+            let folder = try BookmarkManager.resolve(gitConfiguration.folder)
             let hasAccess = folder.startAccessingSecurityScopedResource()
-            guard hasAccess else { throw BookmarkError.accessDenied(localReference.displayPath) }
+            guard hasAccess else { throw BookmarkError.accessDenied(gitConfiguration.folder.displayPath) }
             defer { folder.stopAccessingSecurityScopedResource() }
             if appSettings.waitsForFileOperations {
                 try await FolderStabilityMonitor.waitUntilStable(at: folder)
             }
-            let mirror = githubMirror(for: pair)
-            let result: GitHubSyncResult
-            if isGitHubPushDirection(for: pair, configuration: configuration) {
-                result = try await githubService.sync(source: folder, configuration: configuration, mirror: mirror)
-            } else {
-                result = try await githubService.pull(target: folder, configuration: configuration, mirror: mirror)
+            let detected = try await gitSyncStore.detect(folder: gitConfiguration.folder,
+                remote: gitConfiguration.remote, branch: gitConfiguration.branch)
+            let remoteURL = try await GitSyncProcess().run(["remote", "get-url", detected.remote], at: URL(fileURLWithPath: detected.rootPath))
+            guard remoteURL.status == 0,
+                  Self.normalizedGitRemote(remoteURL.output) == Self.normalizedGitRemote(configuration.repositoryURL) else {
+                throw GitSyncFailure(code: .missingRemote)
             }
-            githubStatuses[pair.id] = try await githubService.status(at: mirror)
+            gitConfiguration.remote = detected.remote
+            gitConfiguration.branch = detected.branch
+            gitSyncStore.update(gitConfiguration)
+            let job = try gitSyncStore.start(syncID: pair.id)
+            guard let result = await gitSyncStore.wait(jobID: job.id), result.succeeded else {
+                throw GitSyncFailure(code: gitSyncStore.job(id: job.id)?.errorCode ?? .commandFailed)
+            }
             let completedAt = Date.now
             states[pair.id] = .succeeded(completedAt)
             updateLastSynced(at: completedAt, for: pair)
-            if let currentPair = pairs.first(where: { $0.id == pair.id }) {
-                await refreshGitHubFreshness(currentPair)
-            }
-            if result.didPush {
+            githubFreshnesses[pair.id] = nil
+            if result.steps.contains(where: { $0.phase == .pushing && $0.success }) {
                 appendLog(level: .info, event: SyncLogMessage(kind: .githubPushCompleted, pairName: pair.name))
             }
         } catch {
             states[pair.id] = .failed(error.localizedDescription)
             appendLog(level: .error, event: SyncLogMessage(kind: .githubSyncFailed, pairName: pair.name))
         }
+    }
+
+    private static func normalizedGitRemote(_ value: String) -> String {
+        var value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("git@") { value = String(value.dropFirst(4)).replacingOccurrences(of: ":", with: "/") }
+        for prefix in ["https://", "http://", "ssh://git@"] where value.hasPrefix(prefix) {
+            value = String(value.dropFirst(prefix.count))
+        }
+        if value.hasSuffix(".git") { value = String(value.dropLast(4)) }
+        return value
     }
 
     func syncLocalWorkspaceToGitHubForMCP(_ pairID: UUID) async -> SyncState? {
@@ -318,7 +390,7 @@ final class FolderPairStore {
             return (nil, "해당 동기화 목록을 찾을 수 없습니다. 목록을 다시 조회하세요.")
         }
         guard pair.isEnabled else { return (nil, "이 동기화 목록은 비활성화되어 있습니다.") }
-        guard !pair.syncMode.isTwoWay else {
+        guard !pair.syncMode.isTwoWay || pair.githubSync != nil else {
             return (nil, "양방향 동기화는 충돌 처리 없이 실행할 수 없습니다. 방향을 A → B 또는 B → A로 설정하세요.")
         }
         guard state(for: pair) != .syncing else { return (nil, "이 동기화 목록은 이미 실행 중입니다.") }
@@ -341,9 +413,12 @@ final class FolderPairStore {
     }
 
     func refreshGitHubStatus(_ pair: FolderPair) async {
-        guard pair.githubSync != nil else { return }
+        guard let configuration = integratedGitConfiguration(for: pair) else { return }
         do {
-            githubStatuses[pair.id] = try await githubService.status(at: githubMirror(for: pair))
+            let folder = try BookmarkManager.resolve(configuration.folder)
+            let access = folder.startAccessingSecurityScopedResource()
+            defer { if access { folder.stopAccessingSecurityScopedResource() } }
+            githubStatuses[pair.id] = try await githubService.status(at: folder)
         } catch {
             githubStatuses[pair.id] = nil
         }
@@ -368,13 +443,11 @@ final class FolderPairStore {
                 return
             }
             defer { folder.stopAccessingSecurityScopedResource() }
-            let currentPair = pairs.first(where: { $0.id == pair.id }) ?? pair
-            githubFreshnesses[pair.id] = try await githubService.freshness(
-                localFolder: folder,
-                mirror: githubMirror(for: pair),
-                since: currentPair.lastSyncedAt,
-                includeHiddenFiles: configuration.includeHiddenFiles
-            )
+            let target = try await gitSyncStore.detect(folder: localReference)
+            let counts = try await GitSyncProcess().run(["rev-list", "--left-right", "--count", "HEAD...refs/remotes/\(target.remote)/\(target.branch)"], at: URL(fileURLWithPath: target.rootPath))
+            let values = counts.output.split(whereSeparator: \.isWhitespace).compactMap { Int($0) }
+            githubFreshnesses[pair.id] = counts.status == 0 && values.count == 2
+                ? (values[0] > 0 && values[1] == 0 ? .local : (values[1] > 0 && values[0] == 0 ? .github : nil)) : nil
         } catch {
             githubFreshnesses[pair.id] = nil
         }
@@ -482,7 +555,7 @@ final class FolderPairStore {
         guard !didRunLaunchSync else { return }
         didRunLaunchSync = true
 
-        for pair in pairs where pair.isEnabled && pair.syncOnLaunch && !pair.syncMode.isTwoWay {
+        for pair in pairs where pair.isEnabled && pair.syncOnLaunch && (!pair.syncMode.isTwoWay || pair.githubSync != nil) {
             if let configuration = pair.githubSync {
                 guard githubLocalReference(for: pair, configuration: configuration) != nil else { continue }
             } else {
@@ -568,7 +641,7 @@ final class FolderPairStore {
         githubRemotePollTasks[pair.id] = nil
         guard pair.isEnabled, pair.isRealtimeEnabled else { return }
 
-        guard let configuration = pair.githubSync, !pair.syncMode.isTwoWay else { return }
+        guard let configuration = pair.githubSync else { return }
 
         if !isGitHubPushDirection(for: pair, configuration: configuration) {
             configureGitHubRemotePolling(for: pair, intervalMinutes: configuration.remotePollIntervalMinutes)
@@ -692,11 +765,12 @@ final class FolderPairStore {
         }
     }
 
-    private func savePairs() { Self.save(pairs, key: Key.pairs) }
-    private func saveLogs() { Self.save(logs, key: Key.logs) }
-    private func saveAppSettings() { Self.save(appSettings, key: Key.appSettings) }
+    private func savePairs() { if persistsToDefaults { Self.save(pairs, key: Key.pairs) } }
+    private func saveLogs() { if persistsToDefaults { Self.save(logs, key: Key.logs) } }
+    private func saveAppSettings() { if persistsToDefaults { Self.save(appSettings, key: Key.appSettings) } }
 
     private func saveSelectedPairID() {
+        guard persistsToDefaults else { return }
         if let selectedPairID {
             Self.storage.set(selectedPairID.uuidString, forKey: Key.selectedPairID)
         } else {

@@ -1,15 +1,14 @@
 import SwiftUI
 
-enum MainScreen: Hashable {
-    case launchpadMini
+enum MainScreen: String, CaseIterable, Hashable {
     case smartphoneButtons
+    case apiApps
 }
 
 struct MainScreenSidebarNavigation: View {
     @Environment(\.colorScheme) private var colorScheme
     private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     @Binding var selection: MainScreen
-    let midiIsConnected: Bool
     var onSelectScreen: ((MainScreen) -> Void)? = nil
     var compact = false
 
@@ -18,12 +17,12 @@ struct MainScreenSidebarNavigation: View {
             if compact {
                 HStack(spacing: 4) {
                     screenButton(.smartphoneButtons, title: "휴대폰", systemImage: "iphone")
-                    screenButton(.launchpadMini, title: "런치패드 미니", systemImage: "square.grid.3x3")
+                    screenButton(.apiApps, title: "API 앱", systemImage: "point.3.connected.trianglepath.dotted")
                 }
             } else {
                 VStack(spacing: 4) {
                     screenButton(.smartphoneButtons, title: "휴대폰", systemImage: "iphone")
-                    screenButton(.launchpadMini, title: "런치패드 미니", systemImage: "square.grid.3x3")
+                    screenButton(.apiApps, title: "API 앱", systemImage: "point.3.connected.trianglepath.dotted")
                 }
             }
         }
@@ -33,9 +32,7 @@ struct MainScreenSidebarNavigation: View {
 
     private func screenButton(_ screen: MainScreen, title: String, systemImage: String) -> some View {
         let isSelected = selection == screen
-        let isAvailable = screen != .launchpadMini || midiIsConnected
         return Button {
-            guard isAvailable else { return }
             if let onSelectScreen {
                 onSelectScreen(screen)
             } else {
@@ -72,20 +69,16 @@ struct MainScreenSidebarNavigation: View {
             .contentShape(RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
-        .disabled(!isAvailable)
-        .opacity(isAvailable ? 1 : 0.38)
         .focusable(false)
         .focusEffectDisabled()
         .accessibilityLabel(title)
-        .accessibilityHint(isAvailable ? "" : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
-        .help(isAvailable ? title : "Launchpad Mini를 연결하면 사용할 수 있습니다.")
+        .help(title)
     }
 }
 
 struct MainSidebarFooter: View {
     @Environment(\.colorScheme) private var colorScheme
     let codexIsConnected: Bool
-    let midiIsConnected: Bool
     let onOpenBackupRestore: () -> Void
     let onOpenCodexSettings: () -> Void
 
@@ -93,9 +86,6 @@ struct MainSidebarFooter: View {
         HStack(spacing: 7) {
             Circle()
                 .fill(codexIsConnected ? .green : .gray)
-                .frame(width: 7, height: 7)
-            Circle()
-                .fill(midiIsConnected ? .green : .gray)
                 .frame(width: 7, height: 7)
             Spacer(minLength: 0)
             Button(action: onOpenBackupRestore) {
@@ -107,7 +97,7 @@ struct MainSidebarFooter: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("설정·버튼 백업 및 복구")
-            .help("Mac 버튼, 스마트폰 버튼, Codex 모션 설정을 백업하거나 복구합니다.")
+            .help("휴대폰 버튼과 저장된 설정을 백업하거나 복구합니다.")
 
             Button(action: onOpenCodexSettings) {
                 Image(systemName: "gearshape")
@@ -127,6 +117,6 @@ struct MainSidebarFooter: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("연결 상태와 설정")
-        .accessibilityValue("Codex \(codexIsConnected ? "연결됨" : "연결 안 됨"), Launchpad Mini \(midiIsConnected ? "연결됨" : "연결 안 됨")")
+        .accessibilityValue("Codex \(codexIsConnected ? "연결됨" : "연결 안 됨")")
     }
 }

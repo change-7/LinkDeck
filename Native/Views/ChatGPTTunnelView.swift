@@ -5,6 +5,7 @@ struct ChatGPTTunnelView: View {
     @Bindable var tunnel: ChatGPTTunnelController
     let store: LaunchpadStore
     let folderSyncStore: FolderPairStore
+    var showsRegisteredAppAPIsOnly = false
     private let runner = MacActionRunner()
     @State private var appAPIs: [RegisteredAppAPI] = []
     @State private var copiedInstructions = false
@@ -13,9 +14,36 @@ struct ChatGPTTunnelView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if showsRegisteredAppAPIsOnly {
+                    registeredAppAPIContent
+                } else {
+                    GroupBox("터널 연결") {
+                        connectionContent
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    GroupBox("연결 안내") {
+                        connectionHelp
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+            if showsRegisteredAppAPIsOnly { refreshAppAPIs() }
+        }
+    }
+
+    private var connectionContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
                 Text("ChatGPT에서 LinkDeck 버튼을 조회하고 실행합니다.")
                 Label(tunnel.message, systemImage: tunnel.isReady ? "checkmark.circle.fill" : "network")
                     .foregroundStyle(tunnel.isReady ? Color.green : Color.secondary)
+                Divider()
+                Text("연결 정보").font(.headline)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("터널 ID").font(.headline)
                     TextField("tunnel_…", text: $tunnel.tunnelID)
@@ -27,6 +55,8 @@ struct ChatGPTTunnelView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 .disabled(tunnel.isActive)
+                Divider()
+                Text("연결 관리").font(.headline)
                 Toggle("앱 시작 시 자동 연결", isOn: $tunnel.autoConnect)
                 Button(tunnel.isActive ? "연결 해제" : "터널 연결") {
                     if tunnel.isActive { tunnel.disconnect(disableAutoConnect: true) }
@@ -38,13 +68,18 @@ struct ChatGPTTunnelView: View {
                 if !tunnel.lastAction.isEmpty {
                     Text("최근 실행: " + tunnel.lastAction).font(.caption)
                 }
-                Divider()
+        }
+    }
+
+    private var registeredAppAPIContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
                 Text("등록된 앱 API").font(.headline)
                 Text("앱에 포함된 linkdeck.json을 자동으로 확인합니다. 현재 MCP 표준 입출력 연결을 지원합니다.")
                     .font(.callout)
                 Text("앱 API는 5분 미사용 시 종료하고 다음 요청 때 다시 연결합니다. 챗뷰는 작업과 결과 회수 후 10분 미사용 시 숨겨진 자동화 앱까지 종료합니다. 수동 사용과 진행 중인 작업은 유지합니다.")
                     .font(.caption).foregroundStyle(.secondary)
                 Button("등록 앱 다시 확인") { refreshAppAPIs() }
+                Divider()
                 if appAPIs.isEmpty {
                     Text("등록된 버튼 앱에서 API 안내 파일을 찾지 못했습니다.").font(.caption).foregroundStyle(.secondary)
                 }
@@ -52,7 +87,8 @@ struct ChatGPTTunnelView: View {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }
                 ForEach(appAPIs) { api in
-                    HStack {
+                    GroupBox {
+                      HStack {
                         VStack(alignment: .leading) {
                             Text(api.manifest.name)
                             Text(api.manifest.tools.joined(separator: ", ")).font(.caption)
@@ -67,18 +103,26 @@ struct ChatGPTTunnelView: View {
                         } else {
                             Button("API 연결 허용") { api.approve(); refreshAppAPIs() }
                         }
+                      }
+                      .padding(8)
+                      .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
-                DisclosureGroup("다른 앱에 전달할 JSON 작성 요구사항") {
+                Divider()
+                DisclosureGroup("다른 앱에 전달할 API 구현·JSON 작성 요구사항") {
                     Text(AppAPIManifest.authoringInstructions)
                         .font(.system(.callout, design: .monospaced)).textSelection(.enabled)
-                    Button(copiedInstructions ? "복사됨" : "작성 요구사항과 JSON 예시 복사") {
+                    Button(copiedInstructions ? "복사됨" : "API 구현 지시사항과 JSON 예시 복사") {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(AppAPIManifest.authoringInstructions, forType: .string)
                         copiedInstructions = true
                     }
                 }
-                Divider()
+        }
+    }
+
+    private var connectionHelp: some View {
+        VStack(alignment: .leading, spacing: 16) {
                 Text("처음 연결하기").font(.headline)
                 Text("1. OpenAI에서 터널을 만들고, Tunnels Read·Use 권한이 있는 런타임 키를 발급합니다.\n2. 위에 ID와 키를 입력하고 연결합니다.\n3. ChatGPT 개발자 모드에서 앱을 만들고 해당 터널을 선택합니다. 인증은 ‘없음’을 선택합니다.")
                     .font(.callout)
@@ -87,6 +131,8 @@ struct ChatGPTTunnelView: View {
                     Link("키 발급", destination: URL(string: "https://platform.openai.com/settings/organization/api-keys")!)
                     Link("ChatGPT 앱 설정", destination: URL(string: "https://chatgpt.com/#settings/Connectors")!)
                 }
+                Divider()
+                Text("사용 방법").font(.headline)
                 Text("ChatGPT에 “LinkDeck 버튼 목록 보여줘”, “선택한 폴더싱크를 시작해줘”, “동기화 상태를 확인해줘”처럼 요청하세요. 폴더싱크는 설정된 방향과 옵션을 사용하고, 연결을 해제하면 제어도 중단됩니다.")
                     .font(.callout)
                 if ChatGPTTunnelController.executable == nil {
@@ -96,10 +142,6 @@ struct ChatGPTTunnelView: View {
                 }
                 Link("공식 연결 안내", destination: URL(string: "https://developers.openai.com/api/docs/guides/secure-mcp-tunnels")!)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .onAppear { refreshAppAPIs() }
     }
 
     private func refreshAppAPIs() {

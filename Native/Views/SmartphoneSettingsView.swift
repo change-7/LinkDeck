@@ -14,7 +14,6 @@ struct SmartphoneSettingsView: View {
     let folderSyncStore: FolderPairStore
     @Binding var selectedMainScreen: MainScreen
     let codexIsConnected: Bool
-    let midiIsConnected: Bool
     let onOpenBackupRestore: () -> Void
     let onOpenCodexSettings: () -> Void
     let onOpenFolderSyncSettings: () -> Void
@@ -170,7 +169,6 @@ struct SmartphoneSettingsView: View {
         VStack(alignment: .leading, spacing: 9) {
             MainScreenSidebarNavigation(
                 selection: $selectedMainScreen,
-                midiIsConnected: midiIsConnected,
                 onSelectScreen: { screen in
                     selectedMainScreen = screen
                     if screen == .smartphoneButtons {
@@ -248,7 +246,6 @@ struct SmartphoneSettingsView: View {
             .accessibilityHint("동기화 목록과 폴더 동기화 화면을 엽니다.")
             MainSidebarFooter(
                 codexIsConnected: codexIsConnected,
-                midiIsConnected: midiIsConnected,
                 onOpenBackupRestore: onOpenBackupRestore,
                 onOpenCodexSettings: onOpenCodexSettings
             )
@@ -748,7 +745,7 @@ struct SmartphoneSettingsView: View {
             : (button.action.kind == .none ? button.longPressAction : button.action)
         let iconAction = configuredIconAction.kind == .none ? button.longPressAction : configuredIconAction
         let appBundleIdentifier: String? = switch iconAction.kind {
-        case .app, .appFolder: iconAction.value
+        case .app, .appQuit, .appFolder: iconAction.value
         case .shortcut: iconAction.targetAppBundleIdentifier
         case .terminalCommand, .url, .workflow, .clipboardText, .none: nil
         }
@@ -829,6 +826,8 @@ struct SmartphoneSettingsView: View {
         case .workflow:
             Text("4×4 버튼 아래에서 동작과 대기 시간을 설정하세요.")
                 .font(.system(size: 10)).foregroundStyle(.secondary)
+        case .appQuit:
+            Text("앱 실행 버튼에서 ‘플러그인에서 종료 허용’을 설정하세요.")
         case .app, .appFolder:
             Button(selectedAction.kind == .appFolder ? "앱 폴더 등록" : "앱 등록") {
                 registerApplication(kind: selectedAction.kind)
@@ -845,6 +844,9 @@ struct SmartphoneSettingsView: View {
             if selectedAction.kind == .appFolder {
                 folderShortcutEditor
             }
+            Toggle("플러그인에서 종료 허용", isOn: selectedActionBinding.allowsAppTermination)
+                .toggleStyle(.checkbox)
+                .accessibilityIdentifier("app-termination-permission-toggle")
         case .shortcut:
             ShortcutComposerView(value: actionValueBinding, targetAppBundleIdentifier: targetAppBinding, launchTargetAppIfNeeded: launchTargetBinding)
                 .id("\(selectedButton.id)-\(editingLongPress)-\(editingSecondAction)")
@@ -1088,5 +1090,23 @@ struct SmartphoneSettingsView: View {
     private func runSelectedAction() {
         do { store.statusMessage = try runner.execute(selectedAction, commandFileID: selectedButton.id + (editingLongPress ? "_long_press" : "")) }
         catch { store.statusMessage = error.localizedDescription }
+    }
+}
+
+struct DarkTextField: View {
+    @Environment(\.colorScheme) private var colorScheme
+    private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
+    @Binding var text: String
+    var placeholder = ""
+
+    var body: some View {
+        TextField(placeholder, text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(theme.foreground)
+            .padding(.horizontal, 13)
+            .frame(height: 34)
+            .background(theme.input, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(theme.foreground.opacity(0.22)))
     }
 }

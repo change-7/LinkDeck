@@ -42,10 +42,16 @@ struct CodexDesktopPendingApproval: Equatable, Sendable {
     let title: String
     let detail: String
     let requestedPermissions: CodexIPCJSONValue?
+    var decisions: [CodexApprovalDecision]? = nil
+
+    var availableDecisions: [CodexApprovalDecision] {
+        decisions ?? CodexApprovalDecision.options(method: method, params: requestedPermissions.map { ["permissions": $0] } ?? [:])
+    }
 
     var kind: CodexDesktopApprovalKind? { CodexDesktopApprovalKind(method: method) }
     var numericRequestID: Int? { Int(requestID.stringValue ?? "") }
     var canRespond: Bool {
+        if let decisions { return !decisions.isEmpty }
         guard kind != .elicitation && kind != .unsupported else { return false }
         guard kind == .permissions else { return true }
         if case .object? = requestedPermissions { return true }
@@ -69,9 +75,6 @@ enum CodexDesktopApprovalIPC {
         socketPath: String = NSHomeDirectory() + "/.codex/ipc/ipc.sock",
         globalStateURL: URL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".codex/.codex-global-state.json")
     ) -> (success: Bool, message: String) {
-        guard decision == "accept" || decision == "decline" else {
-            return (false, "지원하지 않는 승인 응답입니다.")
-        }
         do {
             let client = try CodexDesktopIPCClient(socketPath: socketPath)
             let contexts = try client.approvalContexts(globalStateURL: globalStateURL)
@@ -97,7 +100,7 @@ enum CodexDesktopApprovalIPC {
                 Thread.sleep(forTimeInterval: 0.25)
                 let latest = try client.approvalContexts(globalStateURL: globalStateURL)
                 if !latest.contains(where: { $0.approval.requestKey == requestKey }) {
-                    return (true, decision == "accept" ? "Codex 승인을 전송했습니다." : "Codex 거부를 전송했습니다.")
+                    return (true, decision == "decline" || decision == "cancel" ? "Codex 거부를 전송했습니다." : "Codex 승인을 전송했습니다.")
                 }
             }
             return (false, "Codex 응답은 전송됐지만 승인 대기 상태가 해제됐는지 확인하지 못했습니다.")
@@ -112,6 +115,7 @@ enum CodexDesktopApprovalIPC {
     ) -> (method: String, params: [String: Any])? {
         guard let kind = approval.kind else { return nil }
         guard approval.canRespond else { return nil }
+        guard let selected = approval.availableDecisions.first(where: { $0.option.id == decision }) else { return nil }
         let requestID = approval.requestID.foundationValue
         var params: [String: Any] = [
             "conversationId": approval.conversationID,
@@ -119,21 +123,21 @@ enum CodexDesktopApprovalIPC {
         ]
         switch kind {
         case .commandExecution:
-            params["decision"] = decision
+            params["decision"] = selected.value.foundationValue
             return ("thread-follower-command-approval-decision", params)
         case .fileChange:
-            params["decision"] = decision
+            params["decision"] = selected.value.foundationValue
             return ("thread-follower-file-approval-decision", params)
         case .permissions:
             let permissions: Any
-            if decision == "accept" {
+            if decision == "accept" || decision == "acceptForSession" {
                 guard let requested = approval.requestedPermissions,
                       case .object = requested else { return nil }
                 permissions = requested.foundationValue
             } else {
                 permissions = [String: Any]()
             }
-            params["response"] = ["permissions": permissions, "scope": "turn"]
+            params["response"] = ["permissions": permissions, "scope": decision == "acceptForSession" ? "session" : "turn"]
             return ("thread-follower-permissions-request-approval-response", params)
         case .elicitation, .unsupported:
             return nil
@@ -168,7 +172,8 @@ enum CodexDesktopApprovalIPC {
                 method: method,
                 title: kind.title,
                 detail: detail.isEmpty ? "Codex 데스크톱에서 계속 진행하려면 확인이 필요합니다." : detail,
-                requestedPermissions: params["permissions"]
+                requestedPermissions: params["permissions"],
+                decisions: CodexApprovalDecision.options(method: method, params: params)
             )
         }
     }

@@ -102,6 +102,8 @@ enum WindowPlacement: Equatable {
 }
 
 enum MacActionError: LocalizedError {
+    case appNotRegistered
+    case appTerminationFailed
     case appNotFound
     case invalidAddress
     case accessibilityRequired
@@ -119,6 +121,8 @@ enum MacActionError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .appNotRegistered: "LinkDeck 앱 버튼에서 ‘플러그인에서 종료 허용’을 체크한 앱만 종료할 수 있습니다."
+        case .appTerminationFailed: "앱이 종료 요청을 받지 못했습니다. Mac에서 앱 상태를 확인하세요."
         case .appNotFound: "설치된 앱을 찾지 못했습니다."
         case .invalidAddress: "웹페이지 주소가 올바르지 않습니다."
         case .accessibilityRequired: "단축키 실행에는 손쉬운 사용 권한이 필요합니다."
@@ -139,6 +143,11 @@ enum MacActionError: LocalizedError {
 
 @MainActor
 final class MacActionRunner {
+    private let registeredApps: () -> Set<String>
+
+    init(registeredApps: @escaping () -> Set<String> = { RegisteredButtonApps.persistedIdentifiers(terminationAllowedOnly: true) }) {
+        self.registeredApps = registeredApps
+    }
     static let targetAppActivationOptions: NSApplication.ActivationOptions = [
         .activateAllWindows
     ]
@@ -167,6 +176,18 @@ final class MacActionRunner {
             guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: action.value) else { throw MacActionError.appNotFound }
             NSWorkspace.shared.openApplication(at: app, configuration: .init())
             return "앱을 열었습니다."
+        case .appQuit:
+            guard !action.value.isEmpty, registeredApps().contains(action.value) else {
+                throw MacActionError.appNotRegistered
+            }
+            let apps = NSRunningApplication.runningApplications(withBundleIdentifier: action.value)
+            guard !apps.isEmpty else { return "선택한 앱이 실행 중이 아닙니다." }
+            var accepted = true
+            for app in apps {
+                if !app.terminate() { accepted = false }
+            }
+            guard accepted else { throw MacActionError.appTerminationFailed }
+            return "앱에 종료를 요청했습니다. 저장 확인창이 뜨면 Mac에서 확인하세요."
         case .appFolder:
             guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: action.value) else { throw MacActionError.appNotFound }
             if let runningApp = NSRunningApplication.runningApplications(withBundleIdentifier: action.value).first {

@@ -43,6 +43,12 @@ struct AppAPIManifest: Codable, Equatable {
     static let authoringInstructions = """
     이 macOS 앱을 LinkDeck의 앱 API 연동 기능과 연결해 주세요.
 
+    먼저 LinkDeck을 포함한 다른 앱이 이 앱에 접근하고, 상태와 결과를 조회하며, 기능을 제어할 수 있는 실제 API를 구현하세요. 기존 API가 있다면 재사용하고, LinkDeck이 호출할 수 있도록 MCP 표준 입출력(mcp_stdio) 도구로 연결하세요.
+
+    공개할 기능에 맞게 상태·목록·결과 조회와 작업 실행·취소 등의 도구를 제공하세요. 각 도구는 실제 앱의 기능과 상태에 연결되어야 합니다. GUI 앱과 API 프로세스가 분리되어 있다면 실행 중인 GUI와 통신하고, GUI가 꺼져 있을 때 필요한 실행과 연결 준비도 처리하세요.
+
+    JSON 파일은 구현된 API의 연결 방법과 도구 목록을 알리는 안내 파일입니다. JSON만 추가해서는 다른 앱이 접근·조회·제어할 수 없습니다. 실제 도구 호출과 결과 조회가 동작하는지 확인한 뒤 아래 JSON을 작성하세요.
+
     1. 빌드 결과의 앱.app/Contents/Resources/linkdeck.json에 아래 형식의 UTF-8 JSON을 포함하세요. 소스 파일만 추가하지 말고 앱 번들의 리소스로 복사하세요.
     2. schemaVersion은 1, transport는 mcp_stdio입니다. 현재 지원하는 방식은 MCP 표준 입출력이며 HTTP/REST는 지원하지 않습니다.
     3. id는 앱마다 고유하고 유지되는 소문자 영문·숫자·밑줄 1~16자, name은 표시 이름입니다.
@@ -66,7 +72,7 @@ struct AppAPIManifest: Codable, Equatable {
 }
 
 @MainActor
-struct RegisteredAppAPI: Identifiable {
+struct RegisteredAppAPI: Identifiable, Equatable {
     let bundleID: String
     let appURL: URL
     let executable: URL
@@ -93,12 +99,30 @@ struct RegisteredAppAPI: Identifiable {
         return Self(bundleID: bundleID, appURL: appURL, executable: executable, manifest: manifest, approvalKey: digest)
     }
 
-    static func discover(buttons: [LinkDeckMCPButton]) -> [Self] {
+    static func register(appURL: URL, preferences: UserDefaults = .standard) throws -> Self {
+        guard appURL.isFileURL, appURL.pathExtension.lowercased() == "app",
+              let app = try load(appURL: appURL) else {
+            throw AppAPIManifest.invalid("linkdeck.json이 있는 macOS 앱을 추가하세요.")
+        }
+        var paths = preferences.dictionary(forKey: "linkdeck.api-app-paths") as? [String: String] ?? [:]
+        paths[app.bundleID] = appURL.path
+        preferences.set(paths, forKey: "linkdeck.api-app-paths")
+        return app
+    }
+
+    static func discover(buttons: [LinkDeckMCPButton], preferences: UserDefaults = .standard) -> [Self] {
         let ids = Set(buttons.filter { $0.action.kind == .app || $0.action.kind == .appFolder }.map { $0.action.value })
-        return ids.sorted().compactMap { id in
+        var apps = ids.sorted().compactMap { id -> Self? in
             guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) else { return nil }
             return try? load(appURL: url)
         }
+        let paths = preferences.dictionary(forKey: "linkdeck.api-app-paths") as? [String: String] ?? [:]
+        for path in paths.values.sorted() {
+            guard let app = try? load(appURL: URL(fileURLWithPath: path)) else { continue }
+            apps.removeAll { $0.bundleID == app.bundleID }
+            apps.append(app)
+        }
+        return apps
     }
 
     func approve() {
@@ -115,8 +139,43 @@ struct RegisteredAppAPI: Identifiable {
 
 @MainActor
 final class AppAPIMCPBridge {
+    enum ConnectionStatus: String {
+        case approvalRequired = "승인 필요"
+        case idle = "대기"
+        case connected = "연결 중"
+        case failed = "오류"
+    }
     private var clients: [String: StableWhisperMCPClient] = [:]
     private var failures: [String: String] = [:]
+    private let sharedWhisper: StableWhisperMCPClient?
+
+    init(sharedWhisper: StableWhisperMCPClient? = nil) { self.sharedWhisper = sharedWhisper }
+
+    func connectionStatus(for app: RegisteredAppAPI) async -> ConnectionStatus {
+        guard app.approved else { return .approvalRequired }
+        if failures[app.bundleID] != nil { return .failed }
+        let connection = app.bundleID == "com.pdg.stablewhisper" ? sharedWhisper ?? clients[app.approvalKey] : clients[app.approvalKey]
+        guard let connection else { return .idle }
+        return await connection.isRunning() ? .connected : .idle
+    }
+
+    func client(_ app: RegisteredAppAPI) -> StableWhisperMCPClient {
+        if app.bundleID == "com.pdg.stablewhisper", let sharedWhisper { return sharedWhisper }
+        if let saved = clients[app.approvalKey] { return saved }
+        let chatView = app.bundleID == "com.pdg.ChatGPTSplitView" && app.manifest.id == "chat_view"
+        let created = StableWhisperMCPClient(idleTimeout: .seconds(chatView ? 600 : 300), chatView: chatView)
+        clients[app.approvalKey] = created
+        return created
+    }
+
+    func call(_ app: RegisteredAppAPI, tool: String, arguments: [String: Any]) async throws -> Data {
+        guard app.approved, app.manifest.tools.contains(tool) else { throw AppAPIManifest.invalid("승인된 앱 API가 필요합니다.") }
+        let connection = client(app)
+        if app.manifest.id == "video_toolkit", ["burn_subtitles", "start_download"].contains(tool) {
+            await connection.rotateSettledConnection(limit: 32)
+        }
+        return try await connection.request(JSONSerialization.data(withJSONObject: ["method": "tools/call", "params": ["name": tool, "arguments": arguments]]), executable: app.executable, arguments: app.manifest.arguments)
+    }
 
     func stop() async {
         for client in clients.values { await client.stop() }
@@ -133,13 +192,6 @@ final class AppAPIMCPBridge {
         let name = params["name"] as? String ?? ""
         guard method == "tools/list" || (method == "tools/call" && name.hasPrefix("linkdeck_app_")) else { return await fallback() }
         func encoded(_ object: [String: Any]) -> (Int, Data) { (200, (try? JSONSerialization.data(withJSONObject: object)) ?? Data()) }
-        func client(_ app: RegisteredAppAPI) -> StableWhisperMCPClient {
-            if let saved = clients[app.approvalKey] { return saved }
-            let chatView = app.bundleID == "com.pdg.ChatGPTSplitView" && app.manifest.id == "chat_view"
-            let created = StableWhisperMCPClient(idleTimeout: .seconds(chatView ? 600 : 300), chatView: chatView)
-            clients[app.approvalKey] = created
-            return created
-        }
         do {
             if method == "tools/call", name == "linkdeck_app_api_status" {
                 guard (params["arguments"] as? [String: Any] ?? [:]).isEmpty else { throw AppAPIManifest.invalid("상태 조회에는 인수가 필요하지 않습니다.") }
@@ -195,7 +247,7 @@ final class AppAPIMCPBridge {
                   params["arguments"] == nil || params["arguments"] is [String: Any] else {
                 throw AppAPIManifest.invalid("승인된 앱 도구와 올바른 인수를 사용하세요.")
             }
-            let upstream = try await client(app).request(JSONSerialization.data(withJSONObject: ["method": "tools/call", "params": ["name": String(name.dropFirst(app.manifest.prefix.count)), "arguments": params["arguments"] ?? [:]]]), executable: app.executable, arguments: app.manifest.arguments)
+            let upstream = try await call(app, tool: String(name.dropFirst(app.manifest.prefix.count)), arguments: params["arguments"] as? [String: Any] ?? [:])
             var reply = try JSONSerialization.jsonObject(with: upstream) as? [String: Any] ?? [:]
             reply["id"] = id
             return encoded(reply)

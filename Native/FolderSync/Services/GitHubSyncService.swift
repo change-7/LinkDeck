@@ -130,7 +130,11 @@ struct GitHubRepositoryStatus: Equatable {
 actor GitHubSyncService {
     private let gitURL = URL(filePath: "/usr/bin/git")
     private let rsyncURL = URL(filePath: "/usr/bin/rsync")
-    private let commandTimeout: TimeInterval = 120
+    private let commandTimeout: TimeInterval
+
+    init(commandTimeout: TimeInterval = 120) {
+        self.commandTimeout = commandTimeout
+    }
 
     func status(at mirror: URL) throws -> GitHubRepositoryStatus {
         guard isRepository(at: mirror) else {
@@ -359,7 +363,7 @@ actor GitHubSyncService {
         return latestDate
     }
 
-    private func run(executableURL: URL, command: GitHubCommand) throws -> String {
+    func run(executableURL: URL, command: GitHubCommand) throws -> String {
         guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
             throw executableURL == gitURL ? GitHubSyncError.gitNotAvailable : GitHubSyncError.rsyncNotAvailable
         }
@@ -399,11 +403,21 @@ actor GitHubSyncService {
         } catch {
             throw GitHubSyncError.commandFailed(error.localizedDescription)
         }
+        let outputReadCompletion = DispatchSemaphore(value: 0)
+        let outputData = GitHubSyncProcessOutput()
+        // Drain while Git runs so large status/commit output cannot fill the pipe.
+        DispatchQueue.global(qos: .userInitiated).async {
+            outputData.data = output.fileHandleForReading.readDataToEndOfFile()
+            outputReadCompletion.signal()
+        }
         guard completion.wait(timeout: .now() + commandTimeout) == .success else {
             process.terminate()
             throw GitHubSyncError.commandTimedOut
         }
-        let result = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        guard outputReadCompletion.wait(timeout: .now() + 5) == .success else {
+            throw GitHubSyncError.commandTimedOut
+        }
+        let result = String(decoding: outputData.data, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard process.terminationStatus == 0 else {
             throw GitHubSyncError.commandFailed(result)
@@ -414,6 +428,11 @@ actor GitHubSyncService {
     private func changedFileCount(in status: String) -> Int {
         status.split(whereSeparator: \.isNewline).filter { !$0.isEmpty }.count
     }
+}
+
+private final class GitHubSyncProcessOutput: @unchecked Sendable {
+    // The reader writes once; the caller reads only after the completion semaphore.
+    var data = Data()
 }
 
 private extension String {

@@ -4,8 +4,14 @@ import Foundation
 @MainActor
 enum SmartphoneIconAssetProvider {
     private static var cache: [String: SmartphoneIconAsset] = [:]
+    private static var customCache: [Data: SmartphoneIconAsset] = [:]
 
     static func assets(for pages: [SmartphonePage]) -> [String: SmartphoneIconAsset] {
+        let sources = Set(pages.flatMap(\.buttons).flatMap { button in
+            [button.customIconData, button.secondCustomIconData]
+                + button.folderShortcuts.flatMap { [$0.customIconData, $0.secondCustomIconData] }
+        }.compactMap { $0 })
+        customCache = customCache.filter { sources.contains($0.key) }
         var assets: [String: SmartphoneIconAsset] = [:]
         for button in pages.flatMap(\.buttons) {
             guard !button.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -96,18 +102,17 @@ enum SmartphoneIconAssetProvider {
     }
 
     private static func customAsset(for buttonID: String, data: Data) -> SmartphoneIconAsset? {
+        if let cached = customCache[data] { return cached }
         guard let pngData = SmartphoneIconData.normalizedPNGData(from: data) else { return nil }
         let encodedData = pngData.base64EncodedString()
-        let cacheKey = "custom:\(buttonID):\(encodedData)"
-        if let cached = cache[cacheKey] { return cached }
         let asset = SmartphoneIconAsset(kind: "custom", data: encodedData)
-        cache[cacheKey] = asset
+        customCache[data] = asset
         return asset
     }
 
     private static func targetBundleIdentifier(for action: PadAction) -> String? {
         switch action.kind {
-        case .app, .appFolder:
+        case .app, .appQuit, .appFolder:
             return action.value
         case .shortcut:
             return action.targetAppBundleIdentifier

@@ -63,6 +63,40 @@ final class LinkDeckMCPTests: XCTestCase {
         try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
     }
 
+    func testQuitToolUsesOnlyTheCheckedExistingButtonAndRejectsInjectedTargets() throws {
+        var button = LinkDeckMCPButton(id: "app-button", title: "App", page: "Page", device: "Mac", press: "short",
+            action: PadAction(kind: .app, value: "test.app", allowsAppTermination: true), commandFileID: "app-button")
+        var calls = 0
+        func invoke(_ arguments: [String: Any], buttons: [LinkDeckMCPButton]) throws -> String {
+            let response = LinkDeckMCPHandler.response(to: try request("tools/call", params: ["name": "linkdeck_quit_app", "arguments": arguments]), buttons: buttons) { saved in
+                calls += 1
+                XCTAssertEqual(saved.action.kind, .appQuit)
+                XCTAssertEqual(saved.action.value, "test.app")
+                return "quit requested"
+            }
+            return String(decoding: response.body, as: UTF8.self)
+        }
+        XCTAssertEqual(button.metadata["can_quit_app"], "true")
+        XCTAssertTrue(try invoke(["button_id": "app-button"], buttons: [button]).contains("quit requested"))
+        button = LinkDeckMCPButton(id: button.id, title: button.title, page: button.page, device: button.device, press: button.press,
+            action: PadAction(kind: .app, value: "test.app"), commandFileID: button.commandFileID)
+        XCTAssertEqual(button.metadata["can_quit_app"], "false")
+        XCTAssertTrue(try invoke(["button_id": "app-button"], buttons: [button]).contains("isError"))
+        XCTAssertTrue(try invoke(["button_id": "app-button"], buttons: []).contains("isError"))
+        let invalidArguments: [[String: Any]] = [["bundle_identifier": "test.app"], ["button_id": "app-button", "force": true], ["button_id": "app-button", "command": "killall"]]
+        for arguments in invalidArguments {
+            XCTAssertTrue(try invoke(arguments, buttons: [button]).contains("-32602"))
+        }
+        XCTAssertEqual(calls, 1)
+    }
+
+    func testQuitPermissionIsDiscoverableForAlternateAppButtons() {
+        let button = SmartphoneButton(id: "phone", action: PadAction(kind: .url, value: "https://example.com"),
+            secondAction: PadAction(kind: .app, value: "test.alternate", allowsAppTermination: true))
+        let catalog = LinkDeckMCPHandler.buttons(macPages: [], phonePages: [SmartphonePage(id: "page", name: "Page", buttons: [button])])
+        XCTAssertEqual(catalog.first { $0.id == "phone:phone:second" }?.metadata["can_quit_app"], "true")
+    }
+
     func testSleepStatus_ignoresOtherAppsInactiveAndDisplayOnlyAssertions() {
         let idle: [String: Any] = ["AssertType": "PreventUserIdleSystemSleep", "AssertLevel": 1]
         XCTAssertTrue(MacSleepStatus.from(assertions: [idle], processName: "caffeinate"))
@@ -168,8 +202,13 @@ final class LinkDeckMCPTests: XCTestCase {
         let server = LinkDeckMCPServer()
         let button = LinkDeckMCPButton(id: "saved", title: "Test", page: "Page", device: "Mac", press: "short", action: PadAction(kind: .url, value: "https://example.com"), commandFileID: "saved")
         var calls = 0
+        let appButton = LinkDeckMCPButton(id: "app", title: "App", page: "Page", device: "Mac", press: "short",
+            action: PadAction(kind: .app, value: "test.app", allowsAppTermination: true), commandFileID: "app")
+        var lastAction: PadAction?
         server.handle = { data in
-            LinkDeckMCPHandler.response(to: data, buttons: [button]) { _ in calls += 1; return "ran" }
+            LinkDeckMCPHandler.response(to: data, buttons: [button, appButton]) { saved in
+                calls += 1; lastAction = saved.action; return "ran"
+            }
         }
         let url = try await server.start()
         defer { server.stop() }
@@ -194,6 +233,12 @@ final class LinkDeckMCPTests: XCTestCase {
         let ran = try await send(request("tools/call", params: ["name": "linkdeck_press_button", "arguments": ["button_id": "saved"]]))
         XCTAssertTrue(String(decoding: ran.0, as: UTF8.self).contains("ran"))
         XCTAssertEqual(calls, 1)
+        XCTAssertTrue(String(decoding: list.0, as: UTF8.self).contains("linkdeck_quit_app"))
+        let quit = try await send(request("tools/call", params: ["name": "linkdeck_quit_app", "arguments": ["button_id": "app"]]))
+        XCTAssertTrue(String(decoding: quit.0, as: UTF8.self).contains("ran"))
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(lastAction?.kind, .appQuit)
+        XCTAssertEqual(lastAction?.value, "test.app")
         let notification = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "method": "notifications/initialized"])
         let accepted = try await send(notification)
         XCTAssertEqual(accepted.1, 202)

@@ -50,10 +50,10 @@ for line in sys.stdin:
         if request["params"]["name"] == "chat_view_start_task":
             task_starts += 1
         result = {"content": [{"type": "text", "text": json.dumps({"taskId": "chat-task", "status": "completed", "answer": "fixture answer", "taskStarts": task_starts, "unavailableStates": unavailable_states})}]}
-    elif request.get("params", {}).get("name") == "start_download":
+    elif request.get("params", {}).get("name") in {"start_download", "burn_subtitles"}:
         job_started = time.monotonic()
         result = {"content": [{"type": "text", "text": json.dumps({"job_id": "fixture-job", "phase": "downloading"})}]}
-    elif request.get("params", {}).get("name") == "get_download_status":
+    elif request.get("params", {}).get("name") in {"get_download_status", "get_subtitle_status"}:
         phase = "completed" if time.monotonic() - job_started > 0.8 else "downloading"
         result = {"content": [{"type": "text", "text": json.dumps({"job_id": "fixture-job", "phase": phase})}]}
     else:

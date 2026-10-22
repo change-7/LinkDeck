@@ -1,6 +1,6 @@
 # LinkDeck
 
-Mac과 Android 휴대폰에서 버튼을 실행하고 Codex 상태를 확인하는 앱입니다. Novation Launchpad Mini MK1도 지원합니다.
+Mac과 Android 휴대폰에서 버튼을 실행하고 Codex 상태를 확인하는 앱입니다. 물리 런치패드와 메뉴바 LED 애니메이션 기능은 제거했습니다.
 
 ## 빌드·실행
 
@@ -12,7 +12,8 @@ Mac과 Android 휴대폰에서 버튼을 실행하고 Codex 상태를 확인하�
 
 ## 구성
 
-- `Native/`: SwiftUI 앱, CoreMIDI 연결, 버튼 매핑과 LED 모션
+- `Native/`: SwiftUI 앱, 휴대폰 버튼 편집·원격 실행과 API 연결
+- `Recovery/launchpad-2026-10-22/`: 런치패드 원본 코드와 복구 패치·안내
 - `script/`: 빌드·앱 번들·아이콘 생성 스크립트
 - `assets/`: 앱 아이콘
 
@@ -45,6 +46,10 @@ LinkDeck은 연결 중 위스퍼 MCP 프로세스를 유지하고 연결 해제 
 Mac 앱 설정의 **ChatGPT 연결**에서 OpenAI Secure MCP Tunnel을 연결합니다.
 ChatGPT는 `linkdeck_list_buttons`로 등록된 버튼을 조회하고,
 `linkdeck_press_button`으로 그 버튼의 저장된 동작을 실행할 수 있습니다.
+기존 앱 버튼에서 **플러그인에서 종료 허용**을 체크하면,
+`linkdeck_list_buttons`의 `can_quit_app`이 `true`인 버튼 ID를 `linkdeck_quit_app`의 `button_id`로 전달해 해당 앱의 일반 종료를 요청할 수 있습니다.
+기본값은 꺼짐이며, 별도의 종료 버튼이나 대상 앱 선택은 필요하지 않습니다. 체크를 해제하거나 버튼을 지우면 종료 요청을 거부합니다.
+저장하지 않은 문서가 있으면 Mac에서 저장 확인이 필요할 수 있습니다. 강제 종료는 지원하지 않습니다.
 `linkdeck_get_sleep_status`로 Mac의 실제 `caffeinate` 잠자기 방지 상태도 조회합니다.
 “지금 불면증과 숙면 중 어떤 상태야?”라고 질문하면 됩니다. 불면증은 잠자기 방지가 켜진 상태,
 숙면은 해당 잠자기 방지가 꺼진 상태이며 Mac이 실제로 잠들었다는 뜻은 아닙니다.

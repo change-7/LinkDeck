@@ -240,7 +240,7 @@ private struct WorkflowStepCard: View {
                 .accessibilityLabel("동작 \(number) 실행 옵션")
             }
             .padding(4).background(theme.control, in: RoundedRectangle(cornerRadius: 4))
-        case .workflow, .appFolder, .clipboardText, .none:
+        case .workflow, .appQuit, .appFolder, .clipboardText, .none:
             Text("동작을 선택하세요").font(.system(size: 10)).foregroundStyle(.secondary)
         }
     }

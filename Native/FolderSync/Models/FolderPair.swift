@@ -69,6 +69,7 @@ struct SyncOptions: Codable, Hashable {
     var automaticTrigger: AutomaticSyncTrigger
     var intervalMinutes: Int
     var excludeNestedDestination: Bool
+    var excludeGitMetadata: Bool = false
 
     init(
         includeHiddenFiles: Bool = true,
@@ -91,6 +92,7 @@ struct SyncOptions: Codable, Hashable {
     private enum CodingKeys: String, CodingKey {
         case includeHiddenFiles, deleteExtraFiles, maxFileSize, realtimeAction
         case automaticTrigger, intervalMinutes, excludeNestedDestination
+        case excludeGitMetadata
     }
 
     init(from decoder: Decoder) throws {
@@ -102,6 +104,7 @@ struct SyncOptions: Codable, Hashable {
         automaticTrigger = try container.decodeIfPresent(AutomaticSyncTrigger.self, forKey: .automaticTrigger) ?? .fileChanges
         intervalMinutes = try container.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 5
         excludeNestedDestination = try container.decodeIfPresent(Bool.self, forKey: .excludeNestedDestination) ?? false
+        excludeGitMetadata = try container.decodeIfPresent(Bool.self, forKey: .excludeGitMetadata) ?? false
     }
 }
 
@@ -177,6 +180,7 @@ struct FolderPair: Codable, Identifiable, Hashable {
     var syncOnLaunch: Bool
     var lastSyncedAt: Date?
     var githubSync: GitHubSyncConfiguration?
+    var gitSyncLink: GitSyncLink?
 
     init(
         name: String,
@@ -198,10 +202,12 @@ struct FolderPair: Codable, Identifiable, Hashable {
         self.isRealtimeEnabled = isRealtimeEnabled
         self.syncOnLaunch = syncOnLaunch
         self.githubSync = githubSync
+        gitSyncLink = nil
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, folderA, folderB, source, destination, syncMode, options, isEnabled, isRealtimeEnabled, syncOnLaunch, lastSyncedAt, githubSync
+        case gitSyncLink
     }
 
     init(from decoder: Decoder) throws {
@@ -221,6 +227,7 @@ struct FolderPair: Codable, Identifiable, Hashable {
         syncOnLaunch = try container.decodeIfPresent(Bool.self, forKey: .syncOnLaunch) ?? true
         lastSyncedAt = try container.decodeIfPresent(Date.self, forKey: .lastSyncedAt)
         githubSync = savedGitHubSync
+        gitSyncLink = try container.decodeIfPresent(GitSyncLink.self, forKey: .gitSyncLink)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -235,6 +242,7 @@ struct FolderPair: Codable, Identifiable, Hashable {
         try container.encode(isRealtimeEnabled, forKey: .isRealtimeEnabled)
         try container.encode(syncOnLaunch, forKey: .syncOnLaunch)
         try container.encodeIfPresent(lastSyncedAt, forKey: .lastSyncedAt)
+        try container.encodeIfPresent(gitSyncLink, forKey: .gitSyncLink)
         if var githubSync {
             githubSync.isAutomaticSyncEnabled = isRealtimeEnabled
             try container.encode(githubSync, forKey: .githubSync)

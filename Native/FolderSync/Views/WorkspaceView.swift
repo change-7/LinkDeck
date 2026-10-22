@@ -16,9 +16,7 @@ struct FolderSyncWorkspaceView: View {
     }
 
     var body: some View {
-        Group {
-            pairList
-        }
+        pairList
         .onAppear {
             store.startRealtimeSync()
             store.syncAllOnLaunch()
@@ -408,7 +406,11 @@ private struct PairDetailView: View {
                     .foregroundStyle(.red)
             }
 
-            if pair.folderB != nil || pair.githubSync != nil {
+            if pair.githubSync != nil {
+                IntegratedGitSyncSection(pair: pair, store: store)
+            }
+
+            if pair.folderB != nil && pair.githubSync == nil {
                 SyncOptionsSection(
                     options: Binding(
                         get: { pair.options },

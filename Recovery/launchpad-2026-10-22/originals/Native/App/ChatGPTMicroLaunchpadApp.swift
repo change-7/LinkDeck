@@ -1,0 +1,528 @@
+import AppKit
+import Observation
+import SwiftUI
+
+@main
+struct ChatGPTMicroLaunchpadApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @State private var store = LaunchpadStore()
+    @State private var folderSyncStore = FolderPairStore()
+    @State private var midi = LaunchpadMIDIManager()
+    @AppStorage("macDarkModeEnabled") private var macDarkModeEnabled = true
+    private let runner = MacActionRunner()
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView(
+                store: store,
+                folderSyncStore: folderSyncStore,
+                runner: runner,
+                midi: midi,
+                codex: appDelegate.codex,
+                codexActivity: appDelegate.codexActivityController,
+                launchpadLEDBubble: appDelegate.launchpadLEDBubble,
+                chatGPTTunnel: appDelegate.chatGPTTunnel
+            )
+                .preferredColorScheme(macDarkModeEnabled ? .dark : .light)
+        }
+        .defaultSize(width: 1120, height: 740)
+        .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
+        .commands {
+            CommandMenu("LinkDeck") {
+                Button("설정 창 열기") { appDelegate.showMainWindow() }
+                    .keyboardShortcut(",", modifiers: [.command])
+                Button("단축키 권한 요청") { runner.requestAccessibilityPermission() }
+            }
+
+            CommandGroup(replacing: .appTermination) {
+                Button("창 닫기") { appDelegate.hideMainWindow() }
+                    .keyboardShortcut("q", modifiers: [.command])
+            }
+        }
+
+    }
+}
+
+@MainActor
+protocol CodexAppServerConnectionStarting: AnyObject {
+    func connect()
+    func startTask(prompt: String, workingDirectory: String)
+}
+
+extension CodexAppServerClient: CodexAppServerConnectionStarting {}
+
+@MainActor
+@Observable
+final class CodexActivityController {
+    typealias MakeMonitor = (@escaping ([DesktopCodexTaskLifecycleEvent]) -> Void) -> CodexDesktopTaskMonitor
+
+    private(set) var activity: CodexActivity = .idle
+    private(set) var activeSessionCount = 0
+    @ObservationIgnored var onActivityChange: ((CodexActivity) -> Void)?
+    @ObservationIgnored var onTaskCompletion: ((DesktopCodexTaskID) -> Void)?
+    @ObservationIgnored var onActiveSessionCountChange: ((Int) -> Void)?
+    @ObservationIgnored private let makeMonitor: MakeMonitor
+    @ObservationIgnored private var coordinator = CodexActivityCoordinator()
+    @ObservationIgnored private var appServerActivity: CodexActivity = .idle
+    @ObservationIgnored private var desktopMonitor: CodexDesktopTaskMonitor?
+    @ObservationIgnored private var desktopCompletionGraceWorkItem: DispatchWorkItem?
+    private static let desktopCompletionGracePeriod: TimeInterval = 3
+
+    convenience init() {
+        let sessionsRootURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
+        self.init(makeMonitor: { onEvents in
+            CodexDesktopTaskMonitor(sessionsRootURL: sessionsRootURL, onEvents: onEvents)
+        })
+    }
+
+    init(makeMonitor: @escaping MakeMonitor) {
+        self.makeMonitor = makeMonitor
+    }
+
+    func startDesktopMonitoring() {
+        guard desktopMonitor == nil else { return }
+        let monitor = makeMonitor { [weak self] events in
+            self?.consumeDesktopEvents(events)
+        }
+        desktopMonitor = monitor
+        monitor.start()
+    }
+
+    func stopDesktopMonitoring() {
+        desktopCompletionGraceWorkItem?.cancel()
+        desktopCompletionGraceWorkItem = nil
+        desktopMonitor?.stop()
+        desktopMonitor = nil
+        activeDesktopSessionIDs.removeAll()
+        coordinator = CodexActivityCoordinator()
+        updateActiveSessionCount()
+        publish(coordinator.updateAppServerActivity(appServerActivity))
+    }
+
+    func updateAppServerActivity(_ activity: CodexActivity) {
+        appServerActivity = activity
+        if activity == .completed || activity == .failed {
+            scheduleDesktopCompletionFallback()
+        }
+        // Do not cancel the fallback when the App Server repeats a stale
+        // running/approval update. Only a real Desktop `started` event can
+        // prove that a new task superseded the pending completion.
+        updateActiveSessionCount()
+        publish(coordinator.updateAppServerActivity(activity))
+    }
+
+    private func consumeDesktopEvents(_ events: [DesktopCodexTaskLifecycleEvent]) {
+        if events.contains(where: { if case .started = $0 { return true }; return false }) {
+            desktopCompletionGraceWorkItem?.cancel()
+            desktopCompletionGraceWorkItem = nil
+        }
+        let nextActivity = coordinator.consume(events)
+        updateDesktopSessionSet(with: events)
+        publish(nextActivity)
+        updateActiveSessionCount()
+        for event in events {
+            if case let .completed(taskID) = event {
+                onTaskCompletion?(taskID)
+            }
+        }
+    }
+
+    private func scheduleDesktopCompletionFallback() {
+        guard !activeDesktopSessionIDs.isEmpty else { return }
+        desktopCompletionGraceWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, !self.activeDesktopSessionIDs.isEmpty else { return }
+            let orphaned = self.activeDesktopSessionIDs
+            self.activeDesktopSessionIDs.removeAll()
+            let terminalEvents = orphaned.map(DesktopCodexTaskLifecycleEvent.completed)
+            let nextActivity = self.coordinator.consume(terminalEvents)
+            self.publish(nextActivity)
+            self.updateActiveSessionCount()
+            for taskID in orphaned { self.onTaskCompletion?(taskID) }
+            self.desktopCompletionGraceWorkItem = nil
+        }
+        desktopCompletionGraceWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.desktopCompletionGracePeriod, execute: workItem)
+    }
+
+    @ObservationIgnored private var activeDesktopSessionIDs: Set<DesktopCodexTaskID> = []
+
+    private func updateDesktopSessionSet(with events: [DesktopCodexTaskLifecycleEvent]) {
+        for event in events {
+            switch event {
+            case let .started(taskID): activeDesktopSessionIDs.insert(taskID)
+            case let .completed(taskID): activeDesktopSessionIDs.remove(taskID)
+            }
+        }
+    }
+
+    private func updateActiveSessionCount() {
+        let nextCount: Int
+        if !activeDesktopSessionIDs.isEmpty {
+            // The launchpad represents the user's current Codex task, not
+            // every orphaned transcript left in the global sessions folder.
+            // A missing terminal record in an older session must not make the
+            // phone report multiple simultaneous tasks.
+            nextCount = 1
+        } else {
+            nextCount = switch coordinator.activity {
+            case .completed, .failed: 0
+            case .connecting, .running, .waitingForApproval:
+                switch appServerActivity {
+                case .connecting, .running, .waitingForApproval: 1
+                case .idle, .completed, .failed: 0
+                }
+            case .idle:
+                0
+            }
+        }
+        guard activeSessionCount != nextCount else { return }
+        activeSessionCount = nextCount
+        onActiveSessionCountChange?(nextCount)
+    }
+
+    static func sessionCount(for taskIDs: Set<DesktopCodexTaskID>) -> Int {
+        Set(taskIDs.map(\.transcriptID)).count
+    }
+
+    private func publish(_ nextActivity: CodexActivity) {
+        guard activity != nextActivity else { return }
+        activity = nextActivity
+        onActivityChange?(nextActivity)
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+    static let ledBubbleMenuItemPreferenceKey = "chatgpt-micro-launchpad.shows-led-bubble-menu-item"
+    var isBridgeOnly: Bool { CommandLine.arguments.contains("--bridge-only") }
+    let codex: CodexAppServerClient
+    let codexActivityController: CodexActivityController
+    let launchpadLEDBubble = LaunchpadLEDStatusBubble()
+    let chatGPTTunnel = ChatGPTTunnelController()
+    private let codexStatusBarIndicator = CodexStatusBarIndicator()
+    private let remoteActionRunner = MacActionRunner()
+    private let connectionStarter: any CodexAppServerConnectionStarting
+    private weak var mainWindow: NSWindow?
+    private var statusItem: NSStatusItem?
+    private weak var codexStatusMotionMenuItem: NSMenuItem?
+    private weak var launchpadLEDBubbleMenuItem: NSMenuItem?
+    private var hasStartedCodexConnection = false
+
+    override init() {
+        let codex = CodexAppServerClient()
+        self.codex = codex
+        connectionStarter = codex
+        codexActivityController = CodexActivityController()
+        super.init()
+        configureLaunchpadLEDBubbleMenuUpdates()
+        configureRemoteCommandHandling()
+    }
+
+    init(
+        codexActivityController: CodexActivityController,
+        connectionStarter: (any CodexAppServerConnectionStarting)? = nil
+    ) {
+        let codex = CodexAppServerClient()
+        self.codex = codex
+        self.codexActivityController = codexActivityController
+        self.connectionStarter = connectionStarter ?? codex
+        super.init()
+        configureLaunchpadLEDBubbleMenuUpdates()
+        configureRemoteCommandHandling()
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        guard !terminateDuplicateInstanceIfNeeded() else { return }
+        if isBridgeOnly {
+            NSApp.setActivationPolicy(.prohibited)
+        } else {
+            installMenuBarItem()
+        }
+        codexActivityController.onActivityChange = { [weak self, weak codex] activity in
+            self?.codexStatusBarIndicator.update(activity: activity)
+            codex?.publishRemoteActivity(activity)
+        }
+        codexActivityController.onTaskCompletion = { [weak codex] taskID in
+            codex?.publishRemoteCompletion(taskID: taskID)
+        }
+        codexActivityController.onActiveSessionCountChange = { [weak codex] count in
+            codex?.publishRemoteSessionCount(count)
+        }
+        codex.onPhoneMicrophoneActivityChanged = { [weak self] active in
+            self?.codexStatusBarIndicator.update(phoneMicrophoneActive: active)
+        }
+        codexActivityController.startDesktopMonitoring()
+        codex.publishRemoteSessionCount(codexActivityController.activeSessionCount)
+        codexStatusBarIndicator.update(activity: codexActivityController.activity)
+        codex.publishRemoteActivity(codexActivityController.activity)
+        codex.startRemoteBridge()
+        guard !hasStartedCodexConnection else { return }
+        hasStartedCodexConnection = true
+        connectionStarter.connect()
+    }
+
+    private func terminateDuplicateInstanceIfNeeded() -> Bool {
+        guard !isBridgeOnly,
+              let bundleIdentifier = Bundle.main.bundleIdentifier else { return false }
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        guard let existing = NSRunningApplication
+            .runningApplications(withBundleIdentifier: bundleIdentifier)
+            .first(where: { $0.processIdentifier != currentPID }) else { return false }
+
+        existing.activate(options: [.activateAllWindows])
+        NSApp.terminate(nil)
+        return true
+    }
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        if isBridgeOnly {
+            DispatchQueue.main.async {
+                NSApp.windows.forEach { $0.orderOut(nil) }
+            }
+            return
+        }
+        NSApp.setActivationPolicy(.regular)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            guard let window = Self.mainApplicationWindow(in: NSApp.windows) else { return }
+
+            self.mainWindow = window
+            window.delegate = self
+
+            guard let screen = NSScreen.main else { return }
+
+            let visibleFrame = screen.visibleFrame.insetBy(dx: 18, dy: 18)
+            let size = NSSize(
+                width: min(window.frame.width, visibleFrame.width),
+                height: min(window.frame.height, visibleFrame.height)
+            )
+            let origin = NSPoint(
+                x: visibleFrame.midX - size.width / 2,
+                y: visibleFrame.midY - size.height / 2
+            )
+            window.setFrame(NSRect(origin: origin, size: size), display: true)
+            window.makeKeyAndOrderFront(nil)
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+        }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        chatGPTTunnel.disconnect()
+        launchpadLEDBubble.close()
+        codexActivityController.stopDesktopMonitoring()
+        codex.stopRemoteBridge()
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        return .terminateNow
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag {
+            showMainWindow()
+        }
+        return false
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
+    }
+
+    func showMainWindow() {
+        let window = mainWindow ?? Self.mainApplicationWindow(in: NSApp.windows)
+        guard let window else { return }
+        mainWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+    }
+
+    func hideMainWindow() {
+        mainWindow?.orderOut(nil)
+    }
+
+    static func mainApplicationWindow(in windows: [NSWindow]) -> NSWindow? {
+        windows.first { !($0 is NSPanel) && $0.styleMask.contains(.titled) }
+    }
+
+    func quitCompletely() {
+        NSApp.terminate(nil)
+    }
+
+    private func configureRemoteCommandHandling() {
+        codex.setRemoteCommandHandler { [weak self] command in
+            guard let self else {
+                return CodexRemoteCommandResult(id: command.id, success: false, message: "Mac 명령 처리기를 사용할 수 없습니다.")
+            }
+            return await self.handleRemoteCommand(command)
+        }
+    }
+
+    private func handleRemoteCommand(_ command: CodexRemoteCommand) async -> CodexRemoteCommandResult {
+        do {
+            let message: String
+            switch command.command {
+            case "microphoneStart":
+                if let error = codex.startPhoneMicrophone() {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: error)
+                }
+                message = "휴대폰 마이크를 BlackHole 2ch로 연결했습니다."
+            case "microphoneStop":
+                codex.stopPhoneMicrophone()
+                message = "휴대폰 마이크 연결을 종료했습니다."
+            case "notificationSoundOnPhone", "notificationSoundOnMac", "completionSoundOnPhone", "completionSoundOnMac":
+                let target: CodexCompletionSoundOutputTarget = command.command.hasSuffix("OnPhone") ? .phone : .mac
+                codex.setRemoteSoundOutputTarget(target)
+                message = "완료·승인 사운드 재생 기기를 \(target.title)(으)로 변경했습니다."
+            case "smartphoneButton", "smartphoneButtonLongPress":
+                let longPress = command.command == "smartphoneButtonLongPress"
+                guard let buttonID = command.buttonID else {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: "스마트폰 버튼 설정을 찾을 수 없습니다.")
+                }
+                var pages = SmartphoneDefaults.persistedPages()
+                let action: PadAction?
+                if longPress {
+                    action = SmartphoneDefaults.action(id: buttonID, in: pages, longPress: true)
+                } else {
+                    let previousPages = pages
+                    action = SmartphoneDefaults.toggleAction(id: buttonID, in: &pages)
+                    if pages != previousPages {
+                        SmartphoneDefaults.persist(pages)
+                        codex.remoteSmartphonePagesDidChange(pages)
+                        codex.publishRemoteState()
+                    }
+                }
+                guard let action else {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: "스마트폰 버튼 설정을 찾을 수 없습니다.")
+                }
+                let commandFileID = longPress ? buttonID + "_long_press" : buttonID
+                message = try remoteActionRunner.execute(action, commandFileID: commandFileID)
+            case "codexApproval":
+                guard let decision = command.decision else {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: "Codex 승인 응답이 없습니다.")
+                }
+                let response = await codex.respondToRemoteApproval(
+                    decision: decision,
+                    requestKey: command.approvalRequestKey
+                )
+                guard response.success else {
+                    return CodexRemoteCommandResult(id: command.id, success: false, message: response.message)
+                }
+                message = response.message
+            case "run":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "cmd+r"))
+            case "pause":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "space"))
+            case "stop":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "escape"))
+            case "terminal":
+                message = try remoteActionRunner.execute(PadAction(kind: .app, value: "com.apple.Terminal"))
+            case "browser":
+                guard let url = URL(string: "https://www.apple.com") else { throw MacActionError.invalidAddress }
+                NSWorkspace.shared.open(url)
+                message = "기본 브라우저를 열었습니다."
+            case "files":
+                message = try remoteActionRunner.execute(PadAction(kind: .app, value: "com.apple.finder"))
+            case "search":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "cmd+space"))
+            case "capture":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "cmd+shift+4"))
+            case "clipboard":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "cmd+v"))
+            case "music":
+                message = try remoteActionRunner.execute(PadAction(kind: .app, value: "com.apple.Music"))
+            case "volume":
+                message = try remoteActionRunner.execute(PadAction(kind: .shortcut, value: "volumeup"))
+            case "focus":
+                guard let url = URL(string: "x-apple.systempreferences:com.apple.Focus") else { throw MacActionError.invalidAddress }
+                NSWorkspace.shared.open(url)
+                message = "집중 모드 설정을 열었습니다."
+            case "settings":
+                message = try remoteActionRunner.execute(PadAction(kind: .app, value: "com.apple.systempreferences"))
+            case "more":
+                message = "추가 동작은 Mac 앱에서 매핑하세요."
+            default:
+                return CodexRemoteCommandResult(id: command.id, success: false, message: "지원하지 않는 버튼입니다.")
+            }
+            return CodexRemoteCommandResult(id: command.id, success: true, message: message)
+        } catch {
+            return CodexRemoteCommandResult(id: command.id, success: false, message: error.localizedDescription)
+        }
+    }
+
+    private func installMenuBarItem() {
+        guard statusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = NSImage(
+            systemSymbolName: "square.grid.3x3.fill",
+            accessibilityDescription: "LinkDeck"
+        )
+        let menu = NSMenu()
+        menu.delegate = self
+        menu.addItem(withTitle: "설정 창 열기", action: #selector(openMainWindowFromMenu), keyEquivalent: "")
+        let statusMotionItem = menu.addItem(
+            withTitle: "Codex 상태 표시 모션",
+            action: #selector(toggleCodexStatusMotionFromMenu),
+            keyEquivalent: ""
+        )
+        statusMotionItem.state = codexStatusBarIndicator.isEnabled ? .on : .off
+        statusMotionItem.toolTip = "작업중·오류·확인 필요 상태를 상태바 아이콘으로 표시합니다."
+        codexStatusMotionMenuItem = statusMotionItem
+        let bubbleItem = menu.addItem(
+            withTitle: "LED 말풍선 표시",
+            action: #selector(toggleLaunchpadLEDBubbleFromMenu),
+            keyEquivalent: ""
+        )
+        bubbleItem.state = .off
+        bubbleItem.identifier = NSUserInterfaceItemIdentifier(Self.ledBubbleMenuItemPreferenceKey)
+        bubbleItem.isEnabled = false
+        launchpadLEDBubbleMenuItem = bubbleItem
+        Self.updateLEDBubbleMenuItemVisibility(in: menu)
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "완전히 종료", action: #selector(quitFromMenu), keyEquivalent: "")
+        menu.items.forEach { $0.target = self }
+        item.menu = menu
+        statusItem = item
+        codexStatusBarIndicator.attach(to: item.button)
+        launchpadLEDBubble.attach(to: item.button)
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        Self.updateLEDBubbleMenuItemVisibility(in: menu)
+    }
+
+    static func updateLEDBubbleMenuItemVisibility(in menu: NSMenu, preferences: UserDefaults = .standard) {
+        let isShown = preferences.object(forKey: ledBubbleMenuItemPreferenceKey) as? Bool ?? false
+        menu.items.first { $0.identifier?.rawValue == ledBubbleMenuItemPreferenceKey }?.isHidden = !isShown
+    }
+
+    @objc private func openMainWindowFromMenu() {
+        showMainWindow()
+    }
+
+    @objc private func quitFromMenu() {
+        quitCompletely()
+    }
+
+    @objc private func toggleLaunchpadLEDBubbleFromMenu() {
+        launchpadLEDBubble.toggleVisibilityPreference()
+    }
+
+    @objc private func toggleCodexStatusMotionFromMenu() {
+        codexStatusBarIndicator.setEnabled(!codexStatusBarIndicator.isEnabled)
+        codexStatusMotionMenuItem?.state = codexStatusBarIndicator.isEnabled ? .on : .off
+    }
+
+    private func configureLaunchpadLEDBubbleMenuUpdates() {
+        launchpadLEDBubble.onVisibilityPreferenceChanged = { [weak self] isVisible, isReady in
+            self?.launchpadLEDBubbleMenuItem?.state = isVisible ? .on : .off
+            self?.launchpadLEDBubbleMenuItem?.isEnabled = isReady
+        }
+    }
+}

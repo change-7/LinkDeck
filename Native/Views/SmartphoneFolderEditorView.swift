@@ -370,6 +370,14 @@ struct SmartphoneFolderEditorView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            Toggle("플러그인에서 종료 허용", isOn: Binding(
+                get: { selectedAction.allowsAppTermination },
+                set: { enabled in updateSelectedAction { $0.allowsAppTermination = enabled } }
+            ))
+            .toggleStyle(.checkbox)
+            .accessibilityIdentifier("app-termination-permission-toggle")
+        case .appQuit:
+            Text("앱 실행 버튼에서 ‘플러그인에서 종료 허용’을 설정하세요.")
         case .terminalCommand:
             TextField("예: open -a Safari", text: shortcutValueBinding)
                 .textFieldStyle(.roundedBorder)

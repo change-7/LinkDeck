@@ -4,14 +4,13 @@ import XCTest
 
 final class CodexActivityIntegrationTests: XCTestCase {
     @MainActor
-    func testIntegration_whenDesktopTaskStarts_reachesMotionPresentationCallbackAsRunning() async throws {
+    func testIntegration_whenDesktopTaskStarts_publishesRunningActivity() async throws {
         // Given
         let fixture = try MonitorFixture()
         let controller = makeController(fixture: fixture)
-        let router = CodexMotionActivityRouter()
         var presented: [CodexActivity] = []
         controller.onActivityChange = { activity in
-            router.present(activity, using: { presented.append($0) })
+            presented.append(activity)
         }
         controller.startDesktopMonitoring()
         await fixture.waitForMonitorToBecomeIdle()
@@ -26,7 +25,6 @@ final class CodexActivityIntegrationTests: XCTestCase {
 
         // Then
         XCTAssertEqual(controller.activity, .running)
-        XCTAssertEqual(router.presentedActivity, .running)
         XCTAssertEqual(presented, [.running])
     }
 
@@ -205,47 +203,6 @@ final class CodexActivityIntegrationTests: XCTestCase {
         // Then
         XCTAssertEqual(controller.activity, .running)
         _ = transcript
-    }
-
-    @MainActor
-    func testDismissal_whenAppServerActivityIsStale_resolvesPresentationForEffectivePresentedActivity() {
-        // Given
-        let router = CodexMotionActivityRouter()
-        router.present(.running, using: { _ in })
-        var resolvedActivity: CodexActivity?
-
-        // When
-        _ = router.dismissalPresentation { activity in
-            resolvedActivity = activity
-            return CodexMotionPresentation(dismissal: .anyPad)
-        }
-
-        // Then
-        XCTAssertEqual(resolvedActivity, .running)
-    }
-
-    @MainActor
-    func testMotionRouting_whenHeldRunningActivityChanges_endsTheHeldMotionBeforePresentingTheNewStatus() {
-        // Given
-        let router = CodexMotionActivityRouter()
-        var events: [String] = []
-        router.present(
-            .running,
-            endingCurrentMotion: { events.append("end") },
-            using: { activity in events.append("present:\(activity.rawValue)") }
-        )
-        events.removeAll()
-
-        // When
-        router.present(
-            .completed,
-            endingCurrentMotion: { events.append("end") },
-            using: { activity in events.append("present:\(activity.rawValue)") }
-        )
-
-        // Then
-        XCTAssertEqual(events, ["end", "present:completed"])
-        XCTAssertEqual(router.presentedActivity, .completed)
     }
 
     @MainActor
