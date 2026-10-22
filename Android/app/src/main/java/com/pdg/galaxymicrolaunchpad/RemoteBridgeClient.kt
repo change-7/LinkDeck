@@ -84,13 +84,21 @@ internal fun buildRemoteCommandPayload(
         }
 }
 
+internal data class RemoteApprovalOption(val id: String, val title: String, val detail: String = "")
+
+internal val LegacyApprovalOptions = listOf(
+    RemoteApprovalOption("accept", "한 번만 허용"),
+    RemoteApprovalOption("decline", "거부")
+)
+
 internal data class RemoteApproval(
     val title: String,
     val detail: String,
     val requestID: Int? = null,
     val requestKey: String? = null,
     val source: String = "appServer",
-    val canRespond: Boolean = true
+    val canRespond: Boolean = true,
+    val options: List<RemoteApprovalOption> = LegacyApprovalOptions
 )
 
 
@@ -217,6 +225,8 @@ class RemoteBridgeClient(context: Context) {
     var resetsAt by mutableStateOf<Double?>(null)
         private set
     var fiveHourResetsAt by mutableStateOf<Double?>(null)
+        private set
+    var resetCredits by mutableStateOf<List<Double>?>(null)
         private set
     internal var pendingApproval by mutableStateOf<RemoteApproval?>(null)
         private set
@@ -528,6 +538,13 @@ class RemoteBridgeClient(context: Context) {
                 fiveHourRemainingPercent = nextFiveHourRemaining
                 resetsAt = nextResetsAt
                 fiveHourResetsAt = nextFiveHourReset
+                if (state.has("resetCredits") && !state.isNull("resetCredits")) {
+                    resetCredits = state.optJSONArray("resetCredits")?.let { credits ->
+                        (0 until credits.length()).mapNotNull { index ->
+                            credits.optJSONObject(index)?.optDouble("expiresAt")?.takeIf { it.isFinite() }
+                        }.sorted()
+                    }
+                }
                 UsageWidgetUpdater.onUsageChanged(appContext, nextRemaining, nextFiveHourRemaining)
                 pendingApproval = nextApproval
                 if (approvalChanged) {
@@ -790,6 +807,7 @@ class RemoteBridgeClient(context: Context) {
             remainingPercent = null
             fiveHourRemainingPercent = null
             resetsAt = null
+            resetCredits = null
             fiveHourResetsAt = null
             pendingApproval = null
             onCodexApprovalChanged?.invoke(null)

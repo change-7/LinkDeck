@@ -50,7 +50,16 @@ internal fun parseRemoteApproval(state: JSONObject): RemoteApproval? {
         requestID = approval.optInt("requestID").takeIf { approval.has("requestID") },
         requestKey = approval.optString("requestKey").takeIf { approval.has("requestKey") },
         source = approval.optString("source", "appServer"),
-        canRespond = approval.optBoolean("canRespond", true)
+        canRespond = approval.optBoolean("canRespond", true),
+        options = approval.optJSONArray("options")?.let { choices ->
+            (0 until choices.length()).mapNotNull { index ->
+                val choice = choices.optJSONObject(index) ?: return@mapNotNull null
+                val id = choice.optString("id")
+                val title = choice.optString("title")
+                if (id.isBlank() || title.isBlank()) null
+                else RemoteApprovalOption(id, title, choice.optString("detail"))
+            }
+        } ?: LegacyApprovalOptions
     )
 }
 
@@ -257,7 +266,11 @@ internal fun shouldWakeForCodexApproval(
     previousApproval: RemoteApproval?,
     currentApproval: RemoteApproval?
 ): Boolean {
-    return currentApproval != null && previousApproval != currentApproval
+    if (currentApproval == null) return false
+    if (previousApproval?.requestKey != null && currentApproval.requestKey != null) {
+        return previousApproval.requestKey != currentApproval.requestKey
+    }
+    return previousApproval != currentApproval
 }
 
 internal fun shouldRevealCodex(

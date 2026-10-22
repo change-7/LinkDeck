@@ -32,6 +32,29 @@ class MainActivityTest {
     }
 
     @Test
+    fun approvalChoices_sendEachSelectedOptionWithoutChangingItsScope() {
+        val options = listOf(
+            RemoteApprovalOption("policy-0", "항상 허용", "호스트: example.com"),
+            RemoteApprovalOption("acceptForSession", "이 대화에서만 허용"),
+            RemoteApprovalOption("decline", "거부")
+        )
+        for (option in options) {
+            val command = remoteCommandPayload("codexApproval", decision = option.id, approvalRequestKey = "request-42")
+            assertEquals(option.id, command.decision)
+            assertEquals("request-42", command.approvalRequestKey)
+        }
+    }
+
+    @Test
+    fun approvalSound_doesNotRepeatWhenOptionsOfTheSameRequestChange() {
+        val first = RemoteApproval("권한 승인", "요청", requestKey = "request-42")
+        val updated = first.copy(options = listOf(RemoteApprovalOption("acceptForSession", "이 대화에서만 허용")))
+        assertFalse(shouldWakeForCodexApproval(first, updated))
+        assertTrue(shouldWakeForCodexApproval(updated, updated.copy(requestKey = "request-43")))
+        assertFalse(shouldWakeForCodexApproval(updated, null))
+    }
+
+    @Test
     fun remoteUsageField_preservesCachedValueWhenWireFieldIsAbsent() {
         assertEquals(67, mergeRemoteUsageInt(fieldPresent = false, fieldIsNull = false, fieldValue = null, current = 67))
     }
@@ -44,6 +67,7 @@ class MainActivityTest {
 
     @Test
     fun codexPhoneTheme_acceptsSupportedThemesAndFallsBackForUnknownValues() {
+        assertEquals(DotConsoleCodexPhoneTheme, normalizeCodexPhoneTheme("dotConsole"))
         assertEquals(PixelSpaceCodexPhoneTheme, normalizeCodexPhoneTheme(PixelSpaceCodexPhoneTheme))
         assertEquals(DotMatrixCodexPhoneTheme, normalizeCodexPhoneTheme(DotMatrixCodexPhoneTheme))
         assertEquals(PixelQuestCodexPhoneTheme, normalizeCodexPhoneTheme(PixelQuestCodexPhoneTheme))
@@ -462,6 +486,14 @@ class MainActivityTest {
     fun horizontalSwipeTransitionDirection_followsFingerMovement() {
         assertEquals(1, horizontalSwipeTransitionDirection(dragDistance = -40f))
         assertEquals(-1, horizontalSwipeTransitionDirection(dragDistance = 40f))
+    }
+
+    @Test
+    fun buttonPageTransitionDirection_preservesForwardBackwardAndWrapMotion() {
+        assertEquals(1, pageTransitionDirection(0, 1, 3))
+        assertEquals(-1, pageTransitionDirection(1, 0, 3))
+        assertEquals(1, pageTransitionDirection(2, 0, 3))
+        assertEquals(-1, pageTransitionDirection(0, 2, 3))
     }
 
     @Test

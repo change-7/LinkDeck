@@ -21,12 +21,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -52,6 +50,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.LinearEasing
@@ -62,6 +61,9 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -207,6 +209,10 @@ private const val DefaultHorizontalSwipeCommitDistancePx = HorizontalSwipeCommit
 private const val DefaultVerticalSwipeCommitDistancePx = 80f
 private const val AppPageTransitionDurationMillis = 150
 private const val AppPageFadeDurationMillis = 100
+private const val ButtonPageTransitionDurationMillis = 260
+private const val ButtonPageFadeDurationMillis = 180
+private val PageTransitionEasing = CubicBezierEasing(0.22f, 1f, 0.36f, 1f)
+private val PageTransitionDistance = 24.dp
 private const val ButtonActionRevealSuppressionMillis = 2_500L
 private val ButtonTileIconSize = 42.dp
 private val ButtonTileContentGap = 4.dp
@@ -232,6 +238,7 @@ private data class PhoneSkinStyle(
 private fun phoneSkinStyle(theme: String): PhoneSkinStyle = when (theme) {
     PixelSpaceCodexPhoneTheme -> PhoneSkinStyle(PixelSpaceMint, Color(0xFF101B2D), PixelSpaceMint, 0.dp, 2.dp)
     DotMatrixCodexPhoneTheme -> PhoneSkinStyle(DotMatrixCyan, DotMatrixBackgroundColor, DotMatrixCyan, 8.dp, 1.dp)
+    DotConsoleCodexPhoneTheme -> PhoneSkinStyle(DotMatrixCyan, Color(0xFF0D1822), Color(0xFF284754), 6.dp, 1.dp)
     PixelQuestCodexPhoneTheme -> PhoneSkinStyle(PixelQuestGold, PixelQuestPanel, PixelQuestFrame, 0.dp, 2.dp)
     ControlCabinetCodexPhoneTheme -> PhoneSkinStyle(CabinetAmber, CabinetPanel, CabinetFrame, 3.dp, 1.dp)
     else -> PhoneSkinStyle(Line, Tile, Line, 3.dp, 1.dp, themed = false)
@@ -501,7 +508,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivityResumed: Boolean) {
+internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivityResumed: Boolean) {
     val context = LocalContext.current
     val microphonePermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -672,6 +679,7 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
     }
     var horizontalDrag by remember { mutableStateOf(0f) }
     var pageTransitionDirection by remember { mutableStateOf(1) }
+    val pageTransitionDistancePx = with(LocalDensity.current) { PageTransitionDistance.roundToPx() }
     val swipeCommitDistancePx = horizontalSwipeCommitDistancePx(LocalDensity.current.density)
     val currentPage by rememberUpdatedState(page)
     val currentButtonPageIndex by rememberUpdatedState(buttonPageIndex)
@@ -758,8 +766,11 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                     targetState = if (isPortrait) AppPage.Controls else page,
                     modifier = Modifier.fillMaxSize(),
                     transitionSpec = {
-                        (slideInHorizontally(animationSpec = tween(AppPageTransitionDurationMillis)) { width -> pageTransitionDirection * (width / 5) } + fadeIn(tween(AppPageFadeDurationMillis))) togetherWith
-                            (slideOutHorizontally(animationSpec = tween(AppPageTransitionDurationMillis)) { width -> -pageTransitionDirection * (width / 5) } + fadeOut(tween(AppPageFadeDurationMillis)))
+                        val direction = pageTransitionDirection
+                        (slideInHorizontally(tween(AppPageTransitionDurationMillis, easing = PageTransitionEasing)) { direction * pageTransitionDistancePx } +
+                            fadeIn(tween(AppPageFadeDurationMillis, easing = PageTransitionEasing))) togetherWith
+                            (slideOutHorizontally(tween(AppPageTransitionDurationMillis, easing = PageTransitionEasing)) { -direction * pageTransitionDistancePx } +
+                                fadeOut(tween(AppPageFadeDurationMillis, easing = PageTransitionEasing)))
                     },
                     label = "app-page-transition"
                 ) { targetPage ->
@@ -776,6 +787,7 @@ private fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivity
                             weeklyRemaining = remoteBridge.remainingPercent,
                             fiveHourResetsAt = remoteBridge.fiveHourResetsAt,
                             weeklyResetsAt = remoteBridge.resetsAt,
+                            resetCredits = remoteBridge.resetCredits,
                             dotMatrixSkin = remoteBridge.codexPhoneTheme == DotMatrixCodexPhoneTheme,
                             pixelQuestSkin = remoteBridge.codexPhoneTheme == PixelQuestCodexPhoneTheme,
                             onPageChange = {
@@ -928,11 +940,13 @@ private fun Header(
     )
     val pixelSpaceSkin = codexPhoneTheme == PixelSpaceCodexPhoneTheme
     val dotMatrixSkin = codexPhoneTheme == DotMatrixCodexPhoneTheme
+    val dotConsoleSkin = codexPhoneTheme == DotConsoleCodexPhoneTheme
     val pixelQuestSkin = codexPhoneTheme == PixelQuestCodexPhoneTheme
     val workingAccent = when {
         codexPhoneTheme == ControlCabinetCodexPhoneTheme -> CabinetAmber
         pixelSpaceSkin -> PixelSpaceMint
         dotMatrixSkin -> DotMatrixCyan
+        dotConsoleSkin -> DotMatrixCyan
         pixelQuestSkin -> PixelQuestGold
         else -> Green
     }
@@ -985,7 +999,8 @@ private fun Header(
                     completionStatusColor = completionStatusColor,
                     pixelSpaceSkin = pixelSpaceSkin,
                     dotMatrixSkin = dotMatrixSkin,
-                    pixelQuestSkin = pixelQuestSkin
+                    pixelQuestSkin = pixelQuestSkin,
+                    dotConsoleSkin = dotConsoleSkin
                 )
             }
         } else {
@@ -1022,7 +1037,8 @@ private fun Header(
                     completionStatusColor = completionStatusColor,
                     pixelSpaceSkin = pixelSpaceSkin,
                     dotMatrixSkin = dotMatrixSkin,
-                    pixelQuestSkin = pixelQuestSkin
+                    pixelQuestSkin = pixelQuestSkin,
+                    dotConsoleSkin = dotConsoleSkin
                 )
                 UsageMeter(label = "5시간", remainingPercent = fiveHourRemaining, accent = GaugeCool)
                 Spacer(Modifier.width(10.dp))
@@ -1073,7 +1089,8 @@ private fun HeaderActivityStatus(
     completionStatusColor: Color,
     pixelSpaceSkin: Boolean,
     dotMatrixSkin: Boolean,
-    pixelQuestSkin: Boolean
+    pixelQuestSkin: Boolean,
+    dotConsoleSkin: Boolean
 ) {
     Row(
         modifier = modifier,
@@ -1085,7 +1102,8 @@ private fun HeaderActivityStatus(
                 color = workingStatusColor,
                 pixelStyle = pixelSpaceSkin,
                 dotMatrixStyle = dotMatrixSkin,
-                pixelQuestStyle = pixelQuestSkin
+                pixelQuestStyle = pixelQuestSkin,
+                dotConsoleStyle = dotConsoleSkin
             )
             Text(
                 "Codex 작업중",
@@ -1097,6 +1115,9 @@ private fun HeaderActivityStatus(
             )
         }
         if (isCompletion) {
+            if (dotConsoleSkin) {
+                DotConsoleStatusMotion("completed", completionStatusColor, Modifier.size(18.dp))
+            }
             Text(
                 "Codex 작업 완료",
                 color = completionStatusColor,
@@ -1129,8 +1150,13 @@ private fun RunningStatusIndicator(
     color: Color,
     pixelStyle: Boolean,
     dotMatrixStyle: Boolean = false,
-    pixelQuestStyle: Boolean = false
+    pixelQuestStyle: Boolean = false,
+    dotConsoleStyle: Boolean = false
 ) {
+    if (dotConsoleStyle) {
+        DotConsoleStatusMotion("running", color, Modifier.size(18.dp))
+        return
+    }
     if (dotMatrixStyle) {
         DotMatrixStatusMotion(activity = "running", color = color, modifier = Modifier.size(18.dp))
         return
@@ -1512,6 +1538,7 @@ private fun BridgeConnectionSettingsDialog(
                 }
                 Text("알림 사운드 재생 기기", color = TextPrimary, fontSize = 14.sp)
                 Text("완료·승인 사운드에 함께 적용됩니다.", color = TextMuted, fontSize = 11.sp)
+                Text("승인 선택지 알림음은 Mac 설정 → 승인 사운드에서 소리와 볼륨을 선택합니다.", color = TextMuted, fontSize = 11.sp)
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     listOf("phone" to "휴대폰", "mac" to "Mac").forEach { (target, label) ->
                         Row(
@@ -1670,6 +1697,7 @@ private fun ControlsPage(
     weeklyRemaining: Int?,
     fiveHourResetsAt: Double?,
     weeklyResetsAt: Double?,
+    resetCredits: List<Double>?,
     dotMatrixSkin: Boolean,
     pixelQuestSkin: Boolean,
     onPageChange: (Int) -> Unit,
@@ -1761,7 +1789,11 @@ private fun ControlsPage(
                 )
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (pixelQuestSkin) {
+                    if (phoneTheme == DotConsoleCodexPhoneTheme) {
+                        DotConsoleUsageCard("주간 한도", weeklyRemaining, weeklyResetsAt, true, nowEpochSeconds, DotMatrixPurple, compact = true)
+                        DotConsoleUsageCard("5시간 한도", fiveHourRemaining, fiveHourResetsAt, false, nowEpochSeconds, DotMatrixCyan, compact = true)
+                        DotConsoleResetCredits(resetCredits, nowEpochSeconds, compact = true)
+                    } else if (pixelQuestSkin) {
                         PixelQuestUsageProgress(
                             label = "1-WEEK QUEST",
                             remaining = weeklyRemaining,
@@ -1859,6 +1891,7 @@ private fun ControlsPageContent(
     onAction: (ControlAction) -> Unit
 ) {
     var verticalDrag by remember { mutableStateOf(0f) }
+    val transitionDistancePx = with(LocalDensity.current) { PageTransitionDistance.roundToPx() }
     val contentModifier = if (isPortrait) {
         modifier
     } else {
@@ -1884,18 +1917,16 @@ private fun ControlsPageContent(
             targetState = pageIndex to folderAction,
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
-                val direction = pageTransitionDirection(initialState.first, targetState.first, pages.size)
-                val enter = if (isPortrait) {
-                    slideInHorizontally(animationSpec = tween(260)) { width -> direction * (width / 5) }
+                if (isPortrait && initialState.first != targetState.first) {
+                    val direction = pageTransitionDirection(initialState.first, targetState.first, pages.size)
+                    (slideInHorizontally(tween(ButtonPageTransitionDurationMillis, easing = PageTransitionEasing)) { direction * transitionDistancePx } +
+                        fadeIn(tween(ButtonPageFadeDurationMillis, easing = PageTransitionEasing))) togetherWith
+                        (slideOutHorizontally(tween(ButtonPageTransitionDurationMillis, easing = PageTransitionEasing)) { -direction * transitionDistancePx } +
+                            fadeOut(tween(ButtonPageFadeDurationMillis, easing = PageTransitionEasing)))
                 } else {
-                    slideInVertically(animationSpec = tween(260)) { height -> direction * (height / 5) }
+                    fadeIn(tween(ButtonPageFadeDurationMillis, easing = LinearEasing)) togetherWith
+                        fadeOut(tween(ButtonPageFadeDurationMillis, easing = LinearEasing))
                 }
-                val exit = if (isPortrait) {
-                    slideOutHorizontally(animationSpec = tween(260)) { width -> -direction * (width / 5) }
-                } else {
-                    slideOutVertically(animationSpec = tween(260)) { height -> -direction * (height / 5) }
-                }
-                (enter + fadeIn(tween(180))) togetherWith (exit + fadeOut(tween(180)))
             },
             contentKey = { content -> smartphonePageContentTransitionKey(content.first, content.second?.id) },
             label = "button-page-transition"
@@ -2048,7 +2079,7 @@ internal fun folderGridItems(folderAction: ControlAction): List<ControlAction> {
     return items
 }
 
-private fun pageTransitionDirection(initialPage: Int, targetPage: Int, pageCount: Int): Int {
+internal fun pageTransitionDirection(initialPage: Int, targetPage: Int, pageCount: Int): Int {
     if (initialPage == targetPage) return 1
     if (initialPage == pageCount - 1 && targetPage == 0) return 1
     if (initialPage == 0 && targetPage == pageCount - 1) return -1
@@ -2104,7 +2135,7 @@ private fun ActionTile(
 ) {
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     val pixelSpace = phoneTheme == PixelSpaceCodexPhoneTheme
-    val dotMatrix = phoneTheme == DotMatrixCodexPhoneTheme
+    val dotMatrix = phoneTheme == DotMatrixCodexPhoneTheme || phoneTheme == DotConsoleCodexPhoneTheme
     val pixelQuest = phoneTheme == PixelQuestCodexPhoneTheme
     val controlCabinet = phoneTheme == ControlCabinetCodexPhoneTheme
     val skin = phoneSkinStyle(phoneTheme)
@@ -2302,7 +2333,7 @@ private fun ActionTile(
 }
 
 @Composable
-private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
+internal fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
     var nowEpochSeconds by remember { mutableStateOf(System.currentTimeMillis() / 1_000L) }
     LaunchedEffect(Unit) {
         while (true) {
@@ -2321,7 +2352,7 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
     val activityTitle = when (activity) {
         "connecting" -> "CONNECTING"
         "running" -> "RUNNING"
-        "waitingForApproval" -> "WAITING FOR APPROVAL"
+        "waitingForApproval" -> "승인 대기"
         "completed" -> "COMPLETED"
         "failed" -> "FAILED"
         else -> "IDLE"
@@ -2345,6 +2376,10 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
     }
     val fiveHourRemaining = remoteBridge.fiveHourRemainingPercent
     val weeklyRemaining = remoteBridge.remainingPercent
+    if (remoteBridge.codexPhoneTheme == DotConsoleCodexPhoneTheme) {
+        DotConsoleStatusPage(remoteBridge, activity, activityTitle, activityColor, nowEpochSeconds)
+        return
+    }
     if (controlCabinetSkin) {
         ControlCabinetCodexStatusPage(remoteBridge, activity, activityTitle, activityColor, nowEpochSeconds)
         return
@@ -2392,7 +2427,7 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
                 .padding(start = 20.dp, top = MainContentTopPadding, end = 20.dp, bottom = 18.dp)
         ) {
         Column(
-            modifier = Modifier.width(300.dp).fillMaxHeight(),
+            modifier = Modifier.width(300.dp).fillMaxHeight().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(if (pixelSpaceSkin) 6.dp else 12.dp)
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -2403,112 +2438,47 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
                     fontSize = 18.sp
                 )
             }
-            if (pixelSpaceSkin) {
+            if (pixelSpaceSkin || dotMatrixSkin) {
                 Spacer(Modifier.weight(0.25f))
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("Remaining usage", color = TextMuted, fontSize = 15.sp)
-                    UsageGauge(
-                        "5-hour remaining",
-                        fiveHourRemaining,
-                        modifier = Modifier.width(200.dp),
-                        valueFontSizeSp = 22
-                    )
-                    Text(
-                        formatResetTime(remoteBridge.fiveHourResetsAt, includeDate = false),
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        lineHeight = 20.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1
-                    )
-                    Text(
-                        formatRemainingDuration(remoteBridge.fiveHourResetsAt, nowEpochSeconds),
-                        color = TextMuted,
-                        fontSize = 14.sp,
-                        lineHeight = 18.sp,
-                        maxLines = 1
-                    )
+                    PhoneUsageGauge(remoteBridge.codexPhoneTheme, "5-hour remaining", fiveHourRemaining,
+                        remoteBridge.fiveHourResetsAt, false, nowEpochSeconds)
                 }
-                Spacer(Modifier.weight(1.25f))
+                Spacer(Modifier.height(12.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    UsageGauge(
-                        "1-week remaining",
-                        weeklyRemaining,
-                        modifier = Modifier.width(200.dp),
-                        valueFontSizeSp = 22
-                    )
-                    Text(
-                        formatResetTime(remoteBridge.resetsAt, includeDate = true),
-                        color = TextPrimary,
-                        fontSize = 16.sp,
-                        lineHeight = 20.sp,
-                        fontWeight = FontWeight.Medium,
-                        maxLines = 1
-                    )
-                    Text(
-                        formatRemainingDuration(remoteBridge.resetsAt, nowEpochSeconds),
-                        color = TextMuted,
-                        fontSize = 14.sp,
-                        lineHeight = 18.sp,
-                        maxLines = 1
-                    )
+                    PhoneUsageGauge(remoteBridge.codexPhoneTheme, "1-week remaining", weeklyRemaining,
+                        remoteBridge.resetsAt, true, nowEpochSeconds)
                 }
                 Spacer(Modifier.weight(0.25f))
             } else {
                 Spacer(Modifier.weight(0.55f))
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text("Remaining usage", color = TextMuted, fontSize = 15.sp)
-                    Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
-                        Column(modifier = Modifier.weight(1f)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
                             Text("5-hour", color = TextMuted, fontSize = 13.sp)
                             Text(
                                 fiveHourRemaining?.let { "$it%" } ?: "—",
                                 color = usageGaugeColor(fiveHourRemaining),
                                 fontSize = 36.sp
                             )
-                            Text(
-                                formatResetTime(remoteBridge.fiveHourResetsAt, includeDate = false),
-                                color = TextPrimary,
-                                fontSize = 16.sp,
-                                lineHeight = 20.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1
-                            )
-                            Text(
-                                formatRemainingDuration(remoteBridge.fiveHourResetsAt, nowEpochSeconds),
-                                color = TextMuted,
-                                fontSize = 14.sp,
-                                lineHeight = 18.sp,
-                                maxLines = 1
-                            )
+                            UsageResetInfo(remoteBridge.fiveHourResetsAt, false, nowEpochSeconds, TextPrimary, TextMuted)
                         }
-                        Column(modifier = Modifier.weight(1f)) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
                             Text("1-week", color = TextMuted, fontSize = 13.sp)
                             Text(
                                 weeklyRemaining?.let { "$it%" } ?: "—",
                                 color = usageGaugeColor(weeklyRemaining),
                                 fontSize = 36.sp
                             )
-                            Text(
-                                formatResetTime(remoteBridge.resetsAt, includeDate = true),
-                                color = TextPrimary,
-                                fontSize = 16.sp,
-                                lineHeight = 20.sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1
-                            )
-                            Text(
-                                formatRemainingDuration(remoteBridge.resetsAt, nowEpochSeconds),
-                                color = TextMuted,
-                                fontSize = 14.sp,
-                                lineHeight = 18.sp,
-                                maxLines = 1
-                            )
+                            UsageResetInfo(remoteBridge.resetsAt, true, nowEpochSeconds, TextPrimary, TextMuted)
                         }
                     }
                 }
-                Spacer(Modifier.weight(0.45f))
+                Spacer(Modifier.height(12.dp))
             }
+            ResetCreditList(remoteBridge.resetCredits, nowEpochSeconds)
         }
         Box(
             modifier = Modifier.weight(1f).fillMaxHeight().padding(horizontal = 28.dp)
@@ -2537,7 +2507,7 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
                     )
                 }
                 Spacer(Modifier.weight(1f))
-                if (!pixelSpaceSkin) {
+                if (!pixelSpaceSkin && !dotMatrixSkin) {
                     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                         UsageGauge(
                             label = "5-hour remaining",
@@ -2570,6 +2540,168 @@ private fun CodexStatusPage(remoteBridge: RemoteBridgeClient) {
 }
 
 @Composable
+private fun DotConsoleStatusMotion(activity: String, accent: Color, modifier: Modifier = Modifier.size(64.dp)) {
+    val motion = rememberInfiniteTransition(label = "dot-console-signal")
+    val phase by motion.animateFloat(
+        initialValue = 0f, targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(1_400, easing = LinearEasing), RepeatMode.Restart),
+        label = "dot-console-signal-phase"
+    )
+    Canvas(modifier) {
+        val pitch = size.minDimension / 7
+        repeat(7) { row ->
+            repeat(7) { column ->
+                val index = row * 7 + column
+                val lit = when (activity) {
+                    "running", "connecting" -> ((phase * 49).toInt() - index + 49) % 49 < 10
+                    "completed" -> (row == column + 2 && column < 3) || (row + column == 8 && column >= 2)
+                    "waitingForApproval" -> (row == 3 || column == 3) && phase < 0.65f
+                    "failed" -> row == column || row + column == 6
+                    else -> row in 2..4 && column in 2..4
+                }
+                drawCircle(if (lit) accent else Color(0xFF203440), pitch * 0.28f,
+                    Offset((column + 0.5f) * pitch, (row + 0.5f) * pitch))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DotConsoleStatusPage(
+    remoteBridge: RemoteBridgeClient,
+    activity: String,
+    activityTitle: String,
+    activityColor: Color,
+    nowEpochSeconds: Long
+) {
+    BoxWithConstraints(Modifier.fillMaxSize().background(Color(0xFF071018))) {
+        val portrait = maxHeight > maxWidth
+        val accent = when (activity) {
+            "running" -> DotMatrixCyan
+            "completed" -> DotMatrixLime
+            else -> activityColor
+        }
+        Canvas(Modifier.fillMaxSize()) {
+            val pitch = 12.dp.toPx()
+            for (y in 0..(size.height / pitch).toInt()) {
+                for (x in 0..(size.width / pitch).toInt()) {
+                    drawCircle(Color(0xFF203440), 0.7.dp.toPx(), Offset(x * pitch, y * pitch))
+                }
+            }
+        }
+        val panel = Modifier.background(Color(0xFF0D1822), RoundedCornerShape(6.dp))
+            .border(1.dp, Color(0xFF284754), RoundedCornerShape(6.dp)).padding(16.dp)
+        val status: @Composable () -> Unit = {
+            Text("DOT CONSOLE", color = DotMatrixCyan, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                DotConsoleStatusMotion(activity, accent)
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(activityTitle, color = accent, fontSize = 22.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    Text(remoteBridge.message, color = TextPrimary, fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            StatusLine("MAC LINK", if (remoteBridge.connectionState == RemoteConnectionState.Connected) DotMatrixCyan else TextMuted)
+            StatusLine("CODEX SERVER", if (remoteBridge.codexConnected) DotMatrixLime else TextMuted)
+            remoteBridge.pendingApproval?.let { approval ->
+                ApprovalPrompt(approval) { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) }
+            }
+        }
+        if (portrait) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                remoteBridge.pendingApproval?.let { approval ->
+                    ApprovalPrompt(approval) { decision, requestKey -> remoteBridge.sendCodexApproval(decision, requestKey) }
+                }
+                DotConsoleUsageCard("5시간 한도", remoteBridge.fiveHourRemainingPercent,
+                    remoteBridge.fiveHourResetsAt, false, nowEpochSeconds, DotMatrixCyan)
+                DotConsoleUsageCard("주간 한도", remoteBridge.remainingPercent,
+                    remoteBridge.resetsAt, true, nowEpochSeconds, DotMatrixPurple)
+                DotConsoleResetCredits(remoteBridge.resetCredits, nowEpochSeconds)
+            }
+        } else {
+            Row(Modifier.fillMaxSize().padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                Column(Modifier.weight(0.38f).fillMaxHeight().then(panel)
+                    .then(if (remoteBridge.pendingApproval != null) Modifier.verticalScroll(rememberScrollState()) else Modifier),
+                    verticalArrangement = Arrangement.spacedBy(18.dp)) { status() }
+                Column(Modifier.weight(0.62f).fillMaxHeight(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        DotConsoleUsageCard("5시간 한도", remoteBridge.fiveHourRemainingPercent,
+                            remoteBridge.fiveHourResetsAt, false, nowEpochSeconds, DotMatrixCyan,
+                            compact = true, modifier = Modifier.weight(1f).fillMaxHeight())
+                        DotConsoleUsageCard("주간 한도", remoteBridge.remainingPercent,
+                            remoteBridge.resetsAt, true, nowEpochSeconds, DotMatrixPurple,
+                            compact = true, modifier = Modifier.weight(1f).fillMaxHeight())
+                    }
+                    DotConsoleResetCredits(remoteBridge.resetCredits, nowEpochSeconds, compact = true)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DotConsoleResetCredits(credits: List<Double>?, nowEpochSeconds: Long, compact: Boolean = false) {
+    val available = credits?.filter { it > nowEpochSeconds }?.sorted()
+    Column(Modifier.fillMaxWidth()
+        .background(Color(0xFF0D1822), RoundedCornerShape(6.dp))
+        .border(1.dp, Color(0xFF284754), RoundedCornerShape(6.dp))
+        .padding(horizontal = if (compact) 10.dp else 16.dp, vertical = if (compact) 8.dp else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically) {
+            Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
+                Canvas(Modifier.size(12.dp)) {
+                    val pitch = size.width / 3
+                    repeat(3) { row ->
+                        repeat(3) { column ->
+                            drawCircle(DotMatrixLime, pitch * 0.25f, Offset((column + 0.5f) * pitch, (row + 0.5f) * pitch))
+                        }
+                    }
+                }
+                Text("재설정권", color = TextPrimary, fontSize = if (compact) 11.sp else 14.sp, fontWeight = FontWeight.Bold)
+            }
+            Text(available?.let { "${it.size}개" } ?: "—", color = DotMatrixLime,
+                fontSize = if (compact) 16.sp else 22.sp, fontFamily = FontFamily.Monospace)
+        }
+        if (available.isNullOrEmpty()) {
+            Text(if (available == null) "정보 확인 중" else "사용 가능한 재설정권 없음", color = TextMuted, fontSize = 12.sp)
+        } else {
+            available.forEach { expiresAt ->
+                UsageResetInfo(expiresAt, true, nowEpochSeconds, TextPrimary, DotMatrixLime)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DotConsoleUsageCard(label: String, remaining: Int?, resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long, accent: Color, compact: Boolean = false, modifier: Modifier = Modifier) {
+    Column(modifier.fillMaxWidth()
+        .background(Color(0xFF0D1822), RoundedCornerShape(6.dp))
+        .border(1.dp, accent.copy(alpha = 0.45f), RoundedCornerShape(6.dp))
+        .padding(horizontal = if (compact) 10.dp else 16.dp, vertical = if (compact) 8.dp else 16.dp),
+        verticalArrangement = Arrangement.spacedBy(if (compact) 6.dp else 12.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(label, color = TextPrimary, fontSize = if (compact) 11.sp else 14.sp, fontWeight = FontWeight.Bold)
+            Text(remaining?.let { "$it%" } ?: "—", color = accent, fontSize = if (compact) 18.sp else 26.sp, fontFamily = FontFamily.Monospace)
+        }
+        Canvas(Modifier.fillMaxWidth().height(if (compact) 10.dp else 22.dp)) {
+            val columns = 32
+            val pitch = size.width / columns
+            val filled = ((remaining ?: 0).coerceIn(0, 100) * columns / 100f).roundToInt()
+            repeat(2) { row ->
+                repeat(columns) { column ->
+                    drawCircle(if (column < filled) accent else Color(0xFF203440),
+                        minOf(pitch * 0.3f, size.height / 5),
+                        Offset((column + 0.5f) * pitch, (row + 0.5f) * size.height / 2))
+                }
+            }
+        }
+        UsageResetInfo(resetAt, includeDate, nowEpochSeconds, accent, TextPrimary)
+    }
+}
+
+@Composable
 private fun ControlCabinetCodexStatusPage(
     remoteBridge: RemoteBridgeClient,
     activity: String,
@@ -2594,18 +2726,18 @@ private fun ControlCabinetCodexStatusPage(
             Text("REMAINING USAGE", color = TextMuted, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                for ((label, remaining, resetAt) in listOf(
-                    Triple("5-hour", remoteBridge.fiveHourRemainingPercent, remoteBridge.fiveHourResetsAt),
-                    Triple("1-week", remoteBridge.remainingPercent, remoteBridge.resetsAt)
+                for ((label, remaining) in listOf(
+                    "5-hour" to remoteBridge.fiveHourRemainingPercent,
+                    "1-week" to remoteBridge.remainingPercent
                 )) {
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                         Text(label, color = TextMuted, fontSize = 12.sp)
                         Text(remaining?.let { "$it%" } ?: "—", color = usageGaugeColor(remaining), fontSize = 30.sp, fontFamily = FontFamily.Monospace)
-                        Text(formatResetTime(resetAt, includeDate = label == "1-week"), color = TextPrimary, fontSize = 13.sp)
-                        Text(formatRemainingDuration(resetAt, nowEpochSeconds), color = TextMuted, fontSize = 12.sp)
                     }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            ResetCreditList(remoteBridge.resetCredits, nowEpochSeconds)
         }
         val status: @Composable () -> Unit = {
             Text("CODEX STATUS", color = CabinetAmber, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
@@ -2759,20 +2891,23 @@ private fun PortraitCodexStatusPage(
             }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Remaining usage", color = TextMuted, fontSize = 14.sp)
-                UsageGauge(
+                PhoneUsageGauge(
+                    phoneTheme = remoteBridge.codexPhoneTheme,
                     label = "1-week remaining",
                     remaining = weeklyRemaining,
-                    dotStyle = dotMatrixSkin,
-                    dotTint = DotMatrixPurple
+                    resetAt = remoteBridge.resetsAt,
+                    includeDate = true,
+                    nowEpochSeconds = nowEpochSeconds
                 )
-                UsageResetInfo(remoteBridge.resetsAt, true, nowEpochSeconds, TextPrimary, TextMuted)
-                UsageGauge(
+                PhoneUsageGauge(
+                    phoneTheme = remoteBridge.codexPhoneTheme,
                     label = "5-hour remaining",
                     remaining = fiveHourRemaining,
-                    dotStyle = dotMatrixSkin,
-                    dotTint = DotMatrixCyan
+                    resetAt = remoteBridge.fiveHourResetsAt,
+                    includeDate = false,
+                    nowEpochSeconds = nowEpochSeconds
                 )
-                UsageResetInfo(remoteBridge.fiveHourResetsAt, false, nowEpochSeconds, TextPrimary, TextMuted)
+                ResetCreditList(remoteBridge.resetCredits, nowEpochSeconds)
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Connections", color = TextMuted, fontSize = 12.sp)
@@ -2914,6 +3049,24 @@ private fun PixelQuestCodexStatusPage(
                         modifier = Modifier.weight(1f)
                     )
                 }
+            }
+            ResetCreditList(remoteBridge.resetCredits, nowEpochSeconds)
+        }
+    }
+}
+
+@Composable
+private fun ResetCreditList(credits: List<Double>?, nowEpochSeconds: Long) {
+    val available = credits?.filter { it > nowEpochSeconds }
+    Column(
+        Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        if (available.isNullOrEmpty()) {
+            Text(if (available == null) "재설정권 정보 확인 중" else "사용 가능한 재설정권 없음", color = TextMuted, fontSize = 12.sp)
+        } else {
+            available.forEach { expiresAt ->
+                Text("- ${formatResetTime(expiresAt, includeDate = true)} (${formatRemainingDuration(expiresAt, nowEpochSeconds)})", color = TextPrimary, fontSize = 12.sp, maxLines = 1)
             }
         }
     }
@@ -3137,7 +3290,7 @@ private fun PixelQuestUsageCard(
 ) {
     Column(
         modifier
-            .height(130.dp)
+            .heightIn(min = 130.dp)
             .background(PixelQuestPanel, RoundedCornerShape(4.dp))
             .border(2.dp, PixelQuestFrame, RoundedCornerShape(4.dp))
             .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -3151,7 +3304,7 @@ private fun PixelQuestUsageCard(
             Text(remaining?.let { "$it%" } ?: "—", color = accent, fontSize = 23.sp, fontWeight = FontWeight.Black)
         }
         PixelQuestUsageBar(remaining, accent)
-        UsageResetInfo(resetAt, includeDate, nowEpochSeconds)
+        UsageResetInfo(resetAt, includeDate, nowEpochSeconds, PixelQuestMuted, accent)
     }
 }
 
@@ -3164,7 +3317,10 @@ private fun PixelQuestUsageProgress(
     nowEpochSeconds: Long,
     accent: Color
 ) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = UsagePanelHorizontalPadding, vertical = UsagePanelVerticalPadding), verticalArrangement = Arrangement.spacedBy(UsagePanelContentGap)) {
+    Column(Modifier.fillMaxWidth()
+        .background(PixelQuestPanel, RoundedCornerShape(2.dp))
+        .border(2.dp, PixelQuestFrame, RoundedCornerShape(2.dp))
+        .padding(horizontal = UsagePanelHorizontalPadding, vertical = UsagePanelVerticalPadding), verticalArrangement = Arrangement.spacedBy(UsagePanelContentGap)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Canvas(Modifier.size(8.dp)) { drawRect(accent, size = size) }
             Spacer(Modifier.width(7.dp))
@@ -3173,36 +3329,35 @@ private fun PixelQuestUsageProgress(
             Text(remaining?.let { "$it%" } ?: "—", color = accent, fontSize = 23.sp, fontWeight = FontWeight.Black)
         }
         PixelQuestUsageBar(remaining, accent)
-        UsageResetInfo(resetAt, includeDate, nowEpochSeconds)
+        UsageResetInfo(resetAt, includeDate, nowEpochSeconds, PixelQuestMuted, accent)
     }
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun UsageResetInfo(resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long, timeColor: Color = PixelQuestMuted, remainingColor: Color = PixelQuestGold) {
     val fontSize = if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) PortraitUsageResetFontSize else LandscapeUsageResetFontSize
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+    FlowRow(
+        modifier = Modifier.fillMaxWidth()
+            .drawBehind { drawLine(timeColor.copy(alpha = 0.25f), Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) }
+            .padding(top = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text(
             formatResetTime(resetAt, includeDate),
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.padding(end = 12.dp),
             color = timeColor,
             fontSize = fontSize,
             fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            softWrap = true
         )
         Text(
             formatRemainingDuration(resetAt, nowEpochSeconds),
-            modifier = Modifier.weight(1f),
             color = remainingColor,
             fontSize = fontSize,
             fontWeight = FontWeight.Medium,
-            textAlign = TextAlign.End,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            softWrap = true
         )
     }
 }
@@ -3338,44 +3493,32 @@ private fun ApprovalPrompt(
             approval.detail,
             color = TextPrimary,
             fontSize = 12.sp,
-            maxLines = 3,
             lineHeight = 16.sp
         )
         if (approval.canRespond) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                androidx.compose.material3.Surface(
-                    onClick = { onDecision("accept", approval.requestKey) },
-                    color = GaugeHigh,
-                    contentColor = TextPrimary,
-                    shape = RoundedCornerShape(3.dp),
-                    modifier = Modifier.height(34.dp)
-                ) {
-                    Box(
-                        modifier = Modifier.padding(horizontal = 20.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("승인", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-                androidx.compose.material3.Surface(
-                    onClick = { onDecision("decline", approval.requestKey) },
-                    color = Tile,
-                    contentColor = Red,
-                    shape = RoundedCornerShape(3.dp),
-                    modifier = Modifier
-                        .height(34.dp)
-                        .border(1.dp, Red, RoundedCornerShape(3.dp))
-                ) {
-                    Box(
-                        modifier = Modifier.padding(horizontal = 20.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text("거절", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    }
-                }
-            }
+            ApprovalDecisionButtons(approval, onDecision)
         } else {
             Text("Mac에서 승인 요청을 확인해 주세요.", color = TextMuted, fontSize = 12.sp)
+        }
+    }
+}
+
+@Composable
+private fun ApprovalDecisionButtons(approval: RemoteApproval, onDecision: (String, String?) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        approval.options.forEach { option ->
+            TextButton(
+                onClick = { onDecision(option.id, approval.requestKey) },
+                enabled = approval.canRespond && approval.requestKey != null,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    .border(1.dp, TextMuted.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(option.title, color = if (option.id == "decline" || option.id == "cancel" || option.title == "항상 거부") Red else GaugeHigh,
+                        fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    if (option.detail.isNotBlank()) Text(option.detail, color = TextMuted, fontSize = 12.sp)
+                }
+            }
         }
     }
 }
@@ -3402,7 +3545,10 @@ private fun ApprovalRequestDialog(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 Text(approval.title, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                 Text(
                     approval.detail,
@@ -3410,23 +3556,13 @@ private fun ApprovalRequestDialog(
                     fontSize = 13.sp,
                     lineHeight = 18.sp
                 )
+                if (approval.canRespond) ApprovalDecisionButtons(approval, onDecision)
             }
         },
         confirmButton = {
-            if (approval.canRespond) {
-                TextButton(onClick = { onDecision("accept", approval.requestKey) }) {
-                    Text("승인", color = GaugeHigh, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-            } else {
+            if (!approval.canRespond) {
                 TextButton(onClick = onDismiss) {
                     Text("확인", color = Green, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-            }
-        },
-        dismissButton = {
-            if (approval.canRespond) {
-                TextButton(onClick = { onDecision("decline", approval.requestKey) }) {
-                    Text("거절", color = Red, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
@@ -3625,9 +3761,7 @@ private fun ControlCabinetUsageGauge(label: String, remaining: Int?, resetAt: Do
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(UsagePanelContentGap)) {
             UsageGauge(label, remaining, dotStyle = true)
-            if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) {
-                UsageResetInfo(resetAt, includeDate, nowEpochSeconds, TextPrimary, TextMuted)
-            }
+            UsageResetInfo(resetAt, includeDate, nowEpochSeconds, TextPrimary, TextMuted)
         }
     }
 }
@@ -3676,7 +3810,7 @@ private fun UsageGauge(
 }
 
 private val koreaZone = ZoneId.of("Asia/Seoul")
-private val resetTimeFormatter = DateTimeFormatter.ofPattern("M월 d일 HH:mm", Locale.KOREA)
+private val resetTimeFormatter = DateTimeFormatter.ofPattern("MM월 dd일 HH:mm", Locale.KOREA)
 private val resetClockFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.KOREA)
 
 private fun formatResetTime(epochSeconds: Double?, includeDate: Boolean): String {

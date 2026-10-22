@@ -37,6 +37,7 @@ class RemoteBridgeService : Service() {
     private var screenOffDisconnectRunnable: Runnable? = null
     private var screenReceiverRegistered = false
     private var approvalNotificationPlayer: MediaPlayer? = null
+    private var lastNotifiedApproval: RemoteApproval? = null
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -237,6 +238,8 @@ class RemoteBridgeService : Service() {
     }
 
     private fun updateApprovalNotification(approval: RemoteApproval?) {
+        val isNewRequest = shouldWakeForCodexApproval(lastNotifiedApproval, approval)
+        lastNotifiedApproval = approval
         if (approval == null) {
             notificationManager.cancel(APPROVAL_NOTIFICATION_ID)
             stopApprovalSound()
@@ -244,7 +247,7 @@ class RemoteBridgeService : Service() {
         }
         val client = RemoteBridgeRuntime.client(this)
         if (client.isApprovalSoundEnabled && shouldPlayApprovalSoundOnPhone(client.approvalSoundOutputTarget)) {
-            playApprovalSound()
+            if (isNewRequest) playApprovalSound()
         } else {
             stopApprovalSound()
         }
