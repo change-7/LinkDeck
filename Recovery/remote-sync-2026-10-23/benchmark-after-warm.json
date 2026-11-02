@@ -1,0 +1,1 @@
+{"seconds": 30.56, "cpu_percent_one_core": 3.08, "total_bytes": 1608, "counts": {"sync": 1, "state": 1, "heartbeat": 10}, "bytes_by_type": {"sync": 445, "state": 753, "heartbeat": 410}, "state_frames": [{"activity": "running", "has_pages": false}]}

@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 struct CodexConnectionView: View {
     enum Tab: String, CaseIterable, Identifiable {
         case connection
+        case customInstructions
         case registeredAppAPIs
         case display
         case theme
@@ -16,6 +17,7 @@ struct CodexConnectionView: View {
 
         var title: String {
             switch self {
+            case .customInstructions: "사용자 지정 지침"
             case .connection: "연결 설정"
             case .registeredAppAPIs: "등록된 앱 API"
             case .display: "표시 설정"
@@ -27,6 +29,7 @@ struct CodexConnectionView: View {
 
         var symbol: String {
             switch self {
+            case .customInstructions: "text.alignleft"
             case .connection: "network"
             case .registeredAppAPIs: "app.connected.to.app.below.fill"
             case .display: "display"
@@ -78,6 +81,8 @@ struct CodexConnectionView: View {
                 switch selectedTab {
                 case .connection:
                     connectionPane
+                case .customInstructions:
+                    CustomInstructionsView(store: store)
                 case .registeredAppAPIs:
                     ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, folderSyncStore: folderSyncStore, showsRegisteredAppAPIsOnly: true)
                 case .display:

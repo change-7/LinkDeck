@@ -14,6 +14,8 @@ final class LaunchpadStore {
     private let sideButtonDefaultsMigrationKey = "chatgpt-micro-launchpad.side-button-defaults-v2"
     private let sideButtonCategoryOrderMigrationKey = "chatgpt-micro-launchpad.side-button-category-order-v3"
     private let sortedSideButtonDefaultsMigrationKey = "chatgpt-micro-launchpad.sorted-side-button-defaults-v4"
+    private(set) var customInstructions: CustomInstructions
+    private(set) var customInstructionsRevision = UUID()
     var pages: [LaunchPage]
     var smartphonePages: [SmartphonePage]
     var motionPresets: [MotionPreset]
@@ -27,8 +29,15 @@ final class LaunchpadStore {
     var selectedPadID = "grid_0_0"
     var statusMessage = "패드를 선택해 설정하세요."
 
+    func saveCustomInstructions(_ value: CustomInstructions) throws {
+        try value.save(to: preferences)
+        customInstructions = value
+        customInstructionsRevision = UUID()
+    }
+
     init(preferences: UserDefaults = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard) {
         self.preferences = preferences
+        customInstructions = CustomInstructions.load(from: preferences)
         codexCompletionSounds = CodexCompletionSoundLibrary(preferences: preferences)
         let needsSideButtonMigration = !preferences.bool(forKey: sideButtonDefaultsMigrationKey)
         let needsSideButtonCategoryOrdering = !preferences.bool(forKey: sideButtonCategoryOrderMigrationKey)
@@ -131,6 +140,26 @@ final class LaunchpadStore {
               let buttonIndex = smartphonePages[pageIndex].buttons.firstIndex(where: { $0.id == button.id }) else { return }
         smartphonePages[pageIndex].buttons[buttonIndex] = button
         saveSmartphonePages()
+    }
+
+    @discardableResult
+    func addSmartphonePage() -> Int {
+        let index = smartphonePages.count
+        let id = "smartphone_page_\(UUID().uuidString)"
+        smartphonePages.append(SmartphoneDefaults.blankPage(
+            id: id,
+            name: String(format: "PAGE %02d", index + 1)
+        ))
+        saveSmartphonePages()
+        return index
+    }
+
+    @discardableResult
+    func removeSmartphonePage(at index: Int) -> Bool {
+        guard smartphonePages.count > 1, smartphonePages.indices.contains(index) else { return false }
+        smartphonePages.remove(at: index)
+        saveSmartphonePages()
+        return true
     }
 
     func applyRemoteSmartphonePages(_ pages: [SmartphonePage]) {
@@ -271,9 +300,7 @@ final class LaunchpadStore {
         if let pageID = restoredDisplaySettings.pageID, !restoredPageIDs.contains(pageID) {
             restoredDisplaySettings.pageID = nil
         }
-        let restoredSmartphonePages = backup.smartphonePages.enumerated().map { index, page in
-            SmartphoneDefaults.normalized(page, at: index)
-        }
+        let restoredSmartphonePages = backup.smartphonePages.map(SmartphoneDefaults.normalized)
         let encoder = JSONEncoder()
         let pagesData = try encoder.encode(restoredPages)
         let smartphonePagesData = try encoder.encode(restoredSmartphonePages)

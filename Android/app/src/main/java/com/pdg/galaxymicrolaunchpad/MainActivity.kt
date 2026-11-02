@@ -73,6 +73,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -135,6 +136,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -339,6 +342,15 @@ class MainActivity : ComponentActivity() {
         remoteBridge.onCodexRunning = ::wakeForCodexRunning
         remoteBridge.onCodexApproval = ::wakeForCodexApproval
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                } else {
+                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+            }
+        }
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.systemBars())
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -539,6 +551,9 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     var page by remember { mutableStateOf(AppPage.Controls) }
     var buttonPageIndex by rememberSaveable { mutableStateOf(0) }
+    LaunchedEffect(remoteBridge.smartphonePages.map { it.id }) {
+        buttonPageIndex = buttonPageIndex.coerceIn(0, (remoteBridge.smartphonePages.size - 1).coerceAtLeast(0))
+    }
     var openFolderAction by remember { mutableStateOf<ControlAction?>(null) }
     val currentFolderAction = openFolderAction?.let { folder ->
         remoteBridge.smartphonePages.flatMap { it.actions }
@@ -739,7 +754,6 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
                     )
                 }
             ) {
-            if (isPortrait) Spacer(Modifier.height(32.dp))
             Header(
                 message = headerMessage,
                 messageColor = when (remoteBridge.commandSucceeded) {
@@ -933,7 +947,7 @@ private fun Header(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(900),
+            animation = tween(900, easing = CubicBezierEasing(0.9f, 0f, 0.1f, 1f)),
             repeatMode = RepeatMode.Reverse
         ),
         label = "codex-header-pulse-progress"
@@ -956,41 +970,40 @@ private fun Header(
         Green
     }
     val completionStatusColor = if (completionBlinkOn) Green else Green.copy(alpha = 0.25f)
-    Box(
+    val completionRingAlpha by animateFloatAsState(
+        targetValue = if (isCompletion && !completionBlinkOn) 0.25f else 1f,
+        animationSpec = tween((completionBlinkDurationMillis / 8).coerceIn(80L, 450L).toInt()),
+        label = "completion-ring-fade"
+    )
+    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    val density = LocalDensity.current
+    val cutoutHeight = WindowInsets.displayCutout.getTop(density)
+    val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(LocalView.current)?.displayCutout
+    val topCutouts = cutout?.boundingRects.orEmpty().filter { it.top <= 0 && it.bottom > 0 }
+    val headerHeight = if (isPortrait) with(density) { cutoutHeight.toDp().coerceAtLeast(32.dp) } else 32.dp
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxWidth()
-            .height(32.dp)
+            .height(headerHeight)
             .padding(horizontal = if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) 16.dp else 20.dp),
     ) {
-        val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
         if (isPortrait) {
+            val cameraLeft = with(density) { (topCutouts.minOfOrNull { it.left } ?: 0).toDp() }
+            val cameraRight = with(density) { (topCutouts.maxOfOrNull { it.right } ?: 0).toDp() }
+            val centerLeft = (maxWidth / 2 - 28.dp).coerceAtLeast(0.dp)
+            val centerRight = (maxWidth / 2 + 28.dp).coerceAtMost(maxWidth)
+            val leftWidth = if (topCutouts.isEmpty()) centerLeft else minOf(centerLeft, (cameraLeft - 24.dp).coerceIn(0.dp, maxWidth))
+            val rightStart = if (topCutouts.isEmpty()) centerRight else maxOf(centerRight, (cameraRight - 8.dp).coerceIn(leftWidth, maxWidth))
             Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(9.dp)
-                        .background(
-                            if (connectionState == RemoteConnectionState.Connected) Green else TextMuted,
-                            RoundedCornerShape(50)
-                        )
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    when (connectionState) {
-                        RemoteConnectionState.Connected -> "Mac connected"
-                        RemoteConnectionState.Connecting -> "Connecting to Mac"
-                        RemoteConnectionState.Searching -> "Searching for Mac"
-                        RemoteConnectionState.Disconnected -> "Mac disconnected"
-                    },
-                    color = TextPrimary,
-                    fontSize = 13.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Spacer(Modifier.width(12.dp))
-                MacSleepStatusBadge(connectionState, macSleepMode)
-                Spacer(Modifier.width(8.dp))
+              Row(Modifier.width(leftWidth), verticalAlignment = Alignment.CenterVertically) {
+                MacSleepStatusBadge(connectionState, macSleepMode, compact = true)
+              }
+                Spacer(Modifier.width(rightStart - leftWidth))
+              Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
                 HeaderActivityStatus(
                     modifier = Modifier.weight(1f),
+                    showMotion = false,
+                    showTaskText = false,
                     isCodexWorking = isCodexWorking,
                     isCompletion = isCompletion,
                     message = message,
@@ -1002,6 +1015,56 @@ private fun Header(
                     pixelQuestSkin = pixelQuestSkin,
                     dotConsoleSkin = dotConsoleSkin
                 )
+              }
+            }
+            Canvas(
+                Modifier.fillMaxSize()
+                    .graphicsLayer {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            val blur = if (connectionState == RemoteConnectionState.Connected && isCodexWorking) pulseProgress * 10.dp.toPx() else 0f
+                            renderEffect = if (blur > 0.1f) android.graphics.RenderEffect.createBlurEffect(
+                                blur, 0.1f, android.graphics.Shader.TileMode.DECAL
+                            ).asComposeRenderEffect() else null
+                        }
+                    }
+                    .semantics {
+                        stateDescription = if (connectionState == RemoteConnectionState.Connected) "Connected" else "Disconnected"
+                    }
+            ) {
+                val radius = size.height / 2
+                val ringColor = when {
+                    connectionState != RemoteConnectionState.Connected -> Color(0xFF383838)
+                    else -> Color.White.copy(alpha = completionRingAlpha)
+                }
+                val spread = if (connectionState == RemoteConnectionState.Connected && isCodexWorking) pulseProgress else 0f
+                val extension = radius * spread * 2.4f
+                val bands = 24
+                val innerEdge = 0.5f
+                val peak = 0.8f
+                val bandWidth = radius * (1f - innerEdge) / bands
+                repeat(bands) { index ->
+                    val fraction = innerEdge + (index + 0.5f) * (1f - innerEdge) / bands
+                    val bandRadius = radius * fraction
+                    val ramp = if (fraction < peak) (fraction - innerEdge) / (peak - innerEdge) else (1f - fraction) / (1f - peak)
+                    val feather = ramp * ramp * (3f - 2f * ramp)
+                    val samples = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && spread > 0f) 7 else 1
+                    repeat(samples) { sample ->
+                      val offset = if (samples == 1) 0f else (sample - 3) * spread * 4.dp.toPx()
+                      val weight = if (samples == 1) 1f else when (sample) {
+                          0, 6 -> 1f / 64f
+                          1, 5 -> 6f / 64f
+                          2, 4 -> 15f / 64f
+                          else -> 20f / 64f
+                      }
+                      drawRoundRect(
+                        color = ringColor.copy(alpha = ringColor.alpha * feather * (1f - spread * 0.4f) * weight),
+                        topLeft = Offset(center.x - extension - bandRadius + offset, center.y - bandRadius),
+                        size = Size((extension + bandRadius) * 2, bandRadius * 2),
+                        cornerRadius = CornerRadius(bandRadius),
+                        style = Stroke(width = bandWidth + 0.5f)
+                    )
+                    }
+                }
             }
         } else {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -1016,7 +1079,7 @@ private fun Header(
                 Spacer(Modifier.width(12.dp))
                 Text(
                     when (connectionState) {
-                        RemoteConnectionState.Connected -> "Mac connected"
+                        RemoteConnectionState.Connected -> "Connected"
                         RemoteConnectionState.Connecting -> "Connecting to Mac"
                         RemoteConnectionState.Searching -> "Searching for Mac"
                         RemoteConnectionState.Disconnected -> "Mac disconnected"
@@ -1049,7 +1112,7 @@ private fun Header(
 }
 
 @Composable
-private fun MacSleepStatusBadge(connectionState: RemoteConnectionState, mode: String) {
+private fun MacSleepStatusBadge(connectionState: RemoteConnectionState, mode: String, compact: Boolean = false) {
     val connected = connectionState == RemoteConnectionState.Connected
     val label = if (!connected) "상태 미확인" else when (mode) {
         "insomnia" -> "불면증"
@@ -1069,18 +1132,20 @@ private fun MacSleepStatusBadge(connectionState: RemoteConnectionState, mode: St
     Row(
         modifier = Modifier.background(color.copy(alpha = 0.22f), RoundedCornerShape(6.dp))
             .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)
     ) {
-        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(14.dp))
-        Text(text = label, color = color, fontSize = 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+        Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(if (compact) 12.dp else 14.dp))
+        Text(text = label, color = color, fontSize = if (compact) 10.sp else 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
     }
 }
 
 @Composable
 private fun HeaderActivityStatus(
     modifier: Modifier,
+    showMotion: Boolean = true,
+    showTaskText: Boolean = true,
     isCodexWorking: Boolean,
     isCompletion: Boolean,
     message: String,
@@ -1098,14 +1163,14 @@ private fun HeaderActivityStatus(
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         if (isCodexWorking) {
-            RunningStatusIndicator(
+            if (showMotion) RunningStatusIndicator(
                 color = workingStatusColor,
                 pixelStyle = pixelSpaceSkin,
                 dotMatrixStyle = dotMatrixSkin,
                 pixelQuestStyle = pixelQuestSkin,
                 dotConsoleStyle = dotConsoleSkin
             )
-            Text(
+            if (showTaskText) Text(
                 "Codex 작업중",
                 color = workingStatusColor,
                 fontSize = 14.sp,
@@ -1115,10 +1180,10 @@ private fun HeaderActivityStatus(
             )
         }
         if (isCompletion) {
-            if (dotConsoleSkin) {
+            if (dotConsoleSkin && showMotion) {
                 DotConsoleStatusMotion("completed", completionStatusColor, Modifier.size(18.dp))
             }
-            Text(
+            if (showTaskText) Text(
                 "Codex 작업 완료",
                 color = completionStatusColor,
                 fontSize = 14.sp,
@@ -1127,7 +1192,7 @@ private fun HeaderActivityStatus(
                 overflow = TextOverflow.Ellipsis
             )
         }
-        if (!isCodexWorking && !isCompletion) {
+        if (!isCodexWorking && !isCompletion && (showTaskText || message != "Codex 작업 완료")) {
             Text(
                 message,
                 color = messageColor,
@@ -1947,14 +2012,9 @@ private fun ControlsPageContent(
             } else {
                 val targetPage = pages[targetPageIndex.coerceIn(pages.indices)]
                 val rowCount = (targetPage.actions.size + columnCount - 1) / columnCount
-                val requestedTileHeight = if (isPortrait) {
-                    ((availableHeight - gap * (rowCount - 1)) / rowCount)
-                        .coerceAtLeast(88.dp)
-                        .coerceAtMost(112.dp)
-                } else {
-                    (availableHeight - gap * (rowCount - 1)) / rowCount
+                val tileHeight = with(LocalDensity.current) {
+                    fittedButtonHeightPx(availableHeight.roundToPx(), gap.roundToPx(), rowCount).toDp()
                 }
-                val tileHeight = requestedTileHeight.coerceAtLeast(56.dp)
                 val gridHeight = tileHeight * rowCount + gap * (rowCount - 1)
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -1969,7 +2029,7 @@ private fun ControlsPageContent(
                         },
                         horizontalArrangement = Arrangement.spacedBy(gap),
                         verticalArrangement = Arrangement.spacedBy(gap),
-                        userScrollEnabled = isPortrait && gridHeight > availableHeight
+                        userScrollEnabled = false
                     ) {
                         items(targetPage.actions) { action ->
                             ActionTile(
@@ -2010,14 +2070,9 @@ private fun FolderContentsPage(
     val columnCount = FolderGridColumnCount
     val visibleRowCount = (folderItems.size + columnCount - 1) / columnCount
     val gap = 10.dp
-    val requestedTileHeight = if (isPortrait) {
-        ((maxHeight - gap * (visibleRowCount - 1)) / visibleRowCount)
-            .coerceAtLeast(88.dp)
-            .coerceAtMost(112.dp)
-    } else {
-        (maxHeight - gap * (visibleRowCount - 1)) / visibleRowCount
+    val tileHeight = with(LocalDensity.current) {
+        fittedButtonHeightPx(maxHeight.roundToPx(), gap.roundToPx(), visibleRowCount).toDp()
     }
-    val tileHeight = requestedTileHeight.coerceAtLeast(56.dp)
     val gridHeight = tileHeight * visibleRowCount + gap * (visibleRowCount - 1)
     Box(
         modifier = Modifier.fillMaxSize(),
@@ -2032,7 +2087,7 @@ private fun FolderContentsPage(
             },
             horizontalArrangement = Arrangement.spacedBy(gap),
             verticalArrangement = Arrangement.spacedBy(gap),
-            userScrollEnabled = isPortrait && gridHeight > maxHeight
+            userScrollEnabled = false
         ) {
             items(folderItems) { action ->
                 ActionTile(
@@ -2046,6 +2101,9 @@ private fun FolderContentsPage(
         }
     }
 }
+
+internal fun fittedButtonHeightPx(height: Int, gap: Int, rows: Int): Int =
+    if (rows <= 0) 0 else ((height - gap * (rows - 1)).coerceAtLeast(0) / rows)
 
 private const val FolderGridColumnCount = 4
 private const val FolderGridRowCount = 4
@@ -2134,6 +2192,7 @@ private fun ActionTile(
     onLongClick: (() -> Unit)? = null
 ) {
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
+    val contentScale = if (isPortrait) (tileHeight.value / 88f).coerceIn(0.1f, 1f) else 1f
     val pixelSpace = phoneTheme == PixelSpaceCodexPhoneTheme
     val dotMatrix = phoneTheme == DotMatrixCodexPhoneTheme || phoneTheme == DotConsoleCodexPhoneTheme
     val pixelQuest = phoneTheme == PixelQuestCodexPhoneTheme
@@ -2260,26 +2319,26 @@ private fun ActionTile(
                 Column(
                     modifier = Modifier.fillMaxSize(),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(ButtonTileContentGap, Alignment.CenterVertically)
+                    verticalArrangement = Arrangement.spacedBy(ButtonTileContentGap * contentScale, Alignment.CenterVertically)
                 ) {
                     if (!action.isIconless) {
                         action.iconBitmap?.let { bitmap ->
                             Image(
                                 bitmap = bitmap,
                                 contentDescription = action.label,
-                                modifier = Modifier.size(if (isPortrait) PortraitButtonTileIconSize else ButtonTileIconSize)
+                                modifier = Modifier.size(if (isPortrait) PortraitButtonTileIconSize * contentScale else ButtonTileIconSize)
                             )
                         } ?: Icon(
                             action.icon,
                             contentDescription = action.label,
-                            modifier = Modifier.size(if (isPortrait) PortraitButtonTileIconSize else ButtonTileIconSize)
+                            modifier = Modifier.size(if (isPortrait) PortraitButtonTileIconSize * contentScale else ButtonTileIconSize)
                         )
                     }
                     Text(
                         action.label,
                         color = if (themed && action.accent == TextPrimary) accent else action.accent,
                         fontFamily = if (themed) FontFamily.Monospace else FontFamily.Default,
-                        fontSize = if (isPortrait) PortraitButtonTileLabelFontSize else ButtonTileLabelFontSize,
+                        fontSize = if (isPortrait) PortraitButtonTileLabelFontSize * contentScale else ButtonTileLabelFontSize,
                         fontWeight = FontWeight.Medium,
                         textAlign = TextAlign.Center,
                         maxLines = 2,

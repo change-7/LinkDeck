@@ -46,6 +46,17 @@ final class AppAPIManifestTests: XCTestCase {
         _ = try RegisteredAppAPI.register(appURL: directory, preferences: preferences)
         let reloadedPreferences = try XCTUnwrap(UserDefaults(suiteName: suite))
         XCTAssertEqual(RegisteredAppAPI.discover(buttons: [], preferences: reloadedPreferences).map(\.bundleID), [bundleID])
+        let button = LinkDeckMCPButton(id: "keep-phone-button", title: "Fixture", page: "Phone", device: "스마트폰", press: "short",
+            action: PadAction(kind: .app, value: bundleID), commandFileID: "keep-phone-button")
+        app.removeFromAPIList(preferences: preferences)
+        app.removeFromAPIList(preferences: preferences)
+        XCTAssertTrue(RegisteredAppAPI.isExcluded(bundleID: bundleID, preferences: reloadedPreferences))
+        XCTAssertTrue(RegisteredAppAPI.discover(buttons: [button], preferences: reloadedPreferences).isEmpty)
+        XCTAssertEqual(button.action.value, bundleID)
+        XCTAssertEqual(button.action.kind, .app)
+        _ = try RegisteredAppAPI.register(appURL: directory, preferences: preferences)
+        XCTAssertFalse(RegisteredAppAPI.isExcluded(bundleID: bundleID, preferences: preferences))
+        XCTAssertEqual(RegisteredAppAPI.discover(buttons: [button], preferences: preferences).map(\.bundleID), [bundleID])
         XCTAssertFalse(app.approved)
         UserDefaults.standard.set(app.approvalKey, forKey: preference)
         XCTAssertTrue(app.approved)
@@ -55,6 +66,64 @@ final class AppAPIManifestTests: XCTestCase {
         XCTAssertThrowsError(try RegisteredAppAPI.load(appURL: directory))
         XCTAssertThrowsError(try RegisteredAppAPI.register(appURL: directory, preferences: preferences))
         XCTAssertTrue(RegisteredAppAPI.discover(buttons: [], preferences: preferences).isEmpty)
+    }
+
+    func testBridgeShowsWorkingUntilAsyncJobCompletesThenReturnsToConnected() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
+        let configuration = AppAPIManifest(schemaVersion: 1, id: "fixture", name: "Fixture", transport: "mcp_stdio", arguments: [fixture.path], tools: ["start_download"])
+        let app = RegisteredAppAPI(bundleID: "test.\(UUID())", appURL: fixture, executable: URL(fileURLWithPath: "/usr/bin/python3"), manifest: configuration, approvalKey: UUID().uuidString)
+        let preference = "linkdeck.app-api." + app.bundleID
+        UserDefaults.standard.set(app.approvalKey, forKey: preference)
+        defer { UserDefaults.standard.removeObject(forKey: preference) }
+        let bridge = AppAPIMCPBridge()
+        let idle = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(idle, .idle)
+        _ = try await bridge.call(app, tool: "start_download", arguments: [:])
+        let working = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(working, .working)
+        try await Task.sleep(for: .milliseconds(1300))
+        let finished = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(finished, .connected)
+        await bridge.stop()
+        let stopped = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(stopped, .idle)
+    }
+
+    func testChatViewPlusShowsEitherServiceWorkingUntilItFinishes() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
+        let configuration = AppAPIManifest(schemaVersion: 1, id: "chat_view_plus", name: "Fixture", transport: "mcp_stdio", arguments: [fixture.path], tools: ["chatgpt_state", "gemini_state", "set_chat_busy", "set_gemini_busy", "clear_busy"])
+        let app = RegisteredAppAPI(bundleID: "test.\(UUID())", appURL: fixture, executable: URL(fileURLWithPath: "/usr/bin/python3"), manifest: configuration, approvalKey: UUID().uuidString)
+        let preference = "linkdeck.app-api." + app.bundleID
+        UserDefaults.standard.set(app.approvalKey, forKey: preference)
+        defer { UserDefaults.standard.removeObject(forKey: preference) }
+        let bridge = AppAPIMCPBridge()
+        for tool in ["set_chat_busy", "set_gemini_busy"] {
+            _ = try await bridge.call(app, tool: tool, arguments: [:])
+            let working = await bridge.connectionStatus(for: app)
+            XCTAssertEqual(working, .working)
+            _ = try await bridge.call(app, tool: "clear_busy", arguments: [:])
+            try await Task.sleep(for: .milliseconds(1300))
+            let idle = await bridge.connectionStatus(for: app)
+            XCTAssertEqual(idle, .connected)
+        }
+        await bridge.stop()
+    }
+
+    func testShortCallsRemainVisibleBriefly() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
+        let configuration = manifest()
+        let app = RegisteredAppAPI(bundleID: "test.\(UUID())", appURL: fixture, executable: URL(fileURLWithPath: "/usr/bin/python3"), manifest: AppAPIManifest(schemaVersion: 1, id: configuration.id, name: configuration.name, transport: configuration.transport, arguments: [fixture.path], tools: configuration.tools), approvalKey: UUID().uuidString)
+        let preference = "linkdeck.app-api." + app.bundleID
+        UserDefaults.standard.set(app.approvalKey, forKey: preference)
+        defer { UserDefaults.standard.removeObject(forKey: preference) }
+        let bridge = AppAPIMCPBridge()
+        _ = try await bridge.call(app, tool: "echo", arguments: [:])
+        let working = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(working, .working)
+        try await Task.sleep(for: .milliseconds(1300))
+        let idle = await bridge.connectionStatus(for: app)
+        XCTAssertEqual(idle, .connected)
+        await bridge.stop()
     }
 
     func testBridgeDiscoversPagesForwardsAllowedToolsAndRevokesAccess() async throws {

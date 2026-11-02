@@ -10,20 +10,22 @@ actor StableWhisperMCPClient {
     private let jobsDirectory: URL
     private let idleTimeout: Duration
     private var idleTask: Task<Void, Never>?
-    private var pendingJobs: [String: String] = [:]
+    private var pendingJobs: [String: (tool: String, idArgument: String)] = [:]
     private var unknownJob = false
     private var settledJobs: Set<String> = []
     private let chatView: Bool
+    private let activityStateTools: [String]
     private var chatViewTasks: Set<String> = []
     private var chatViewAnswerPending = false
     private var chatViewPendingPanels: Set<Int> = []
     private let terminateChatView: @Sendable () async -> Bool
     private let launchChatView: @Sendable (URL) async throws -> Void
 
-    init(jobsDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Stable Whisper/linkdeck-mcp-jobs"), idleTimeout: Duration = .seconds(300), chatView: Bool = false, terminateChatView: @escaping @Sendable () async -> Bool = StableWhisperMCPClient.quitChatView, launchChatView: @escaping @Sendable (URL) async throws -> Void = StableWhisperMCPClient.launchChatView) {
+    init(jobsDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Stable Whisper/linkdeck-mcp-jobs"), idleTimeout: Duration = .seconds(300), chatView: Bool = false, activityStateTools: [String] = [], terminateChatView: @escaping @Sendable () async -> Bool = StableWhisperMCPClient.quitChatView, launchChatView: @escaping @Sendable (URL) async throws -> Void = StableWhisperMCPClient.launchChatView) {
         self.jobsDirectory = jobsDirectory
         self.idleTimeout = idleTimeout
         self.chatView = chatView
+        self.activityStateTools = activityStateTools
         self.terminateChatView = terminateChatView
         self.launchChatView = launchChatView
     }
@@ -44,6 +46,16 @@ actor StableWhisperMCPClient {
     }
 
     func isRunning() -> Bool { process?.isRunning == true }
+
+    func isWorking() async -> Bool {
+        guard process?.isRunning == true else { return false }
+        if hasActiveJobs() { return true }
+        for tool in chatView ? ["chatgpt_state"] : activityStateTools {
+            if let reply = try? exchange(["method": "tools/call", "params": ["name": tool, "arguments": [:]]]),
+               let state = toolObject(reply), Self.chatViewIsWorking(state) { return true }
+        }
+        return false
+    }
 
     func request(_ data: Data, executable: URL, arguments: [String] = ["--mcp"]) async throws -> Data {
         idleTask?.cancel()
@@ -127,9 +139,9 @@ actor StableWhisperMCPClient {
             guard !Task.isCancelled else { return }
             if !terminated { scheduleIdleStop(); return }
         }
-        for (id, tool) in pendingJobs {
-            if let reply = try? exchange(["method": "tools/call", "params": ["name": tool, "arguments": ["job_id": id]]]) {
-                observeJob(reply, tool: tool)
+        for (id, status) in pendingJobs {
+            if let reply = try? exchange(["method": "tools/call", "params": ["name": status.tool, "arguments": [status.idArgument: id]]]) {
+                observeJob(reply, tool: status.tool)
             }
         }
         if pendingJobs.isEmpty && !unknownJob { stop() }
@@ -140,19 +152,22 @@ actor StableWhisperMCPClient {
         if let reply = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            reply["error"] != nil || (reply["result"] as? [String: Any])?["isError"] as? Bool == true { return }
         let job = toolObject(data)
-        let statusTool: String?
+        let statusTool: (tool: String, idArgument: String)?
         switch tool {
-        case "start_transcription": statusTool = "get_transcription_status"
-        case "start_download": statusTool = "get_download_status"
-        case "burn_subtitles": statusTool = "get_subtitle_status"
+        case "start_transcription": statusTool = ("get_transcription_status", "job_id")
+        case "start_download": statusTool = ("get_download_status", "job_id")
+        case "burn_subtitles": statusTool = ("get_subtitle_status", "job_id")
+        case "create_miu_event", "update_miu_event", "sync_miu_calendar": statusTool = ("get_miu_job_status", "jobID")
+        case "control_device", "start_status_read": statusTool = ("get_job_status", "jobID")
+        case "receive_files", "receive_all", "cancel_inbox_files", "cancel_outbox_files", "send_text", "send_files", "add_inbox_files": statusTool = ("get_job", "id")
         default: statusTool = nil
         }
-        guard let job, let id = (job["job_id"] ?? job["id"]) as? String else {
+        guard let job, let id = (job["jobID"] ?? job["job_id"] ?? job["id"]) as? String else {
             if statusTool != nil { unknownJob = true }
             return
         }
         let state = (job["state"] ?? job["phase"] ?? job["status"]) as? String
-        if ["completed", "failed", "cancelled", "canceled", "interrupted"].contains(state ?? "") {
+        if ["completed", "succeeded", "partial_failure", "failed", "cancelled", "canceled", "interrupted"].contains(state ?? "") {
             pendingJobs.removeValue(forKey: id)
             settledJobs.insert(id)
         } else if let statusTool { pendingJobs[id] = statusTool }
@@ -160,9 +175,9 @@ actor StableWhisperMCPClient {
 
     func hasActiveJobs() -> Bool {
         guard process?.isRunning == true else { return false }
-        for (id, tool) in pendingJobs {
-            if let reply = try? exchange(["method": "tools/call", "params": ["name": tool, "arguments": ["job_id": id]]]) {
-                observeJob(reply, tool: tool)
+        for (id, status) in pendingJobs {
+            if let reply = try? exchange(["method": "tools/call", "params": ["name": status.tool, "arguments": [status.idArgument: id]]]) {
+                observeJob(reply, tool: status.tool)
             }
         }
         return unknownJob || !pendingJobs.isEmpty
@@ -226,6 +241,15 @@ actor StableWhisperMCPClient {
             $0["taskBusy"] as? Bool == false && $0["promptBusy"] as? Bool == false
                 && $0["isLoading"] as? Bool == false && $0["queuedTaskCount"] as? Int == 0
                 && ["idle", "completed"].contains($0["state"] as? String ?? "")
+        }
+    }
+
+    nonisolated static func chatViewIsWorking(_ state: [String: Any]) -> Bool {
+        if (state["activeTaskCount"] as? Int ?? 0) > 0 { return true }
+        if let busy = state["busyPanelIndices"] as? [Int], !busy.isEmpty { return true }
+        return (state["panels"] as? [[String: Any]] ?? []).contains {
+            $0["taskBusy"] as? Bool == true || $0["promptBusy"] as? Bool == true
+                || $0["isLoading"] as? Bool == true || ($0["queuedTaskCount"] as? Int ?? 0) > 0
         }
     }
 

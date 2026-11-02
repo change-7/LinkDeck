@@ -79,11 +79,7 @@ final class ChatGPTTunnelController {
         do { configuration = try savedConfiguration() }
         catch { message = error.localizedDescription; return }
         let (id, key) = configuration
-        isActive = true
-        isReady = false
-        message = "터널 연결 중…"
-        task = Task { [weak self] in
-            guard let self else { return }
+        connect {
             await self.run(
                 executable: executable,
                 tunnelID: id,
@@ -92,6 +88,36 @@ final class ChatGPTTunnelController {
                 folderSyncStore: folderSyncStore,
                 runner: runner
             )
+        }
+    }
+
+    func connect(
+        run: @escaping @MainActor () async -> Void,
+        retrySleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) {
+        guard task == nil else { return }
+        isActive = true
+        isReady = false
+        message = "터널 연결 중…"
+        task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.isActive = false
+                self.isReady = false
+                if Task.isCancelled { self.message = "연결 안 됨" }
+                self.task = nil
+            }
+            var delay = 1
+            while !Task.isCancelled {
+                await run()
+                guard self.autoConnect, !Task.isCancelled else { break }
+                self.message = "터널 연결 끊김 · \(delay)초 후 다시 연결합니다."
+                do { try await retrySleep(.seconds(delay)) }
+                catch { break }
+                guard self.autoConnect else { break }
+                delay = min(delay * 2, 30)
+                self.message = "터널 연결 중…"
+            }
         }
     }
 
@@ -150,6 +176,7 @@ final class ChatGPTTunnelController {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-tunnel-\(UUID())")
         let healthFile = directory.appendingPathComponent("health.url")
         let server = LinkDeckMCPServer()
+        server.instructionsProvider = { (store.customInstructions, store.customInstructionsRevision) }
         let pipeline = SubtitlePipelineRuntime.shared
         let whisper = pipeline.whisper
         self.server = server
@@ -157,7 +184,7 @@ final class ChatGPTTunnelController {
             let catalog = LinkDeckMCPHandler.buttons(macPages: store.pages, phonePages: store.smartphonePages)
             return await pipeline.response(to: data, apps: RegisteredAppAPI.discover(buttons: catalog)) {
                 await StableWhisperMCPBridge.response(to: data, client: whisper, executable: StableWhisperMCPBridge.executable()) {
-                    LinkDeckMCPHandler.response(to: data, buttons: catalog, folderSyncStore: folderSyncStore) { button in
+                    LinkDeckMCPHandler.response(to: data, buttons: catalog, customInstructions: store.customInstructions, folderSyncStore: folderSyncStore) { button in
                         let result = try runner.execute(button.action, commandFileID: button.commandFileID)
                         self?.lastAction = button.title + ": " + result
                         return result
@@ -165,7 +192,11 @@ final class ChatGPTTunnelController {
                 }
             }
         }
-        server.onFailure = { [weak self] in self?.disconnect() }
+        server.onFailure = { [weak self, weak server] in
+            guard let self, let server, self.server === server else { return }
+            self.isReady = false
+            if let process = self.process, process.isRunning { process.terminate() }
+        }
         server.onRequestRejected = { [weak self] reason in self?.lastAction = "연결 요청 거부: " + reason }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -200,6 +231,7 @@ final class ChatGPTTunnelController {
                     } catch { return false }
                 }.value
                 try Task.checkCancellation()
+                guard process.isRunning else { break }
                 isReady = ready
                 if ready { misses = 0; message = "터널 연결됨 · ChatGPT에서 사용할 준비가 됐습니다." }
                 else {
@@ -212,6 +244,8 @@ final class ChatGPTTunnelController {
         } catch {
             message = Task.isCancelled ? "연결 안 됨" : "터널을 시작하지 못했습니다. 설치 상태와 연결 정보를 확인하세요."
         }
+        isReady = false
+        server.onFailure = nil
         server.stop()
         if let process = self.process {
             if process.isRunning { process.terminate() }
@@ -229,9 +263,5 @@ final class ChatGPTTunnelController {
         self.process = nil
         self.server = nil
         try? FileManager.default.removeItem(at: directory)
-        isActive = false
-        isReady = false
-        if Task.isCancelled { message = "연결 안 됨" }
-        task = nil
     }
 }

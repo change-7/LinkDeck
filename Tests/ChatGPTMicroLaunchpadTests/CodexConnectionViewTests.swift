@@ -5,7 +5,7 @@ import XCTest
 final class CodexConnectionViewTests: XCTestCase {
     func testSettingsSurface_includesApprovalSoundSettings() {
         XCTAssertEqual(CodexConnectionView.availableTabTitles, [
-            "연결 설정", "등록된 앱 API", "표시 설정", "휴대폰 스킨", "완료 사운드", "승인 사운드"
+            "연결 설정", "사용자 지정 지침", "등록된 앱 API", "표시 설정", "휴대폰 스킨", "완료 사운드", "승인 사운드"
         ])
     }
 

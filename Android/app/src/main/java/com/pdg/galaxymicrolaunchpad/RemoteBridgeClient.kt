@@ -126,6 +126,12 @@ class RemoteBridgeClient(context: Context) {
     private val bridgePreferences = RemoteBridgePreferences(appContext)
     private val completionSoundFile = File(appContext.filesDir, "codex_completion_sound")
     private val approvalSoundFile = File(appContext.filesDir, "codex_approval_sound")
+    private val resourceCache = RemoteSyncCache(File(appContext.filesDir, "remote_resources"))
+    private val stateSequence = RemoteStateSequence()
+    private val eventPreferences = appContext.getSharedPreferences("remote_sync_events", Context.MODE_PRIVATE)
+    @Volatile private var configurationSynchronized = false
+    private var notificationSession: String? = null
+    private var lastNotifiedApprovalKey = eventPreferences.getString("approvalKey", null)
     @Volatile private var hasCustomCompletionSound = completionSoundFile.isFile
     private val nsdManager = appContext.getSystemService(NsdManager::class.java)
     private val executor = Executors.newSingleThreadExecutor()
@@ -185,7 +191,7 @@ class RemoteBridgeClient(context: Context) {
     /** Called on the main thread when a new approval request is received. */
     var onCodexApproval: (() -> Unit)? = null
     /** Called on the main thread whenever the pending approval changes. */
-    internal var onCodexApprovalChanged: ((RemoteApproval?) -> Unit)? = null
+    internal var onCodexApprovalChanged: ((RemoteApproval?, Boolean) -> Unit)? = null
     var onMicrophoneStopped: (() -> Unit)? = null
 
     var codexRevealEventId by mutableStateOf(0)
@@ -235,6 +241,58 @@ class RemoteBridgeClient(context: Context) {
         private set
     internal var smartphonePages by mutableStateOf(buttonPages)
         private set
+
+    init {
+        for (name in listOf("buttons", "icons", "completionSound", "approvalSound")) {
+            resourceCache.record(name)?.optJSONObject("payload")?.let {
+                if (!applyResource(name, it)) resourceCache.discard(name)
+            }
+        }
+    }
+
+    private fun applyResource(name: String, payload: JSONObject): Boolean {
+        when (name) {
+            "buttons" -> {
+                if (payload.optJSONArray("smartphonePages") == null) return false
+                lastStateObject = payload
+                val pages = if (payload.getJSONArray("smartphonePages").length() == 0) emptyList()
+                    else parseSmartphonePages(payload, iconBitmapCache, smartphoneIconAssets) ?: return false
+                mainHandler.post { smartphonePages = pages }
+            }
+            "icons" -> {
+                smartphoneIconAssets = payload.optJSONObject("assets") ?: return false
+                iconBitmapCache.clear()
+                lastStateObject?.let { buttons ->
+                    parseSmartphonePages(buttons, iconBitmapCache, smartphoneIconAssets)?.let { pages ->
+                        mainHandler.post { smartphonePages = pages }
+                    }
+                }
+            }
+            "completionSound" -> return receiveCompletionSound(payload)
+            "approvalSound" -> return receiveApprovalSound(payload)
+            else -> return false
+        }
+        return true
+    }
+
+    private fun receiveSync(payload: JSONObject) {
+        val manifest = payload.optJSONObject("resourceRevisions") ?: return
+        val revisions = manifest.keys().asSequence().associateWith { manifest.getString(it) }
+        if (revisions.keys != RemoteSyncCache.names || revisions.values.any { !it.matches(Regex("[a-f0-9]{64}")) }) return
+        val session = payload.optString("sessionID")
+        if (!stateSequence.synchronize(session, payload.optLong("sequence", -1), revisions)) return
+        if (notificationSession != session) {
+            notificationSession = session
+            if (eventPreferences.getString("session", null) == session) {
+                lastActivity = eventPreferences.getString("activity", null)
+                lastCompletionEventId = eventPreferences.getInt("completion", 0)
+            } else {
+                lastActivity = null
+                lastCompletionEventId = null
+            }
+        }
+        configurationSynchronized = revisions.all { (name, revision) -> resourceCache.revisions()[name] == revision }
+    }
 
     fun start() {
         if (started) return
@@ -354,9 +412,12 @@ class RemoteBridgeClient(context: Context) {
                 didConnect = true
                 target.soTimeout = READ_TIMEOUT_MS
                 writer = OutputStreamWriter(target.getOutputStream(), Charsets.UTF_8)
-                writer?.append("{\"type\":\"hello\",\"protocolVersion\":1}\n")
+                stateSequence.resetConnection()
+                configurationSynchronized = false
+                val hello = JSONObject().put("type", "hello").put("protocolVersion", 3)
+                    .put("resourceRevisions", JSONObject(resourceCache.revisions()))
+                writer?.append(hello.toString())?.append('\n')
                 writer?.flush()
-                setConnection(RemoteConnectionState.Connected, generation)
                 readLoop(target, generation)
             } catch (_: Exception) {
                 setConnection(RemoteConnectionState.Disconnected, generation)
@@ -367,13 +428,10 @@ class RemoteBridgeClient(context: Context) {
                     stopMicrophone(sendCommand = false)
                     socket = null
                     writer = null
-                    iconBitmapCache.clear()
-                    smartphoneIconAssets = JSONObject()
-                    lastStateObject = null
+                    configurationSynchronized = false
                     if (started && hasReceivedRemoteState) {
                         forceCodexRevealAfterReconnect = true
                     }
-                    lastApproval = null
                     preserveActiveStateDuringReconnect()
                     if (started) {
                         setConnection(RemoteConnectionState.Disconnected, generation)
@@ -405,7 +463,7 @@ class RemoteBridgeClient(context: Context) {
                 if (shouldDisconnectAfterReadTimeout(consecutiveTimeouts)) break
                 val currentWriter = writer ?: break
                 synchronized(currentWriter) {
-                    currentWriter.append("{\"type\":\"hello\",\"protocolVersion\":1}\n")
+                    currentWriter.append("{\"type\":\"ping\",\"protocolVersion\":3}\n")
                     currentWriter.flush()
                 }
             }
@@ -413,8 +471,23 @@ class RemoteBridgeClient(context: Context) {
     }
 
     private fun parseState(line: String) {
+        val generation = connectionGeneration
         runCatching {
             val state = JSONObject(line)
+            when (state.optString("type")) {
+                "heartbeat" -> return
+                "sync" -> { receiveSync(state); return }
+                "resource" -> {
+                    val name = state.optString("name")
+                    val revision = state.optString("revision")
+                    if (state.optString("sessionID") != stateSequence.sessionID ||
+                        stateSequence.expectedResources[name] != revision) return
+                    if (resourceCache.revisions()[name] == revision) return
+                    val payload = state.optJSONObject("payload") ?: return
+                    if (!applyResource(name, payload) || !resourceCache.store(state)) socket?.close()
+                    return
+                }
+            }
             if (state.optString("type") == "codexCompletionSound") {
                 receiveCompletionSound(state)
                 return
@@ -448,6 +521,11 @@ class RemoteBridgeClient(context: Context) {
                 return
             }
             if (state.optString("type") != "state") return
+            if (state.optInt("protocolVersion", 1) >= 3) {
+                if (!stateSequence.acceptState(state.optString("sessionID"), state.optLong("sequence", -1), resourceCache.revisions())) return
+            } else if (stateSequence.sessionID != null) return
+            configurationSynchronized = true
+            setConnection(RemoteConnectionState.Connected)
             hasReceivedRemoteState = true
             completionSoundVolume = normalizeCompletionSoundVolumePercent(
                 state.optInt("completionSoundVolumePercent", 100)
@@ -469,11 +547,12 @@ class RemoteBridgeClient(context: Context) {
             if (state.has("smartphoneIconAssets")) {
                 smartphoneIconAssets = state.optJSONObject("smartphoneIconAssets") ?: JSONObject()
             }
-            lastStateObject = state
+            if (state.has("smartphonePages")) lastStateObject = state
             val nextSmartphonePages = parseSmartphonePages(state, iconBitmapCache, smartphoneIconAssets)
             val nextApproval = parseRemoteApproval(state)
-            val approvalEvent = shouldWakeForCodexApproval(lastApproval, nextApproval)
-            val approvalChanged = lastApproval != nextApproval
+            val approvalEvent = shouldWakeForCodexApproval(lastApproval, nextApproval) &&
+                (nextApproval?.requestKey == null || nextApproval.requestKey != lastNotifiedApprovalKey)
+            val approvalChanged = lastApproval != nextApproval || forceCodexRevealAfterReconnect
             lastApproval = nextApproval
             val nextCompletionEventId = state.optInt("completionEventID", 0)
             val nextActiveSessionCount = state.optInt("activeSessionCount", 0).coerceAtLeast(0)
@@ -493,7 +572,7 @@ class RemoteBridgeClient(context: Context) {
             if (reconnectReveal) {
                 forceCodexRevealAfterReconnect = false
             }
-            val completionEvent = isCodexCompletionEvent(
+            val completionEvent = lastActivity != null && isCodexCompletionEvent(
                 previousActivity = lastActivity,
                 currentActivity = nextActivity,
                 previousCompletionEventId = lastCompletionEventId,
@@ -507,7 +586,7 @@ class RemoteBridgeClient(context: Context) {
                 outputTarget = completionSoundOutputTarget
             )
             val revealReason = when {
-                completionEvent || nextActivity == "completed" && revealEvent -> CodexRevealReason.Completion
+                completionEvent -> CodexRevealReason.Completion
                 nextActivity == "waitingForApproval" && revealEvent -> CodexRevealReason.Approval
                 else -> CodexRevealReason.Running
             }
@@ -526,7 +605,13 @@ class RemoteBridgeClient(context: Context) {
             cachedResetsAt = nextResetsAt
             cachedFiveHourResetsAt = nextFiveHourReset
             resetScheduler.scheduleFiveHourReset(nextFiveHourReset)
+            if (approvalEvent) lastNotifiedApprovalKey = nextApproval?.requestKey
+            notificationSession?.let { session ->
+                eventPreferences.edit().putString("session", session).putString("activity", nextActivity)
+                    .putInt("completion", nextCompletionEventId).putString("approvalKey", lastNotifiedApprovalKey).apply()
+            }
             mainHandler.post {
+                if (generation != connectionGeneration) return@post
                 codexConnected = state.optBoolean("codexConnected", false)
                 macSleepMode = state.optJSONObject("macSleepStatus")?.optString("mode", "unknown") ?: "unknown"
                 activity = nextActivity
@@ -548,7 +633,7 @@ class RemoteBridgeClient(context: Context) {
                 UsageWidgetUpdater.onUsageChanged(appContext, nextRemaining, nextFiveHourRemaining)
                 pendingApproval = nextApproval
                 if (approvalChanged) {
-                    onCodexApprovalChanged?.invoke(nextApproval)
+                    onCodexApprovalChanged?.invoke(nextApproval, approvalEvent)
                 }
                 activeSessionCount = nextActiveSessionCount
                 if (codexPhoneTheme != nextCodexPhoneTheme) {
@@ -574,7 +659,7 @@ class RemoteBridgeClient(context: Context) {
         }
     }
 
-    private fun receiveCompletionSound(payload: JSONObject) {
+    private fun receiveCompletionSound(payload: JSONObject): Boolean {
         completionSoundEnabled = payload.optString("id") != "none"
         completionSoundOutputTarget = payload.optString("outputTarget", "phone")
         mainHandler.post { completionSoundTarget = completionSoundOutputTarget }
@@ -582,31 +667,33 @@ class RemoteBridgeClient(context: Context) {
         if (payload.optBoolean("useBuiltIn", false)) {
             completionSoundFile.delete()
             hasCustomCompletionSound = false
-            return
+            return true
         }
 
         val encodedData = payload.optString("data")
         val maximumEncodedLength = ((MAX_COMPLETION_SOUND_BYTES + 2) / 3) * 4
-        if (encodedData.isEmpty() || encodedData.length > maximumEncodedLength) return
-        if (payload.optString("mimeType") !in setOf("audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg")) return
+        if (encodedData.isEmpty() || encodedData.length > maximumEncodedLength) return false
+        if (payload.optString("mimeType") !in setOf("audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg")) return false
         val audioData = try {
             Base64.decode(encodedData, Base64.DEFAULT)
         } catch (_: IllegalArgumentException) {
-            return
+            return false
         }
-        if (audioData.isEmpty() || audioData.size > MAX_COMPLETION_SOUND_BYTES) return
+        if (audioData.isEmpty() || audioData.size > MAX_COMPLETION_SOUND_BYTES) return false
 
         val temporaryFile = File(appContext.filesDir, "codex_completion_sound.tmp")
         try {
             temporaryFile.writeBytes(audioData)
             Files.move(temporaryFile.toPath(), completionSoundFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
             hasCustomCompletionSound = true
+            return true
         } catch (_: Exception) {
             temporaryFile.delete()
+            return false
         }
     }
 
-    private fun receiveApprovalSound(payload: JSONObject) {
+    private fun receiveApprovalSound(payload: JSONObject): Boolean {
         approvalSoundEnabled = payload.optString("id") != "none"
         approvalSoundVolume = normalizeCompletionSoundVolumePercent(payload.optInt("volumePercent", 100))
         val outputTarget = payload.optString("outputTarget", "phone")
@@ -615,25 +702,30 @@ class RemoteBridgeClient(context: Context) {
             bridgePreferences.approvalSoundOutputTarget = outputTarget
             mainHandler.post { approvalSoundOutputTarget = outputTarget }
         }
-        if (!payload.optBoolean("configured", false)) return
+        if (!payload.optBoolean("configured", false)) {
+            approvalSoundFile.delete()
+            bridgePreferences.approvalSoundName = null
+            mainHandler.post { approvalSoundName = "기본 승인음" }
+            return true
+        }
         if (payload.optBoolean("useBuiltIn", false)) {
             approvalSoundFile.delete()
             bridgePreferences.approvalSoundName = null
             mainHandler.post { approvalSoundName = "기본 승인음" }
-            return
+            return true
         }
 
         val mimeType = payload.optString("mimeType")
-        if (mimeType !in setOf("audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg")) return
+        if (mimeType !in setOf("audio/wav", "audio/mpeg", "audio/mp4", "audio/ogg")) return false
         val encodedData = payload.optString("data")
         val maximumEncodedLength = ((MAX_APPROVAL_SOUND_BYTES + 2) / 3) * 4
-        if (encodedData.isEmpty() || encodedData.length > maximumEncodedLength) return
+        if (encodedData.isEmpty() || encodedData.length > maximumEncodedLength) return false
         val audioData = try {
             Base64.decode(encodedData, Base64.DEFAULT)
         } catch (_: IllegalArgumentException) {
-            return
+            return false
         }
-        if (audioData.isEmpty() || audioData.size > MAX_APPROVAL_SOUND_BYTES) return
+        if (audioData.isEmpty() || audioData.size > MAX_APPROVAL_SOUND_BYTES) return false
 
         val temporaryFile = File(appContext.filesDir, "codex_approval_sound.tmp")
         try {
@@ -642,8 +734,10 @@ class RemoteBridgeClient(context: Context) {
             val displayName = payload.optString("title").takeIf { it.isNotBlank() } ?: "Mac 승인음"
             bridgePreferences.approvalSoundName = displayName
             mainHandler.post { approvalSoundName = displayName }
+            return true
         } catch (_: Exception) {
             temporaryFile.delete()
+            return false
         }
     }
 
@@ -749,7 +843,7 @@ class RemoteBridgeClient(context: Context) {
         decision: String? = null,
         approvalRequestKey: String? = null
     ): String? {
-        if (connectionState != RemoteConnectionState.Connected) {
+        if (connectionState != RemoteConnectionState.Connected || !configurationSynchronized) {
             mainHandler.post {
                 commandSucceeded = false
                 message = "Mac에 연결된 후 버튼을 눌러주세요."
@@ -757,7 +851,10 @@ class RemoteBridgeClient(context: Context) {
             return null
         }
         val commandObject = buildRemoteCommandPayload(command, buttonID, decision, approvalRequestKey = approvalRequestKey)
+        commandObject.put("buttonsRevision", resourceCache.revisions()["buttons"])
+        val generation = connectionGeneration
         commandExecutor.execute {
+            if (generation != connectionGeneration || !configurationSynchronized) return@execute
             val currentWriter = writer ?: run {
                 mainHandler.post { if (commandObject.getString("id") == microphoneStartCommandID) stopMicrophone(sendCommand = false) }
                 return@execute
@@ -790,9 +887,6 @@ class RemoteBridgeClient(context: Context) {
     }
 
     private fun clearRemoteState(nextMessage: String = "Mac을 찾는 중…") {
-        lastActivity = null
-        lastCompletionEventId = null
-        lastApproval = null
         cachedUsedPercent = null
         cachedRemainingPercent = null
         cachedFiveHourRemainingPercent = null
@@ -810,23 +904,14 @@ class RemoteBridgeClient(context: Context) {
             resetCredits = null
             fiveHourResetsAt = null
             pendingApproval = null
-            onCodexApprovalChanged?.invoke(null)
+            onCodexApprovalChanged?.invoke(null, false)
             activeSessionCount = 0
-            smartphonePages = buttonPages
         }
     }
 
     private fun preserveActiveStateDuringReconnect() {
-        val active = lastActivity == "running" || lastActivity == "waitingForApproval"
-        if (!active) {
-            clearRemoteState()
-            return
-        }
-        mainHandler.post {
-            codexConnected = false
-            message = "Mac 연결을 재시도하는 중…"
-            commandSucceeded = null
-        }
+        configurationSynchronized = false
+        clearRemoteState("Mac 연결 끊김 · 재연결 중…")
     }
 
     private fun retryDiscovery() {

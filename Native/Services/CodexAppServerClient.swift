@@ -7,24 +7,27 @@ final class CodexAppServerClient {
     static let usageRefreshInterval: TimeInterval = 30
 
     private(set) var activity: CodexActivity = .idle {
-        didSet { publishRemoteState() }
+        didSet { if activity != oldValue { publishRemoteState() } }
     }
     private(set) var isConnected = false {
-        didSet { publishRemoteState() }
+        didSet { if isConnected != oldValue { publishRemoteState() } }
     }
     private(set) var message = "Codex App Server에 연결하지 않았습니다." {
-        didSet { publishRemoteState() }
+        didSet { if message != oldValue { publishRemoteState() } }
     }
     private(set) var weeklyUsage: CodexWeeklyUsage? {
-        didSet { publishRemoteState() }
+        didSet { if weeklyUsage != oldValue { publishRemoteState() } }
     }
     private(set) var fiveHourUsage: CodexFiveHourUsage? {
-        didSet { publishRemoteState() }
+        didSet { if fiveHourUsage != oldValue { publishRemoteState() } }
     }
 
     private let remoteBridge = CodexRemoteBridge()
+    private var remoteSleepStatus = MacSleepStatus.current()
+    private var lastIconPages: [SmartphonePage]?
+    private var remoteIconAssets: [String: SmartphoneIconAsset] = [:]
     private var resetCredits: [CodexResetCredit]? {
-        didSet { publishRemoteState() }
+        didSet { if resetCredits != oldValue { publishRemoteState() } }
     }
     private let phoneMicrophone = PhoneMicrophoneOutput()
     @ObservationIgnored var onPhoneMicrophoneActivityChanged: ((Bool) -> Void)?
@@ -45,7 +48,7 @@ final class CodexAppServerClient {
     private var remoteCompletionEventID = 0
     private var remoteActiveSessionCount = 0
     private var usageRefreshTask: Task<Void, Never>?
-    private var remoteStateRefreshTask: Task<Void, Never>?
+    private var remoteHeartbeatTask: Task<Void, Never>?
     private var desktopApprovalMonitorTask: Task<Void, Never>?
     private var adbReverseTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -86,13 +89,14 @@ final class CodexAppServerClient {
             }
         }
         remoteBridge.onMicrophoneAudio = { [weak self] data in self?.phoneMicrophone.enqueue(data) }
+        remoteBridge.onBeforePhoneCommand = { [weak self] in self?.publishRemoteState() }
         remoteBridge.onMicrophoneStop = { [weak self] in self?.phoneMicrophone.stop() }
         remoteBridge.onPhoneMicrophoneActivityChanged = { [weak self] active in
             self?.onPhoneMicrophoneActivityChanged?(active)
         }
         remoteBridge.start()
         publishRemoteState()
-        startRemoteStateRefreshLoop()
+        startRemoteHeartbeatLoop()
         startDesktopApprovalMonitorLoop()
     }
 
@@ -146,8 +150,8 @@ final class CodexAppServerClient {
         adbReverseTask?.cancel()
         adbReverseTask = nil
         phoneMicrophone.stop()
-        remoteStateRefreshTask?.cancel()
-        remoteStateRefreshTask = nil
+        remoteHeartbeatTask?.cancel()
+        remoteHeartbeatTask = nil
         desktopApprovalMonitorTask?.cancel()
         desktopApprovalMonitorTask = nil
         desktopPendingApprovals = []
@@ -158,13 +162,22 @@ final class CodexAppServerClient {
 
     func stopPhoneMicrophone() { phoneMicrophone.stop() }
 
-    private func startRemoteStateRefreshLoop() {
-        guard remoteStateRefreshTask == nil else { return }
-        remoteStateRefreshTask = Task { @MainActor [weak self] in
+    private func startRemoteHeartbeatLoop() {
+        guard remoteHeartbeatTask == nil else { return }
+        remoteHeartbeatTask = Task { @MainActor [weak self] in
+            var heartbeatCount = 0
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled, let self else { return }
-                self.publishRemoteState()
+                self.remoteBridge.sendHeartbeat()
+                heartbeatCount += 1
+                if heartbeatCount % 5 == 0 {
+                    let sleepStatus = MacSleepStatus.current()
+                    if self.remoteSleepStatus != sleepStatus {
+                        self.remoteSleepStatus = sleepStatus
+                        self.publishRemoteState()
+                    }
+                }
             }
         }
     }
@@ -187,7 +200,7 @@ final class CodexAppServerClient {
                         NSLog("LinkDeck Codex approval monitor failed: %@", error)
                         self.desktopApprovalMonitorLastError = error
                     }
-                    try? await Task.sleep(for: .seconds(2))
+                    try? await Task.sleep(for: .seconds(self.desktopApprovalPollingInterval))
                     continue
                 }
                 self.desktopApprovalMonitorLastError = nil
@@ -199,7 +212,7 @@ final class CodexAppServerClient {
                     if newRequestArrived { self.localApprovalSoundHandler() }
                     self.publishRemoteState()
                 }
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(self.desktopApprovalPollingInterval))
             }
         }
     }
@@ -207,6 +220,18 @@ final class CodexAppServerClient {
     func publishRemoteActivity(_ activity: CodexActivity) {
         desktopActivity = activity == .idle ? nil : activity
         publishRemoteState()
+    }
+
+    private var desktopApprovalPollingInterval: Double {
+        Self.desktopApprovalPollingInterval(
+            activeSessionCount: remoteActiveSessionCount,
+            activity: desktopActivity ?? activity,
+            hasPendingApproval: pendingRemoteApproval != nil || !desktopPendingApprovals.isEmpty
+        )
+    }
+
+    static func desktopApprovalPollingInterval(activeSessionCount: Int, activity: CodexActivity, hasPendingApproval: Bool) -> Double {
+        activeSessionCount > 0 || activity == .running || activity == .waitingForApproval || hasPendingApproval ? 0.5 : 2
     }
 
     func publishRemoteCompletion(taskID: DesktopCodexTaskID) {
@@ -696,6 +721,10 @@ final class CodexAppServerClient {
 
     func publishRemoteState() {
         let smartphonePages = remoteSmartphonePagesProvider()
+        if lastIconPages != smartphonePages {
+            remoteIconAssets = SmartphoneIconAssetProvider.assets(for: smartphonePages)
+            lastIconPages = smartphonePages
+        }
         let completionSound = remoteCompletionSoundProvider()
         let approvalSound = remoteApprovalSoundProvider()
         let remoteActivity = Self.remoteActivity(
@@ -717,14 +746,14 @@ final class CodexAppServerClient {
             fiveHourUsage: fiveHourUsage,
             resetCredits: resetCredits,
             smartphonePages: smartphonePages,
-            smartphoneIconAssets: SmartphoneIconAssetProvider.assets(for: smartphonePages),
+            smartphoneIconAssets: remoteIconAssets,
             approval: remoteApprovalForPhone,
             completionEventID: remoteCompletionEventID,
             activeSessionCount: remoteActiveSessionCount,
             completionSoundVolumePercent: completionSound.volumePercent,
             approvalSoundVolumePercent: approvalSound.volumePercent,
             codexPhoneTheme: remoteCodexPhoneThemeProvider(),
-            macSleepStatus: MacSleepStatus.current()
+            macSleepStatus: remoteSleepStatus
         )
         remoteBridge.publish(state, completionSound: completionSound, approvalSound: approvalSound)
     }

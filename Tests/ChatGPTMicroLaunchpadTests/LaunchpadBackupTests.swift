@@ -55,4 +55,19 @@ final class LaunchpadBackupTests: XCTestCase {
             XCTAssertEqual(error as? LaunchpadBackupError, .invalidSmartphonePageShape)
         }
     }
+
+    func testBackup_validationRejectsEmptySmartphonePages() {
+        let backup = LaunchpadBackup(
+            launchpadPages: PadDefaults.pages(),
+            smartphonePages: [],
+            motionPresets: [],
+            codexMotionPresetIDs: [:],
+            codexMotionPresentations: [:],
+            codexMotionDisplaySettings: CodexMotionDisplaySettings()
+        )
+
+        XCTAssertThrowsError(try backup.validated()) { error in
+            XCTAssertEqual(error as? LaunchpadBackupError, .invalidSmartphonePageShape)
+        }
+    }
 }

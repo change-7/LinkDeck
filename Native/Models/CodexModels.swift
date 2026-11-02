@@ -238,7 +238,8 @@ struct DesktopCodexTaskParser {
             // Progress records such as item_started/item_completed can be
             // the first observable record when task_started was flushed in a
             // different write. They still prove that this turn is active.
-            guard Self.isProgressEvent(eventType) else { return nil }
+            guard Self.isProgressEvent(eventType),
+                  !completedTaskIDs.contains(taskID) else { return nil }
             return activeTaskIDs.contains(taskID) ? nil : beginTask(taskID)
         }
     }

@@ -103,6 +103,11 @@ struct ChatGPTTunnelView: View {
                         } else {
                             Button("API 연결 허용") { api.approve(); refreshAppAPIs() }
                         }
+                        Button("API 목록에서 제거", role: .destructive) {
+                            api.removeFromAPIList()
+                            refreshAppAPIs()
+                        }
+                        .help("버튼은 유지합니다. 다시 추가하려면 앱을 API 목록에 드래그하세요.")
                       }
                       .padding(8)
                       .frame(maxWidth: .infinity, alignment: .leading)

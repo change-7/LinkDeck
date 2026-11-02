@@ -57,7 +57,7 @@ struct CodexRemoteState: Codable, Equatable, Sendable {
     let fiveHourRemainingPercent: Int?
     let fiveHourResetsAt: Date?
     let resetCredits: [CodexResetCredit]?
-    let smartphonePages: [SmartphonePage]
+    var smartphonePages: [SmartphonePage]
     /// Optional for wire compatibility with older bridge clients and cached states.
     var smartphoneIconAssets: [String: SmartphoneIconAsset]?
     let approval: CodexRemoteApproval?
@@ -340,18 +340,18 @@ final class CodexRemoteBridge {
     var onMicrophoneAudio: ((Data) -> Void)?
     var onMicrophoneStop: (() -> Void)?
     var onPhoneMicrophoneActivityChanged: ((Bool) -> Void)?
+    var onBeforePhoneCommand: (() -> Void)?
 
     private var listener: NWListener?
     private var connections: [UUID: NWConnection] = [:]
     private var receiveBuffers: [UUID: Data] = [:]
     private var lastState: CodexRemoteState?
+    private var sync = CodexRemoteSync()
+    private var modernConnections: Set<UUID> = []
+    private var readyConnections: Set<UUID> = []
+    private var resourceRevisions: [UUID: [String: String]] = [:]
     private var lastIconAssets: [String: SmartphoneIconAsset]?
-    private var lastCompletionSoundID: String?
-    private var lastCompletionSoundOutputTarget: CodexCompletionSoundOutputTarget?
     private var lastCompletionSound: CodexRemoteCompletionSound?
-    private var lastApprovalSoundID: String?
-    private var lastApprovalSoundConfigured: Bool?
-    private var lastApprovalSoundOutputTarget: CodexApprovalSoundOutputTarget?
     private var lastApprovalSound: CodexRemoteApprovalSound?
     private var microphoneConnectionID: UUID?
     private let queue = DispatchQueue(label: "MicroLaunchpad.remote-bridge", qos: .userInitiated)
@@ -393,14 +393,13 @@ final class CodexRemoteBridge {
         listener = nil
         for connection in connections.values { connection.cancel() }
         connections.removeAll()
+        modernConnections.removeAll()
+        readyConnections.removeAll()
+        resourceRevisions.removeAll()
+        sync = CodexRemoteSync()
         receiveBuffers.removeAll()
         lastIconAssets = nil
-        lastCompletionSoundID = nil
-        lastCompletionSoundOutputTarget = nil
         lastCompletionSound = nil
-        lastApprovalSoundID = nil
-        lastApprovalSoundConfigured = nil
-        lastApprovalSoundOutputTarget = nil
         lastApprovalSound = nil
         clientCount = 0
         isRunning = false
@@ -412,34 +411,39 @@ final class CodexRemoteBridge {
         approvalSound: CodexRemoteApprovalSound = .builtIn
     ) {
         let iconAssetsChanged = state.smartphoneIconAssets != lastIconAssets
-        let completionSoundChanged = completionSound.id != lastCompletionSoundID
-            || completionSound.outputTarget != lastCompletionSoundOutputTarget
-        let approvalSoundChanged = approvalSound.id != lastApprovalSoundID
-            || approvalSound.configured != lastApprovalSoundConfigured
-            || approvalSound.outputTarget != lastApprovalSoundOutputTarget
+        let completionSoundChanged = completionSound != lastCompletionSound
+        let approvalSoundChanged = approvalSound != lastApprovalSound
+        guard sync.update(state, completionSound: completionSound, approvalSound: approvalSound) else { return }
         lastState = state
         lastIconAssets = state.smartphoneIconAssets
-        lastCompletionSoundID = completionSound.id
-        lastCompletionSoundOutputTarget = completionSound.outputTarget
         lastCompletionSound = completionSound
-        lastApprovalSoundID = approvalSound.id
-        lastApprovalSoundConfigured = approvalSound.configured
-        lastApprovalSoundOutputTarget = approvalSound.outputTarget
         lastApprovalSound = approvalSound
-        if completionSoundChanged {
-            send(completionSound, to: connections.values)
+        let legacyState = readyConnections.subtracting(modernConnections).isEmpty
+            ? nil : encodedLine(state, includingSmartphoneIconAssets: false)
+        for id in readyConnections {
+            guard let connection = connections[id] else { continue }
+            if modernConnections.contains(id) {
+                sendSync(to: connection, id: id)
+            } else {
+                if completionSoundChanged { send(completionSound, to: [connection]) }
+                if approvalSoundChanged { send(approvalSound, to: [connection]) }
+                if let legacyState { connection.send(content: legacyState, completion: .contentProcessed { _ in }) }
+                if iconAssetsChanged, let assets = state.smartphoneIconAssets { send(CodexRemoteIconAssets(assets: assets), to: [connection]) }
+            }
         }
-        if approvalSoundChanged {
-            send(approvalSound, to: connections.values)
+    }
+
+    func sendHeartbeat() {
+        for id in readyConnections {
+            connections[id]?.send(content: CodexRemoteSync.heartbeat, completion: .contentProcessed { _ in })
         }
-        guard !connections.isEmpty,
-              let data = encodedLine(state, includingSmartphoneIconAssets: false) else { return }
-        for connection in connections.values {
-            connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    private func sendSync(to connection: NWConnection, id: UUID) {
+        for frame in sync.frames(cachedRevisions: resourceRevisions[id] ?? [:]) {
+            connection.send(content: frame, completion: .contentProcessed { _ in })
         }
-        if iconAssetsChanged, let assets = state.smartphoneIconAssets {
-            send(CodexRemoteIconAssets(assets: assets), to: connections.values)
-        }
+        resourceRevisions[id] = sync.revisions
     }
 
     private func accept(_ connection: NWConnection) {
@@ -480,8 +484,27 @@ final class CodexRemoteBridge {
             guard let object = try? JSONSerialization.jsonObject(with: line),
                   let payload = object as? [String: Any],
                   let type = payload["type"] as? String else { continue }
+            if type == "command", ["smartphoneButton", "smartphoneButtonLongPress"].contains(payload["command"] as? String ?? "") {
+                onBeforePhoneCommand?()
+                if modernConnections.contains(id), payload["buttonsRevision"] as? String != sync.revisions["buttons"] {
+                    if let commandID = payload["id"] as? String {
+                        send(CodexRemoteCommandResult(id: commandID, success: false, message: "버튼 설정이 변경되어 다시 동기화합니다. 잠시 후 다시 눌러주세요."), to: connection)
+                    }
+                    sendSync(to: connection, id: id)
+                    continue
+                }
+            }
             if type == "hello" {
-                sendCurrentState(to: connection)
+                readyConnections.insert(id)
+                if (payload["protocolVersion"] as? Int ?? 1) >= 3 {
+                    modernConnections.insert(id)
+                    resourceRevisions[id] = payload["resourceRevisions"] as? [String: String] ?? [:]
+                    sendSync(to: connection, id: id)
+                } else {
+                    sendCurrentState(to: connection)
+                }
+            } else if type == "ping" {
+                connection.send(content: CodexRemoteSync.heartbeat, completion: .contentProcessed { _ in })
             } else if type == "microphoneAudio", microphoneConnectionID == id,
                       let encoded = payload["data"] as? String, encoded.count <= 1024,
                       let audio = Data(base64Encoded: encoded), audio.count == 640 {
@@ -544,6 +567,9 @@ final class CodexRemoteBridge {
     }
 
     private func remove(connectionID id: UUID) {
+        modernConnections.remove(id)
+        readyConnections.remove(id)
+        resourceRevisions.removeValue(forKey: id)
         if microphoneConnectionID == id {
             microphoneConnectionID = nil
             onMicrophoneStop?()

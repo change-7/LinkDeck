@@ -27,6 +27,7 @@ struct APIAppsView: View {
     let onOpenSettings: () -> Void
     @State private var apps: [RegisteredAppAPI] = []
     @State private var statuses: [String: AppAPIMCPBridge.ConnectionStatus] = [:]
+    @State private var statusRevisions: [String: Int] = [:]
     @State private var isDropTargeted = false
     @State private var dropError: String?
     @State private var lastDiscovery = Date.distantPast
@@ -61,6 +62,13 @@ struct APIAppsView: View {
             Text(dropError ?? "")
         }
         .task { await refreshApps() }
+        .onReceive(NotificationCenter.default.publisher(for: AppAPIMCPBridge.activityDidChange)) { _ in
+            Task { await refreshStatuses() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: RegisteredAppAPI.registrationDidChange)) { _ in
+            apps.removeAll { RegisteredAppAPI.isExcluded(bundleID: $0.bundleID) }
+            lastDiscovery = .distantPast
+        }
         .onChange(of: store.pages) { lastDiscovery = .distantPast }
         .onChange(of: store.smartphonePages) { lastDiscovery = .distantPast }
     }
@@ -192,14 +200,21 @@ struct APIAppsView: View {
                 if apps != discovered { apps = discovered }
                 lastDiscovery = Date()
                 }
-                var updated: [String: AppAPIMCPBridge.ConnectionStatus] = [:]
-                for app in apps {
-                    updated[app.id] = await SubtitlePipelineRuntime.shared.appAPIs.connectionStatus(for: app)
-                }
-                guard !Task.isCancelled else { return }
-                if statuses != updated { statuses = updated }
+                await refreshStatuses()
                 do { try await Task.sleep(for: .seconds(2)) } catch { return }
             }
+    }
+
+    private func refreshStatuses() async {
+        for app in apps {
+            let revision = statusRevisions[app.id, default: 0] + 1
+            statusRevisions[app.id] = revision
+            Task {
+                let status = await SubtitlePipelineRuntime.shared.appAPIs.connectionStatus(for: app)
+                guard statusRevisions[app.id] == revision, apps.contains(where: { $0.id == app.id }) else { return }
+                statuses[app.id] = status
+            }
+        }
     }
 
     @ViewBuilder
@@ -221,6 +236,12 @@ struct APIAppsView: View {
 
     @ViewBuilder
     private func approvalMenu(for app: RegisteredAppAPI) -> some View {
+        Button("API 목록에서 제거", role: .destructive) {
+            app.removeFromAPIList()
+            apps.removeAll { $0.id == app.id }
+            statuses.removeValue(forKey: app.id)
+        }
+        .help("버튼 등록은 유지합니다. 다시 추가하려면 앱을 API 목록에 드래그하세요.")
         if !app.approved {
             Button("연결 허용") {
                 app.approve()
@@ -233,14 +254,44 @@ struct APIAppsView: View {
 
     private func statusLabel(_ status: AppAPIMCPBridge.ConnectionStatus, approved: Bool, compact: Bool = false) -> some View {
         HStack(spacing: 4.5) {
-            Circle().fill(approved ? Color(red: 39 / 255, green: 207 / 255, blue: 92 / 255) : .red).frame(width: 6, height: 6)
+            APIActivityIndicator(status: status, approved: approved)
             Text(status.rawValue)
-                .font(compact ? .custom("AppleSDGothicNeo-Regular", size: 10) : .caption)
+                .font(compact ? .custom("AppleSDGothicNeo-Regular", size: 11) : .callout)
                 .foregroundStyle(colorScheme == .dark ? Color(white: 155 / 255) : .secondary)
         }
         .fixedSize()
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(approved ? "연결 허용됨, \(status.rawValue)" : "연결 허용 필요")
+    }
+}
+
+private struct APIActivityIndicator: View {
+    let status: AppAPIMCPBridge.ConnectionStatus
+    let approved: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var dimmed = false
+
+    private var working: Bool { approved && status == .working }
+    private var color: Color {
+        guard approved else { return .gray }
+        switch status {
+        case .working: return .orange
+        case .idle, .connected: return Color(red: 39 / 255, green: 207 / 255, blue: 92 / 255)
+        case .approvalRequired, .failed: return .gray
+        }
+    }
+
+    var body: some View {
+        Circle().fill(color).frame(width: 8, height: 8)
+            .opacity(working && !reduceMotion && dimmed ? 0.25 : 1)
+            .task(id: working && !reduceMotion) {
+                dimmed = false
+                guard working && !reduceMotion else { return }
+                while !Task.isCancelled {
+                    withAnimation(.easeInOut(duration: 0.55)) { dimmed.toggle() }
+                    do { try await Task.sleep(for: .milliseconds(550)) } catch { return }
+                }
+            }
     }
 }
 

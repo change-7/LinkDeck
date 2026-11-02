@@ -60,6 +60,18 @@ enum SmartphoneDefaults {
         "smartphone_page_\(pageIndex)_button_\(buttonIndex)"
     }
 
+    static func buttonID(_ pageID: String, _ buttonIndex: Int) -> String {
+        "\(pageID)_button_\(buttonIndex)"
+    }
+
+    static func blankPage(id: String, name: String) -> SmartphonePage {
+        SmartphonePage(
+            id: id,
+            name: name,
+            buttons: (0..<buttonCount).map { SmartphoneButton(id: buttonID(id, $0), symbol: "") }
+        )
+    }
+
     static func button(id: String, in pages: [SmartphonePage]) -> SmartphoneButton? {
         guard !id.isEmpty else { return nil }
         return pages.lazy.flatMap(\.buttons).first { $0.id == id }
@@ -92,11 +104,14 @@ enum SmartphoneDefaults {
         return nil
     }
 
-    static func normalized(_ page: SmartphonePage, at pageIndex: Int) -> SmartphonePage {
-        let defaults = pages()[pageIndex]
+    static func normalized(_ page: SmartphonePage) -> SmartphonePage {
+        let defaults = (0..<pageCount)
+            .first { pageID($0) == page.id }
+            .map { pages()[$0] }
+            ?? blankPage(id: page.id, name: page.name)
         var normalized = page
         normalized.buttons = (0..<buttonCount).map { buttonIndex in
-            guard let button = page.buttons.first(where: { $0.id == buttonID(pageIndex, buttonIndex) }) else {
+            guard let button = page.buttons.first(where: { $0.id == buttonID(page.id, buttonIndex) }) else {
                 return defaults.buttons[buttonIndex]
             }
             var repaired = button
@@ -116,14 +131,17 @@ enum SmartphoneDefaults {
     }
 
     static func defaultButton(pageIndex: Int, buttonIndex: Int) -> SmartphoneButton {
-        pages()[pageIndex].buttons[buttonIndex]
+        guard (0..<pageCount).contains(pageIndex), (0..<buttonCount).contains(buttonIndex) else {
+            return SmartphoneButton(id: buttonID(pageID(pageIndex), buttonIndex), symbol: "")
+        }
+        return pages()[pageIndex].buttons[buttonIndex]
     }
 
     static func persistedPages() -> [SmartphonePage] {
         if let data = try? Data(contentsOf: sharedStorageURL),
            let savedPages = try? JSONDecoder().decode([SmartphonePage].self, from: data),
-           savedPages.count == pageCount {
-            return savedPages.enumerated().map { normalized($0.element, at: $0.offset) }
+           !savedPages.isEmpty {
+            return savedPages.map(normalized)
         }
         let preferences = UserDefaults(suiteName: "com.pdg.chatgpt-micro-launchpad.native") ?? .standard
         return persistedPages(from: preferences)
@@ -135,10 +153,10 @@ enum SmartphoneDefaults {
         preferences.synchronize()
         guard let data = preferences.data(forKey: storageKey),
               let savedPages = try? JSONDecoder().decode([SmartphonePage].self, from: data),
-              savedPages.count == pageCount else {
+              !savedPages.isEmpty else {
             return pages()
         }
-        return savedPages.enumerated().map { normalized($0.element, at: $0.offset) }
+        return savedPages.map(normalized)
     }
 
     static func persist(_ pages: [SmartphonePage], to preferences: UserDefaults) {

@@ -2,6 +2,24 @@ import XCTest
 @testable import ChatGPTMicroLaunchpad
 
 final class DesktopCodexTaskParserTests: XCTestCase {
+    func testParser_whenProgressArrivesAfterCompletion_doesNotRestartCompletedWork() {
+        var parser = DesktopCodexTaskParser(transcriptID: "late-progress.jsonl")
+        var coordinator = CodexActivityCoordinator()
+        let lifecycle = parser.consume(Data((userMetadata
+            + taskStarted(turnID: "turn-1")
+            + taskCompleted(turnID: "turn-1")).utf8))
+        XCTAssertEqual(coordinator.consume(lifecycle), .completed)
+
+        let lateEvents = parser.consume(Data(progressEvent(turnID: "turn-1", type: "item_completed").utf8))
+
+        XCTAssertTrue(lateEvents.isEmpty)
+        XCTAssertTrue(parser.activeTaskIDs.isEmpty)
+        XCTAssertEqual(coordinator.consume(lateEvents), .completed)
+        let nextEvents = parser.consume(Data(progressEvent(turnID: "turn-2", type: "item_started").utf8))
+        XCTAssertEqual(nextEvents, [.started(DesktopCodexTaskID(transcriptID: "late-progress.jsonl", turnID: "turn-2"))])
+        XCTAssertEqual(coordinator.consume(nextEvents), .running)
+    }
+
     func testParser_whenRolloutFilesShareSessionID_usesSessionIDToDeduplicateTaskIdentity() {
         var parser = DesktopCodexTaskParser(transcriptID: "rollout-copy.jsonl")
         let metadata = "{\"type\":\"session_meta\",\"payload\":{\"session_id\":\"root-session\",\"id\":\"rollout-copy\",\"originator\":\"Codex Desktop\",\"thread_source\":\"user\"}}\n"

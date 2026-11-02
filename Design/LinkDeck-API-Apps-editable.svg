@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="800" viewBox="0 0 840 800">
+<title>LinkDeck — API 앱 — 편집용 시안</title>
+<desc>현재 실행 화면을 바탕으로 재구성. 모든 텍스트와 도형은 개별 편집 가능. 앱 아이콘과 도구 아이콘은 간략화한 벡터 대체물.</desc>
+<g id="Window"><rect x=".5" y=".5" width="839" height="799" rx="27" fill="#090909" stroke="#737373"/>
+<g id="Window-controls" fill="#2b2b2b"><circle cx="28" cy="28" r="12"/><circle cx="68" cy="28" r="12"/><circle cx="108" cy="28" r="12"/></g></g>
+<g id="Header" font-family="Inter, -apple-system, Arial, sans-serif">
+<text x="56" y="124" fill="#d5d5d5" font-size="28" font-weight="700">API 앱</text>
+<g id="View-switcher"><rect x="356" y="92" width="177" height="44" rx="12" fill="#191919" stroke="#383838"/>
+<rect x="477" y="95" width="53" height="38" rx="10" fill="#505050" stroke="#666"/>
+<g fill="none" stroke="#d2d2d2" stroke-width="2.3" stroke-linecap="round">
+<path d="M382 105h15m-15 8h15m-15 8h15"/><path d="M503 107h25m-25 6h25m-25 6h25"/>
+<rect x="434" y="103" width="8" height="8" rx="1"/><rect x="447" y="103" width="8" height="8" rx="1"/><rect x="434" y="116" width="8" height="8" rx="1"/><rect x="447" y="116" width="8" height="8" rx="1"/>
+</g><g fill="#d2d2d2"><circle cx="374" cy="105" r="1.6"/><circle cx="374" cy="113" r="1.6"/><circle cx="374" cy="121" r="1.6"/></g></g>
+<g id="Screen-switcher"><rect x="552" y="88" width="56" height="52" rx="15" fill="#1c1c1c" stroke="#404040" stroke-width="2"/>
+<rect x="616" y="88" width="56" height="52" rx="15" fill="#332111" stroke="#e58c2f" stroke-width="2"/>
+<rect x="680" y="88" width="56" height="52" rx="15" fill="#0c0c0c" stroke="#151515"/>
+<g stroke="#b4b4b4" fill="none" stroke-width="2.5"><rect x="573" y="104" width="13" height="22" rx="2"/><path d="M577 107h5m-4 15h3"/></g>
+<g fill="none" stroke="#ed9234" stroke-width="2"><circle cx="644" cy="112" r="4"/><circle cx="632" cy="108" r="2.5"/><circle cx="655" cy="108" r="2.5"/><circle cx="644" cy="122" r="2.5"/><path d="m636 109 4 2m8 0 3-2m-7 7v3"/></g>
+<g fill="#272727"><rect x="698" y="103" width="5" height="5" rx="1"/><rect x="706" y="103" width="5" height="5" rx="1"/><rect x="714" y="103" width="5" height="5" rx="1"/><rect x="698" y="111" width="5" height="5" rx="1"/><rect x="706" y="111" width="5" height="5" rx="1"/><rect x="714" y="111" width="5" height="5" rx="1"/><rect x="698" y="119" width="5" height="5" rx="1"/><rect x="706" y="119" width="5" height="5" rx="1"/><rect x="714" y="119" width="5" height="5" rx="1"/></g></g><text id="Settings-placeholder" x="751" y="127" fill="#949494" font-size="35">⚙</text></g>
+<g id="App-list"><rect x="24" y="172" width="792" height="616" fill="#1f1f1f"/>
+<g id="App-row-1" font-family="Inter, -apple-system, Arial, sans-serif">
+
+<g id="App-icon-placeholder-1"><rect x="42" y="186" width="32" height="32" rx="8" fill="#d3a6a0" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="209" text-anchor="middle" fill="#fff" font-size="21">미</text></g>
+<text id="App-name-1" x="96" y="212" fill="#d7d7d7" font-size="28" font-weight="500">미우 일정</text>
+<g id="App-status-1"><circle cx="747" cy="202" r="6" fill="#27cf5c"/><text x="762" y="209" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-2" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 229H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-2"><rect x="42" y="242" width="32" height="32" rx="8" fill="#c6e9f6" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="265" text-anchor="middle" fill="#fff" font-size="21">↗</text></g>
+<text id="App-name-2" x="96" y="268" fill="#d7d7d7" font-size="28" font-weight="500">토스증권 · Marketaux</text>
+<g id="App-status-2"><circle cx="747" cy="258" r="6" fill="#27cf5c"/><text x="762" y="265" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-3" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 285H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-3"><rect x="42" y="298" width="32" height="32" rx="8" fill="#123549" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="321" text-anchor="middle" fill="#fff" font-size="21">▥</text></g>
+<text id="App-name-3" x="96" y="324" fill="#d7d7d7" font-size="28" font-weight="500">Chat view</text>
+<g id="App-status-3"><circle cx="747" cy="314" r="6" fill="#27cf5c"/><text x="762" y="321" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-4" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 341H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-4"><rect x="42" y="354" width="32" height="32" rx="8" fill="#102131" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="377" text-anchor="middle" fill="#fff" font-size="21">◉</text></g>
+<text id="App-name-4" x="96" y="380" fill="#d7d7d7" font-size="28" font-weight="500">Mole</text>
+<g id="App-status-4"><circle cx="747" cy="370" r="6" fill="#27cf5c"/><text x="762" y="377" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-5" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 397H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-5"><rect x="42" y="410" width="32" height="32" rx="8" fill="#00a9b5" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="433" text-anchor="middle" fill="#fff" font-size="21">▱</text></g>
+<text id="App-name-5" x="96" y="436" fill="#d7d7d7" font-size="28" font-weight="500">Share Stack</text>
+<g id="App-status-5"><circle cx="747" cy="426" r="6" fill="#27cf5c"/><text x="762" y="433" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-6" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 453H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-6"><rect x="42" y="466" width="32" height="32" rx="8" fill="#0758ed" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="489" text-anchor="middle" fill="#fff" font-size="21">◈</text></g>
+<text id="App-name-6" x="96" y="492" fill="#d7d7d7" font-size="28" font-weight="500">Smart TV Control</text>
+<g id="App-status-6"><circle cx="747" cy="482" r="6" fill="#27cf5c"/><text x="762" y="489" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-7" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 509H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-7"><rect x="42" y="522" width="32" height="32" rx="8" fill="#24204e" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="545" text-anchor="middle" fill="#fff" font-size="21">ııı</text></g>
+<text id="App-name-7" x="96" y="548" fill="#d7d7d7" font-size="28" font-weight="500">Stable Whisper</text>
+<g id="App-status-7"><circle cx="747" cy="538" r="6" fill="#27cf5c"/><text x="762" y="545" fill="#9b9b9b" font-size="20">대기</text></g></g>
+<g id="App-row-8" font-family="Inter, -apple-system, Arial, sans-serif">
+<path d="M64 565H816" stroke="#373737" stroke-width="2"/>
+<g id="App-icon-placeholder-8"><rect x="42" y="578" width="32" height="32" rx="8" fill="#30424a" stroke="#ffffff" stroke-opacity=".12"/><text x="58" y="601" text-anchor="middle" fill="#fff" font-size="21">▶</text></g>
+<text id="App-name-8" x="96" y="604" fill="#d7d7d7" font-size="28" font-weight="500">Video Simple Toolkit</text>
+<g id="App-status-8"><circle cx="747" cy="594" r="6" fill="#27cf5c"/><text x="762" y="601" fill="#9b9b9b" font-size="20">대기</text></g></g></g></svg>
+

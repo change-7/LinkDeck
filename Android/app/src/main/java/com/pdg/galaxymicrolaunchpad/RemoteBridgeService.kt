@@ -37,7 +37,6 @@ class RemoteBridgeService : Service() {
     private var screenOffDisconnectRunnable: Runnable? = null
     private var screenReceiverRegistered = false
     private var approvalNotificationPlayer: MediaPlayer? = null
-    private var lastNotifiedApproval: RemoteApproval? = null
 
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -237,9 +236,7 @@ class RemoteBridgeService : Service() {
         )
     }
 
-    private fun updateApprovalNotification(approval: RemoteApproval?) {
-        val isNewRequest = shouldWakeForCodexApproval(lastNotifiedApproval, approval)
-        lastNotifiedApproval = approval
+    private fun updateApprovalNotification(approval: RemoteApproval?, isNewRequest: Boolean) {
         if (approval == null) {
             notificationManager.cancel(APPROVAL_NOTIFICATION_ID)
             stopApprovalSound()
@@ -274,6 +271,7 @@ class RemoteBridgeService : Service() {
         val notification = NotificationCompat.Builder(this, APPROVAL_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_micro)
             .setContentTitle(approval.title)
+            .setOnlyAlertOnce(!isNewRequest)
             .setContentText("눌러서 LinkDeck에서 요청 내용을 확인하세요.")
             .setContentIntent(openLinkDeck)
             .setPublicVersion(publicNotification)

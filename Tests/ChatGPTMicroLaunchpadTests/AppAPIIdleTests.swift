@@ -100,6 +100,65 @@ final class AppAPIIdleTests: XCTestCase {
         }
         XCTAssertFalse(StableWhisperMCPClient.chatViewCanQuit([:]))
     }
+
+    func testChatViewWorkingStatusUsesLiveActivityFields() {
+        let idlePanel: [String: Any] = ["taskBusy": false, "promptBusy": false, "isLoading": false, "queuedTaskCount": 0, "state": "completed"]
+        let idle: [String: Any] = ["activeTaskCount": 0, "busyPanelIndices": [Int](), "panels": [idlePanel]]
+        XCTAssertFalse(StableWhisperMCPClient.chatViewIsWorking(idle))
+        XCTAssertTrue(StableWhisperMCPClient.chatViewIsWorking(["activeTaskCount": 1]))
+        XCTAssertTrue(StableWhisperMCPClient.chatViewIsWorking(["busyPanelIndices": [0]]))
+        for key in ["taskBusy", "promptBusy", "isLoading", "queuedTaskCount"] {
+            var panel = idlePanel
+            panel[key] = key == "queuedTaskCount" ? 1 : true
+            XCTAssertTrue(StableWhisperMCPClient.chatViewIsWorking(["panels": [panel]]), key)
+        }
+    }
+
+    func testChatViewWorkingPollDoesNotConnectLaunchOrCountUncollectedResult() async throws {
+        let recorder = QuitRecorder()
+        let client = StableWhisperMCPClient(idleTimeout: .seconds(5), chatView: true,
+            launchChatView: { _ in _ = await recorder.quit() })
+        let disconnected = await client.isWorking()
+        let initiallyRunning = await client.isRunning()
+        let initialLaunches = await recorder.calls
+        XCTAssertFalse(disconnected)
+        XCTAssertFalse(initiallyRunning)
+        XCTAssertEqual(initialLaunches, 0)
+
+        _ = try await call(client, "pid")
+        let launches = await recorder.calls
+        let idle = await client.isWorking()
+        let launchesAfterPoll = await recorder.calls
+        XCTAssertFalse(idle)
+        XCTAssertEqual(launchesAfterPoll, launches)
+        _ = try await call(client, "chat_view_start_task")
+        let completedTask = await client.isWorking()
+        XCTAssertFalse(completedTask)
+        await client.stop()
+    }
+
+    func testWorkingStatusTracksDownloadMiuAndSmartTVJobsThroughCompletion() async throws {
+        for tool in ["start_download", "create_miu_event", "control_device", "send_files"] {
+            let client = StableWhisperMCPClient(idleTimeout: .seconds(5))
+            let disconnected = await client.isWorking()
+            XCTAssertFalse(disconnected, tool)
+            _ = try await call(client, "pid")
+            let connected = await client.isRunning()
+            let idle = await client.isWorking()
+            XCTAssertTrue(connected, tool)
+            XCTAssertFalse(idle, tool)
+            _ = try await call(client, tool)
+            let working = await client.isWorking()
+            XCTAssertTrue(working, tool)
+            try await Task.sleep(for: .milliseconds(900))
+            let completed = await client.isWorking()
+            let stillConnected = await client.isRunning()
+            XCTAssertFalse(completed, tool)
+            XCTAssertTrue(stillConnected, tool)
+            await client.stop()
+        }
+    }
+
     private func call(_ client: StableWhisperMCPClient, _ name: String) async throws -> String {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
         let request = try JSONSerialization.data(withJSONObject: ["method": "tools/call", "params": ["name": name, "arguments": [:]]])

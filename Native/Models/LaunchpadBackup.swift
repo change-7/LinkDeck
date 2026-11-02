@@ -58,7 +58,7 @@ struct LaunchpadBackup: Codable, Hashable {
               Set(launchpadPages.map(\.id)).count == launchpadPages.count else {
             throw LaunchpadBackupError.invalidLaunchpadPageShape
         }
-        guard smartphonePages.count == SmartphoneDefaults.pageCount,
+        guard !smartphonePages.isEmpty,
               smartphonePages.allSatisfy({ $0.buttons.count == SmartphoneDefaults.buttonCount }),
               Set(smartphonePages.map(\.id)).count == smartphonePages.count else {
             throw LaunchpadBackupError.invalidSmartphonePageShape

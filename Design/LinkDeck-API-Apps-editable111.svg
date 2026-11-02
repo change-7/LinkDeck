@@ -1,0 +1,244 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 840 800" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:affinity="https://www.affinity.studio/" style="fill-rule:evenodd;clip-rule:evenodd;">
+    <g id="Window">
+        <path d="M812.5,0.5C827.402,0.5 839.5,12.598 839.5,27.5L839.5,772.5C839.5,787.402 827.402,799.5 812.5,799.5L27.5,799.5C12.598,799.5 0.5,787.402 0.5,772.5L0.5,27.5C0.5,12.598 12.598,0.5 27.5,0.5L812.5,0.5Z" style="fill:rgb(9,9,9);stroke:rgb(115,115,115);stroke-width:1px;"/>
+        <g id="Window-controls">
+            <g transform="matrix(1,0,0,1,0,-1.127255)">
+                <circle cx="28" cy="28" r="12" style="fill:rgb(43,43,43);"/>
+            </g>
+            <g transform="matrix(1,0,0,1,0,-1.127255)">
+                <circle cx="68" cy="28" r="12" style="fill:rgb(43,43,43);"/>
+            </g>
+            <g transform="matrix(1,0,0,1,0,-1.127255)">
+                <circle cx="108" cy="28" r="12" style="fill:rgb(43,43,43);"/>
+            </g>
+        </g>
+    </g>
+    <g id="Header">
+        <g id="View-switcher" transform="matrix(0.918183,0,0,0.918183,104.127026,-77.800061)">
+            <path d="M519.931,92C527.144,92 533,97.856 533,105.069L533,122.931C533,130.144 527.144,136 519.931,136L369.069,136C361.856,136 356,130.144 356,122.931L356,105.069C356,97.856 361.856,92 369.069,92L519.931,92Z" style="fill:rgb(25,25,25);stroke:rgb(56,56,56);stroke-width:1px;"/>
+            <path d="M519.109,95C525.12,95 530,99.88 530,105.891L530,122.109C530,128.12 525.12,133 519.109,133L487.891,133C481.88,133 477,128.12 477,122.109L477,105.891C477,99.88 481.88,95 487.891,95L519.109,95Z" style="fill:rgb(80,80,80);stroke:rgb(102,102,102);stroke-width:1px;"/>
+            <g>
+                <path d="M382,105L397,105M382,113L397,113M382,121L397,121" style="fill:none;fill-rule:nonzero;stroke:rgb(210,210,210);stroke-width:2.3px;stroke-linecap:round;"/>
+                <g transform="matrix(1,0,0,1,-10,0)">
+                    <path d="M503,107L528,107M503,113L528,113M503,119L528,119" style="fill:none;fill-rule:nonzero;stroke:rgb(210,210,210);stroke-width:2.3px;stroke-linecap:round;"/>
+                </g>
+                <path d="M440.911,103C441.512,103 442,103.488 442,104.089L442,109.911C442,110.512 441.512,111 440.911,111L435.089,111C434.488,111 434,110.512 434,109.911L434,104.089C434,103.488 434.488,103 435.089,103L440.911,103Z" style="fill:none;stroke:rgb(210,210,210);stroke-width:2.3px;stroke-linecap:round;"/>
+                <path d="M453.911,103C454.512,103 455,103.488 455,104.089L455,109.911C455,110.512 454.512,111 453.911,111L448.089,111C447.488,111 447,110.512 447,109.911L447,104.089C447,103.488 447.488,103 448.089,103L453.911,103Z" style="fill:none;stroke:rgb(210,210,210);stroke-width:2.3px;stroke-linecap:round;"/>
+                <path d="M440.911,116C441.512,116 442,116.488 442,117.089L442,122.911C442,123.512 441.512,124 440.911,124L435.089,124C434.488,124 434,123.512 434,122.911L434,117.089C434,116.488 434.488,116 435.089,116L440.911,116Z" style="fill:none;stroke:rgb(210,210,210);stroke-width:2.3px;stroke-linecap:round;"/>
+                <path d="M453.911,116C454.512,116 455,116.488 455,117.089L455,122.911C455,123.512 454.512,124 453.911,124L448.089,124C447.488,124 447,123.512 447,122.911L447,117.089C447,116.488 447.488,116 448.089,116L453.911,116Z" style="fill:none;stroke:rgb(210,210,210);stroke-width:2.3px;stroke-linecap:round;"/>
+            </g>
+            <g>
+                <circle cx="374" cy="105" r="1.6" style="fill:rgb(210,210,210);"/>
+                <circle cx="374" cy="113" r="1.6" style="fill:rgb(210,210,210);"/>
+                <circle cx="374" cy="121" r="1.6" style="fill:rgb(210,210,210);"/>
+            </g>
+        </g>
+        <g id="Screen-switcher" transform="matrix(0.918183,0,0,0.918183,104.127026,-77.800061)">
+            <g transform="matrix(0.821973,0,0,0.821973,92.322855,20.022833)">
+                <path d="M588.125,88C599.094,88 608,96.906 608,107.875L608,120.125C608,131.094 599.094,140 588.125,140L571.875,140C560.906,140 552,131.094 552,120.125L552,107.875C552,96.906 560.906,88 571.875,88L588.125,88Z" style="fill:rgb(28,28,28);stroke:rgb(64,64,64);stroke-width:2px;"/>
+            </g>
+            <g transform="matrix(0.821973,0,0,0.821973,92.322855,20.022833)">
+                <path d="M652.125,88C663.094,88 672,96.906 672,107.875L672,120.125C672,131.094 663.094,140 652.125,140L635.875,140C624.906,140 616,131.094 616,120.125L616,107.875C616,96.906 624.906,88 635.875,88L652.125,88Z" style="fill:rgb(51,33,17);stroke:rgb(229,140,47);stroke-width:2px;"/>
+            </g>
+            <g transform="matrix(0.821973,0,0,0.821973,92.322855,20.022833)">
+                <path d="M716.125,88C727.094,88 736,96.906 736,107.875L736,120.125C736,131.094 727.094,140 716.125,140L699.875,140C688.906,140 680,131.094 680,120.125L680,107.875C680,96.906 688.906,88 699.875,88L716.125,88Z" style="fill:rgb(12,12,12);stroke:rgb(21,21,21);stroke-width:1px;"/>
+            </g>
+            <g transform="matrix(1,0,0,1,-0.630997,-1.272277)">
+                <g transform="matrix(1,0,0,1,-9.801973,0)">
+                    <path d="M583.822,104C585.024,104 586,104.976 586,106.178L586,123.822C586,125.024 585.024,126 583.822,126L575.178,126C573.976,126 573,125.024 573,123.822L573,106.178C573,104.976 573.976,104 575.178,104L583.822,104Z" style="fill:none;stroke:rgb(180,180,180);stroke-width:2.5px;"/>
+                    <path d="M577,107L582,107M578,122L581,122" style="fill:none;fill-rule:nonzero;stroke:rgb(180,180,180);stroke-width:2.5px;"/>
+                </g>
+            </g>
+            <g transform="matrix(1,0,0,1,-1.133662,-1.272277)">
+                <g transform="matrix(1,0,0,1,-20.693054,0)">
+                    <circle cx="644" cy="112" r="4" style="fill:none;stroke:rgb(237,146,52);stroke-width:2px;"/>
+                    <circle cx="632" cy="108" r="2.5" style="fill:none;stroke:rgb(237,146,52);stroke-width:2px;"/>
+                    <circle cx="655" cy="108" r="2.5" style="fill:none;stroke:rgb(237,146,52);stroke-width:2px;"/>
+                    <circle cx="644" cy="122" r="2.5" style="fill:none;stroke:rgb(237,146,52);stroke-width:2px;"/>
+                    <path d="M636,109L640,111M648,111L651,109M644,116L644,119" style="fill:none;fill-rule:nonzero;stroke:rgb(237,146,52);stroke-width:2px;"/>
+                </g>
+            </g>
+            <g>
+                <g transform="matrix(1,0,0,1,-33.762351,0)">
+                    <path d="M701.911,103C702.512,103 703,103.488 703,104.089L703,106.911C703,107.512 702.512,108 701.911,108L699.089,108C698.488,108 698,107.512 698,106.911L698,104.089C698,103.488 698.488,103 699.089,103L701.911,103Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M709.911,103C710.512,103 711,103.488 711,104.089L711,106.911C711,107.512 710.512,108 709.911,108L707.089,108C706.488,108 706,107.512 706,106.911L706,104.089C706,103.488 706.488,103 707.089,103L709.911,103Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M717.911,103C718.512,103 719,103.488 719,104.089L719,106.911C719,107.512 718.512,108 717.911,108L715.089,108C714.488,108 714,107.512 714,106.911L714,104.089C714,103.488 714.488,103 715.089,103L717.911,103Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M701.911,111C702.512,111 703,111.488 703,112.089L703,114.911C703,115.512 702.512,116 701.911,116L699.089,116C698.488,116 698,115.512 698,114.911L698,112.089C698,111.488 698.488,111 699.089,111L701.911,111Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M709.911,111C710.512,111 711,111.488 711,112.089L711,114.911C711,115.512 710.512,116 709.911,116L707.089,116C706.488,116 706,115.512 706,114.911L706,112.089C706,111.488 706.488,111 707.089,111L709.911,111Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M717.911,111C718.512,111 719,111.488 719,112.089L719,114.911C719,115.512 718.512,116 717.911,116L715.089,116C714.488,116 714,115.512 714,114.911L714,112.089C714,111.488 714.488,111 715.089,111L717.911,111Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M701.911,119C702.512,119 703,119.488 703,120.089L703,122.911C703,123.512 702.512,124 701.911,124L699.089,124C698.488,124 698,123.512 698,122.911L698,120.089C698,119.488 698.488,119 699.089,119L701.911,119Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M709.911,119C710.512,119 711,119.488 711,120.089L711,122.911C711,123.512 710.512,124 709.911,124L707.089,124C706.488,124 706,123.512 706,122.911L706,120.089C706,119.488 706.488,119 707.089,119L709.911,119Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M717.911,119C718.512,119 719,119.488 719,120.089L719,122.911C719,123.512 718.512,124 717.911,124L715.089,124C714.488,124 714,123.512 714,122.911L714,120.089C714,119.488 714.488,119 715.089,119L717.911,119Z" style="fill:rgb(39,39,39);"/>
+                </g>
+            </g>
+            <g transform="matrix(1,0,0,1,-2.178216,0)">
+                <g transform="matrix(1,0,0,1,-33.762351,0)">
+                    <path d="M701.911,103C702.512,103 703,103.488 703,104.089L703,106.911C703,107.512 702.512,108 701.911,108L699.089,108C698.488,108 698,107.512 698,106.911L698,104.089C698,103.488 698.488,103 699.089,103L701.911,103Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M709.911,103C710.512,103 711,103.488 711,104.089L711,106.911C711,107.512 710.512,108 709.911,108L707.089,108C706.488,108 706,107.512 706,106.911L706,104.089C706,103.488 706.488,103 707.089,103L709.911,103Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M717.911,103C718.512,103 719,103.488 719,104.089L719,106.911C719,107.512 718.512,108 717.911,108L715.089,108C714.488,108 714,107.512 714,106.911L714,104.089C714,103.488 714.488,103 715.089,103L717.911,103Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M701.911,111C702.512,111 703,111.488 703,112.089L703,114.911C703,115.512 702.512,116 701.911,116L699.089,116C698.488,116 698,115.512 698,114.911L698,112.089C698,111.488 698.488,111 699.089,111L701.911,111Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M709.911,111C710.512,111 711,111.488 711,112.089L711,114.911C711,115.512 710.512,116 709.911,116L707.089,116C706.488,116 706,115.512 706,114.911L706,112.089C706,111.488 706.488,111 707.089,111L709.911,111Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M717.911,111C718.512,111 719,111.488 719,112.089L719,114.911C719,115.512 718.512,116 717.911,116L715.089,116C714.488,116 714,115.512 714,114.911L714,112.089C714,111.488 714.488,111 715.089,111L717.911,111Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M701.911,119C702.512,119 703,119.488 703,120.089L703,122.911C703,123.512 702.512,124 701.911,124L699.089,124C698.488,124 698,123.512 698,122.911L698,120.089C698,119.488 698.488,119 699.089,119L701.911,119Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M709.911,119C710.512,119 711,119.488 711,120.089L711,122.911C711,123.512 710.512,124 709.911,124L707.089,124C706.488,124 706,123.512 706,122.911L706,120.089C706,119.488 706.488,119 707.089,119L709.911,119Z" style="fill:rgb(39,39,39);"/>
+                    <path d="M717.911,119C718.512,119 719,119.488 719,120.089L719,122.911C719,123.512 718.512,124 717.911,124L715.089,124C714.488,124 714,123.512 714,122.911L714,120.089C714,119.488 714.488,119 715.089,119L717.911,119Z" style="fill:rgb(39,39,39);"/>
+                </g>
+            </g>
+        </g>
+        <g id="Settings-placeholder" transform="matrix(0.918183,0,0,0.918183,793.682092,36.562306)">
+            <text x="0px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:35px;fill:rgb(148,148,148);">⚙</text>
+        </g>
+    </g>
+    <g id="App-list">
+        <g transform="matrix(1,0,0,1.155844,0,-133.805195)">
+            <path d="M796.059,172C807.072,172 816,179.724 816,189.253C816,277.965 816,682.035 816,770.747C816,780.276 807.072,788 796.059,788C686.02,788 153.98,788 43.941,788C32.928,788 24,780.276 24,770.747C24,682.035 24,277.965 24,189.253C24,179.724 32.928,172 43.941,172C153.98,172 686.02,172 796.059,172Z" style="fill:rgb(31,31,31);"/>
+        </g>
+        <g id="App-row-1" transform="matrix(1,0,0,1,0,-107)">
+            <g id="App-icon-placeholder-1">
+                <path d="M66,186C70.415,186 74,189.585 74,194L74,210C74,214.415 70.415,218 66,218L50,218C45.585,218 42,214.415 42,210L42,194C42,189.585 45.585,186 50,186L66,186Z" style="fill:rgb(211,166,160);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,209)">
+                    <text x="-9.082px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:21px;fill:white;">미</text>
+                </g>
+            </g>
+            <g id="App-name-1" transform="matrix(1,0,0,1,96,212)">
+                <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:28px;fill:rgb(215,215,215);">미우</text>
+                <text x="56.219px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:28px;fill:rgb(215,215,215);">일정</text>
+            </g>
+            <g id="App-status-1">
+                <circle cx="747" cy="202" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,209)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-2" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,229L816,229" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-2">
+                <path d="M66,242C70.415,242 74,245.585 74,250L74,266C74,270.415 70.415,274 66,274L50,274C45.585,274 42,270.415 42,266L42,250C42,245.585 45.585,242 50,242L66,242Z" style="fill:rgb(198,233,246);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,265)">
+                    <text x="-6.322px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:21px;fill:white;">↗</text>
+                </g>
+            </g>
+            <g id="App-name-2" transform="matrix(1,0,0,1,96,268)">
+                <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:28px;fill:rgb(215,215,215);">토스증권</text>
+                <text x="104.659px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">· Marketaux</text>
+            </g>
+            <g id="App-status-2">
+                <circle cx="747" cy="258" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,265)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-3" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,285L816,285" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-3">
+                <path d="M66,298C70.415,298 74,301.585 74,306L74,322C74,326.415 70.415,330 66,330L50,330C45.585,330 42,326.415 42,322L42,306C42,301.585 45.585,298 50,298L66,298Z" style="fill:rgb(18,53,73);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,321)">
+                    <text x="-6.322px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:21px;fill:white;">▥</text>
+                </g>
+            </g>
+            <g id="App-name-3" transform="matrix(1,0,0,1,96,324)">
+                <text x="0px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">Chat view</text>
+            </g>
+            <g id="App-status-3">
+                <circle cx="747" cy="314" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,321)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-4" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,341L816,341" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-4">
+                <path d="M66,354C70.415,354 74,357.585 74,362L74,378C74,382.415 70.415,386 66,386L50,386C45.585,386 42,382.415 42,378L42,362C42,357.585 45.585,354 50,354L66,354Z" style="fill:rgb(16,33,49);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,377)">
+                    <text x="-6.322px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:21px;fill:white;">◉</text>
+                </g>
+            </g>
+            <g id="App-name-4" transform="matrix(1,0,0,1,96,380)">
+                <text x="0px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">Mole</text>
+            </g>
+            <g id="App-status-4">
+                <circle cx="747" cy="370" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,377)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-5" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,397L816,397" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-5">
+                <path d="M66,410C70.415,410 74,413.585 74,418L74,434C74,438.415 70.415,442 66,442L50,442C45.585,442 42,438.415 42,434L42,418C42,413.585 45.585,410 50,410L66,410Z" style="fill:rgb(0,169,181);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,431.455078)">
+                    <text x="-6.322px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:21px;fill:white;">▱</text>
+                </g>
+            </g>
+            <g id="App-name-5" transform="matrix(1,0,0,1,96,436)">
+                <text x="0px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">Share Stack</text>
+            </g>
+            <g id="App-status-5">
+                <circle cx="747" cy="426" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,433)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-6" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,453L816,453" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-6">
+                <path d="M66,466C70.415,466 74,469.585 74,474L74,490C74,494.415 70.415,498 66,498L50,498C45.585,498 42,494.415 42,490L42,474C42,469.585 45.585,466 50,466L66,466Z" style="fill:rgb(7,88,237);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,487.455078)">
+                    <text x="-6.322px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:21px;fill:white;">◈</text>
+                </g>
+            </g>
+            <g id="App-name-6" transform="matrix(1,0,0,1,96,492)">
+                <text x="0px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">Smart <tspan x="81.963px 99.066px " y="0px 0px ">TV</tspan> Control</text>
+            </g>
+            <g id="App-status-6">
+                <circle cx="747" cy="482" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,489)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-7" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,509L816,509" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-7">
+                <path d="M66,522C70.415,522 74,525.585 74,530L74,546C74,550.415 70.415,554 66,554L50,554C45.585,554 42,550.415 42,546L42,530C42,525.585 45.585,522 50,522L66,522Z" style="fill:rgb(36,32,78);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,545)">
+                    <text x="-8.752px" y="0px" style="font-family:'Helvetica';font-size:21px;fill:white;">ııı</text>
+                </g>
+            </g>
+            <g id="App-name-7" transform="matrix(1,0,0,1,96,548)">
+                <text x="0px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">Stable Whisper</text>
+            </g>
+            <g id="App-status-7">
+                <circle cx="747" cy="538" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,545)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+        <g id="App-row-8" transform="matrix(1,0,0,1,0,-107)">
+            <path d="M64,565L816,565" style="fill:none;fill-rule:nonzero;stroke:rgb(55,55,55);stroke-width:2px;"/>
+            <g id="App-icon-placeholder-8">
+                <path d="M66,578C70.415,578 74,581.585 74,586L74,602C74,606.415 70.415,610 66,610L50,610C45.585,610 42,606.415 42,602L42,586C42,581.585 45.585,578 50,578L66,578Z" style="fill:rgb(48,66,74);stroke:white;stroke-opacity:0.12;stroke-width:1px;"/>
+                <g transform="matrix(1,0,0,1,58,599.455078)">
+                    <text x="-6.322px" y="0px" style="font-family:'Menlo-Regular', 'Menlo', monospace;font-size:21px;fill:white;">▶</text>
+                </g>
+            </g>
+            <g id="App-name-8" transform="matrix(1,0,0,1,96,604)">
+                <text x="0px" y="0px" style="font-family:'Helvetica';font-size:28px;fill:rgb(215,215,215);">V<tspan x="18.184px 24.404px " y="0px 0px ">id</tspan>eo Simple <tspan x="171.773px 185.773px 201.346px " y="0px 0px 0px ">Too</tspan>lkit</text>
+            </g>
+            <g id="App-status-8">
+                <circle cx="747" cy="594" r="6" style="fill:rgb(39,207,92);"/>
+                <g transform="matrix(1,0,0,1,762,601)">
+                    <text x="0px" y="0px" style="font-family:'AppleSDGothicNeo-Regular', 'Apple SD Gothic Neo';font-size:20px;fill:rgb(155,155,155);">대기</text>
+                </g>
+            </g>
+        </g>
+    </g>
+</svg>

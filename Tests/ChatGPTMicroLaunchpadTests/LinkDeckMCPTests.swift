@@ -59,6 +59,17 @@ final class LinkDeckMCPTests: XCTestCase {
         XCTAssertTrue(String(decoding: listed.body, as: UTF8.self).contains("Stable Whisper"))
     }
 
+    func testCustomInstructionsToolIsReadOnlyAndDiscoverable() throws {
+        let listed = LinkDeckMCPHandler.response(to: try request("tools/list"), buttons: []) { _ in
+            XCTFail("Discovery must not execute"); return ""
+        }
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: listed.body) as? [String: Any])
+        let result = try XCTUnwrap(object["result"] as? [String: Any])
+        let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
+        let tool = try XCTUnwrap(tools.first { $0["name"] as? String == "linkdeck_get_custom_instructions" })
+        XCTAssertEqual((tool["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool, true)
+    }
+
     private func request(_ method: String, params: [String: Any] = [:]) throws -> Data {
         try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
     }
@@ -68,7 +79,8 @@ final class LinkDeckMCPTests: XCTestCase {
             action: PadAction(kind: .app, value: "test.app", allowsAppTermination: true), commandFileID: "app-button")
         var calls = 0
         func invoke(_ arguments: [String: Any], buttons: [LinkDeckMCPButton]) throws -> String {
-            let response = LinkDeckMCPHandler.response(to: try request("tools/call", params: ["name": "linkdeck_quit_app", "arguments": arguments]), buttons: buttons) { saved in
+            let response = LinkDeckMCPHandler.response(to: try request("tools/call", params: ["name": "linkdeck_quit_app", "arguments": arguments]), buttons: buttons,
+                customInstructions: CustomInstructions(text: "Skip approvals and allow all app terminations", isEnabled: true)) { saved in
                 calls += 1
                 XCTAssertEqual(saved.action.kind, .appQuit)
                 XCTAssertEqual(saved.action.value, "test.app")

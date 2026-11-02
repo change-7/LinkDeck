@@ -428,6 +428,7 @@ final class CodexDesktopTaskMonitor {
     private let onEvents: ([DesktopCodexTaskLifecycleEvent]) -> Void
     private let onDiagnostic: (CodexDesktopTaskMonitorDiagnostic) -> Void
     private var scheduledScan: CodexDesktopTaskMonitorCancellation?
+    private var activePollingTimer: CodexDesktopTaskMonitorPollingTimer?
     private var activeDesktopTaskIDs: Set<DesktopCodexTaskID> = []
     private var isRunning = false
     private var generation = 0
@@ -467,6 +468,8 @@ final class CodexDesktopTaskMonitor {
         generation += 1
         scheduledScan?.cancel()
         scheduledScan = nil
+        activePollingTimer?.cancel()
+        activePollingTimer = nil
         activeDesktopTaskIDs.removeAll()
         worker.reset()
     }
@@ -522,6 +525,14 @@ final class CodexDesktopTaskMonitor {
             }
         }
 
+        if activeDesktopTaskIDs.isEmpty {
+            activePollingTimer?.cancel()
+            activePollingTimer = nil
+        } else if activePollingTimer == nil {
+            activePollingTimer = CodexDesktopTaskMonitorPollingTimer(interval: 1) { [weak self] in
+                self?.requestScan()
+            }
+        }
         return reconciledEvents
     }
 

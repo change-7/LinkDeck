@@ -73,6 +73,8 @@ struct AppAPIManifest: Codable, Equatable {
 
 @MainActor
 struct RegisteredAppAPI: Identifiable, Equatable {
+    static let registrationDidChange = Notification.Name("LinkDeck.APIRegistrationDidChange")
+    private static let excludedAppsKey = "linkdeck.excluded-api-apps"
     let bundleID: String
     let appURL: URL
     let executable: URL
@@ -107,6 +109,10 @@ struct RegisteredAppAPI: Identifiable, Equatable {
         var paths = preferences.dictionary(forKey: "linkdeck.api-app-paths") as? [String: String] ?? [:]
         paths[app.bundleID] = appURL.path
         preferences.set(paths, forKey: "linkdeck.api-app-paths")
+        var excluded = Set(preferences.stringArray(forKey: excludedAppsKey) ?? [])
+        excluded.remove(app.bundleID)
+        preferences.set(excluded.sorted(), forKey: excludedAppsKey)
+        NotificationCenter.default.post(name: registrationDidChange, object: nil)
         return app
     }
 
@@ -122,7 +128,18 @@ struct RegisteredAppAPI: Identifiable, Equatable {
             apps.removeAll { $0.bundleID == app.bundleID }
             apps.append(app)
         }
-        return apps
+        return apps.filter { !isExcluded(bundleID: $0.bundleID, preferences: preferences) }
+    }
+
+    static func isExcluded(bundleID: String, preferences: UserDefaults = .standard) -> Bool {
+        (preferences.stringArray(forKey: excludedAppsKey) ?? []).contains(bundleID)
+    }
+
+    func removeFromAPIList(preferences: UserDefaults = .standard) {
+        var excluded = Set(preferences.stringArray(forKey: Self.excludedAppsKey) ?? [])
+        excluded.insert(bundleID)
+        preferences.set(excluded.sorted(), forKey: Self.excludedAppsKey)
+        NotificationCenter.default.post(name: Self.registrationDidChange, object: nil)
     }
 
     func approve() {
@@ -142,11 +159,15 @@ final class AppAPIMCPBridge {
     enum ConnectionStatus: String {
         case approvalRequired = "승인 필요"
         case idle = "대기"
-        case connected = "연결 중"
+        case connected = "대기 중"
+        case working = "작업 중"
         case failed = "오류"
     }
     private var clients: [String: StableWhisperMCPClient] = [:]
     private var failures: [String: String] = [:]
+    static let activityDidChange = Notification.Name("LinkDeckAppAPIActivityDidChange")
+    private var activeCalls: [String: Int] = [:]
+    private var activityUntil: [String: Date] = [:]
     private let sharedWhisper: StableWhisperMCPClient?
 
     init(sharedWhisper: StableWhisperMCPClient? = nil) { self.sharedWhisper = sharedWhisper }
@@ -154,22 +175,44 @@ final class AppAPIMCPBridge {
     func connectionStatus(for app: RegisteredAppAPI) async -> ConnectionStatus {
         guard app.approved else { return .approvalRequired }
         if failures[app.bundleID] != nil { return .failed }
+        if isCalling(app.approvalKey) { return .working }
         let connection = app.bundleID == "com.pdg.stablewhisper" ? sharedWhisper ?? clients[app.approvalKey] : clients[app.approvalKey]
         guard let connection else { return .idle }
-        return await connection.isRunning() ? .connected : .idle
+        guard await connection.isRunning() else { return .idle }
+        let working = await connection.isWorking()
+        return isCalling(app.approvalKey) || working ? .working : .connected
+    }
+
+    private func isCalling(_ key: String) -> Bool {
+        activeCalls[key, default: 0] > 0 || (activityUntil[key] ?? .distantPast) > Date()
     }
 
     func client(_ app: RegisteredAppAPI) -> StableWhisperMCPClient {
         if app.bundleID == "com.pdg.stablewhisper", let sharedWhisper { return sharedWhisper }
         if let saved = clients[app.approvalKey] { return saved }
-        let chatView = app.bundleID == "com.pdg.ChatGPTSplitView" && app.manifest.id == "chat_view"
-        let created = StableWhisperMCPClient(idleTimeout: .seconds(chatView ? 600 : 300), chatView: chatView)
+        let chatView = app.manifest.id == "chat_view"
+        let stateTools = app.manifest.id == "chat_view_plus" ? ["chatgpt_state", "gemini_state"].filter(app.manifest.tools.contains) : []
+        let created = StableWhisperMCPClient(idleTimeout: .seconds(chatView ? 600 : 300), chatView: chatView, activityStateTools: stateTools)
         clients[app.approvalKey] = created
         return created
     }
 
     func call(_ app: RegisteredAppAPI, tool: String, arguments: [String: Any]) async throws -> Data {
         guard app.approved, app.manifest.tools.contains(tool) else { throw AppAPIManifest.invalid("승인된 앱 API가 필요합니다.") }
+        activeCalls[app.approvalKey, default: 0] += 1
+        activityUntil[app.approvalKey] = Date().addingTimeInterval(1.2)
+        NotificationCenter.default.post(name: Self.activityDidChange, object: nil)
+        defer {
+            activeCalls[app.approvalKey, default: 0] -= 1
+            if activeCalls[app.approvalKey] == 0 { activeCalls.removeValue(forKey: app.approvalKey) }
+            NotificationCenter.default.post(name: Self.activityDidChange, object: nil)
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(1200))
+                guard let self, !self.isCalling(app.approvalKey) else { return }
+                self.activityUntil.removeValue(forKey: app.approvalKey)
+                NotificationCenter.default.post(name: Self.activityDidChange, object: nil)
+            }
+        }
         let connection = client(app)
         if app.manifest.id == "video_toolkit", ["burn_subtitles", "start_download"].contains(tool) {
             await connection.rotateSettledConnection(limit: 32)

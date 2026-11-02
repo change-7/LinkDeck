@@ -32,6 +32,7 @@ struct SmartphoneSettingsView: View {
     @State private var isSymbolPickerPresented = false
     @State private var symbolSearchText = ""
     @State private var showingFolderSync = false
+    @State private var pagePendingDeletion: SmartphonePage?
 
     private let symbolChoices = [
         // 아이콘 없음
@@ -86,7 +87,7 @@ struct SmartphoneSettingsView: View {
         "chart.bar", "chart.line.uptrend.xyaxis", "gauge.with.dots.needle.67percent", "speedometer"
     ]
 
-    private var page: SmartphonePage { store.smartphonePages[pageIndex] }
+    private var page: SmartphonePage { store.smartphonePages[min(pageIndex, store.smartphonePages.count - 1)] }
     private var selectedButton: SmartphoneButton { page.buttons[buttonIndex] }
     private var selectedAction: PadAction {
         if editingLongPress { return selectedButton.longPressAction }
@@ -138,6 +139,32 @@ struct SmartphoneSettingsView: View {
         .foregroundStyle(theme.foreground)
         .background(theme.canvas)
         .focusEffectDisabled()
+        .onChange(of: store.smartphonePages.map(\.id)) { _, _ in
+            pageIndex = min(pageIndex, store.smartphonePages.count - 1)
+            buttonIndex = 0
+            folderButtonID = nil
+        }
+        .alert("스마트폰 페이지를 삭제할까요?", isPresented: Binding(
+            get: { pagePendingDeletion != nil },
+            set: { if !$0 { pagePendingDeletion = nil } }
+        )) {
+            Button("취소", role: .cancel) { pagePendingDeletion = nil }
+            Button("삭제", role: .destructive) {
+                let selectedID = page.id
+                if let pending = pagePendingDeletion,
+                   let index = store.smartphonePages.firstIndex(where: { $0.id == pending.id }),
+                   store.removeSmartphonePage(at: index) {
+                    pageIndex = store.smartphonePages.firstIndex(where: { $0.id == selectedID }) ?? min(index, store.smartphonePages.count - 1)
+                    buttonIndex = 0
+                    folderButtonID = nil
+                    editingLongPress = false
+                    editingSecondAction = false
+                }
+                pagePendingDeletion = nil
+            }
+        } message: {
+            Text("‘\(pagePendingDeletion?.name ?? "")’ 페이지의 버튼·폴더 설정도 함께 삭제되며 휴대폰에 반영됩니다.")
+        }
         .overlay {
             if let folderButtonID {
                 ZStack {
@@ -177,7 +204,22 @@ struct SmartphoneSettingsView: View {
                 }
             )
             .padding(.bottom, 5)
-            Text("스마트폰 페이지").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                Text("스마트폰 페이지").font(.system(size: 12, weight: .bold)).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Button {
+                    pageIndex = store.addSmartphonePage()
+                    buttonIndex = 0
+                    showingFolderSync = false
+                    editingLongPress = false
+                    editingSecondAction = false
+                } label: { Image(systemName: "plus") }
+                .accessibilityLabel("스마트폰 페이지 추가")
+                .help("빈 버튼 16개가 있는 페이지를 추가합니다.")
+            }
+            .buttonStyle(.borderless)
+            ScrollView {
+            VStack(alignment: .leading, spacing: 9) {
             ForEach(Array(store.smartphonePages.enumerated()), id: \.element.id) { index, page in
                 VStack(spacing: 0) {
                     Button {
@@ -199,7 +241,9 @@ struct SmartphoneSettingsView: View {
                         .overlay(RoundedRectangle(cornerRadius: 8).stroke(index == dropTargetPageIndex || index == pageIndex ? theme.accent : theme.foreground.opacity(0.22)))
                     }
                     .buttonStyle(.plain)
-                    .modifier(PageNameEditor(name: page.name) { store.updateSmartphonePageName($0, at: index) })
+                    .modifier(PageNameEditor(name: page.name, delete: { pagePendingDeletion = page }, canDelete: store.smartphonePages.count > 1) {
+                        store.updateSmartphonePageName($0, at: index)
+                    })
                 }
                 .frame(maxWidth: .infinity)
                 .contentShape(Rectangle())
@@ -222,7 +266,9 @@ struct SmartphoneSettingsView: View {
                 }
                 .help("버튼을 든 채 이 페이지 이름 위에 올리면 페이지가 열립니다. 원하는 버튼 칸에 놓으세요.")
             }
-            Spacer(minLength: 8)
+            }
+            }
+            .frame(maxHeight: .infinity, alignment: .top)
             Button {
                 folderButtonID = nil
                 withAnimation(.easeInOut(duration: 0.18)) {
