@@ -236,12 +236,6 @@ struct APIAppsView: View {
 
     @ViewBuilder
     private func approvalMenu(for app: RegisteredAppAPI) -> some View {
-        Button("API 목록에서 제거", role: .destructive) {
-            app.removeFromAPIList()
-            apps.removeAll { $0.id == app.id }
-            statuses.removeValue(forKey: app.id)
-        }
-        .help("버튼 등록은 유지합니다. 다시 추가하려면 앱을 API 목록에 드래그하세요.")
         if !app.approved {
             Button("연결 허용") {
                 app.approve()
@@ -250,6 +244,12 @@ struct APIAppsView: View {
                 }
             }
         }
+        Button("API 목록에서 제거", role: .destructive) {
+            app.removeFromAPIList()
+            apps.removeAll { $0.id == app.id }
+            statuses.removeValue(forKey: app.id)
+        }
+        .help("버튼 등록은 유지합니다. 다시 추가하려면 앱을 API 목록에 드래그하세요.")
     }
 
     private func statusLabel(_ status: AppAPIMCPBridge.ConnectionStatus, approved: Bool, compact: Bool = false) -> some View {

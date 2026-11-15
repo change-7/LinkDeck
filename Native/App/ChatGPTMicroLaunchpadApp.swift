@@ -450,6 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "설정 창 열기", action: #selector(openMainWindowFromMenu), keyEquivalent: "")
         menu.addItem(.separator())
+        menu.addItem(withTitle: "재시작", action: #selector(restartFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "완전히 종료", action: #selector(quitFromMenu), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
         item.menu = menu
@@ -462,6 +463,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     @objc private func quitFromMenu() {
         quitCompletely()
+    }
+
+    @objc private func restartFromMenu() {
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        // Wait for the original process so the duplicate-instance check allows the relaunch.
+        relaunch.arguments = [
+            "-c",
+            """
+            while kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done
+            exec /usr/bin/open -a "$2"
+            """,
+            "linkdeck-restart",
+            String(ProcessInfo.processInfo.processIdentifier),
+            Bundle.main.bundlePath
+        ]
+        do {
+            try relaunch.run()
+            quitCompletely()
+        } catch {
+            NSApp.presentError(error)
+        }
     }
 
 }
