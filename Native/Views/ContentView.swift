@@ -13,18 +13,30 @@ struct ContentView: View {
     @State private var showingCodexConnection = false
     @State private var showingBackupRestore = false
     @State private var showingFolderSyncSettings = false
-    @AppStorage("linkdeck.main-screen") private var selectedMainScreen: MainScreen = .smartphoneButtons
+    @AppStorage(MainScreen.storageKey) private var selectedMainScreen: MainScreen = .smartphoneButtons
+    @AppStorage(MainScreen.apiAppsPositionLockedKey) private var apiAppsPositionLocked = false
     @AppStorage(AppAppearanceMode.storageKey) private var appearanceMode = AppAppearanceMode.system.rawValue
     var body: some View {
         ZStack {
-            MacAppearance(scheme: colorScheme).canvas.ignoresSafeArea()
+            if selectedMainScreen == .apiApps {
+                APIAppsBackdrop(material: .hudWindow)
+                    .overlay(MacAppearance(scheme: colorScheme).canvas.opacity(0.48))
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            } else {
+                MacAppearance(scheme: colorScheme).canvas.ignoresSafeArea()
+            }
             mainContent
         }
         .frame(minWidth: selectedMainScreen == .apiApps ? 360 : 1100,
                maxWidth: selectedMainScreen == .apiApps ? 420 : .infinity,
                minHeight: selectedMainScreen == .apiApps ? 240 : 640,
                maxHeight: selectedMainScreen == .apiApps ? 400 : .infinity)
-        .background(MainWindowModeSize(compact: selectedMainScreen == .apiApps))
+        .background(MainWindowModeSize(
+            compact: selectedMainScreen == .apiApps,
+            translucent: selectedMainScreen == .apiApps,
+            positionLocked: selectedMainScreen == .apiApps && apiAppsPositionLocked
+        ))
         .preferredColorScheme(AppAppearanceMode(rawValue: appearanceMode)?.colorScheme)
         .onAppear {
             chatGPTTunnel.connectOnStartup(store: store, folderSyncStore: folderSyncStore, runner: runner)

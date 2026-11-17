@@ -43,7 +43,6 @@ struct APIAppsView: View {
             }
         }
         .toolbarBackground(.hidden, for: .windowToolbar)
-        .background(colorScheme == .dark ? Color(white: 9 / 255) : MacAppearance(scheme: colorScheme).canvas)
         .contentShape(Rectangle())
         .overlay {
             if isDropTargeted {
@@ -165,10 +164,19 @@ struct APIAppsView: View {
                 }
                 }
                 }
-                .background(colorScheme == .dark ? Color(white: 31 / 255) : Color(nsColor: .controlBackgroundColor))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            }
+            .background {
+                APIAppsBackdrop(material: .popover)
+                    .allowsHitTesting(false)
             }
             .clipShape(RoundedRectangle(cornerRadius: 10))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(.primary.opacity(0.1), lineWidth: 1)
+                    .allowsHitTesting(false)
+            }
             .padding(.horizontal, 12)
             .padding(.bottom, 12)
     }
@@ -295,19 +303,44 @@ private struct APIActivityIndicator: View {
     }
 }
 
+struct APIAppsBackdrop: NSViewRepresentable {
+    let material: NSVisualEffectView.Material
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        view.material = material
+    }
+}
+
 struct MainWindowModeSize: NSViewRepresentable {
+    static let apiAppsBackLevel = NSWindow.Level(rawValue: NSWindow.Level.normal.rawValue - 1)
+
     let compact: Bool
+    let translucent: Bool
+    let positionLocked: Bool
 
     func makeNSView(context: Context) -> WindowView { WindowView() }
     func updateNSView(_ view: WindowView, context: Context) {
         view.compact = compact
+        view.translucent = translucent
+        view.positionLocked = positionLocked
         DispatchQueue.main.async { view.applySize() }
     }
 
     final class WindowView: NSView {
         var compact = false
+        var translucent = false
+        var positionLocked = false
         var appliedCompact: Bool?
         var expandedFrame: NSRect?
+        private var originalBackground: (color: NSColor?, isOpaque: Bool)?
+        private var originalMovability: Bool?
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
@@ -316,6 +349,25 @@ struct MainWindowModeSize: NSViewRepresentable {
 
         func applySize() {
             guard let window else { return }
+            if positionLocked, originalMovability == nil {
+                originalMovability = window.isMovable
+                window.isMovable = false
+            } else if !positionLocked, let originalMovability {
+                window.isMovable = originalMovability
+                self.originalMovability = nil
+            }
+            if translucent, originalBackground == nil {
+                originalBackground = (window.backgroundColor, window.isOpaque)
+                window.isOpaque = false
+                window.backgroundColor = .clear
+            } else if !translucent, let originalBackground {
+                window.backgroundColor = originalBackground.color
+                window.isOpaque = originalBackground.isOpaque
+                if window.level == MainWindowModeSize.apiAppsBackLevel {
+                    window.level = .normal
+                }
+                self.originalBackground = nil
+            }
             if compact, let toolbar = window.toolbar,
                toolbar.items.first?.itemIdentifier != .flexibleSpace {
                 toolbar.insertItem(withItemIdentifier: .flexibleSpace, at: 0)

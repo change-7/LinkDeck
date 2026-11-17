@@ -192,7 +192,9 @@ final class CodexActivityController {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
+    private static let mainWindowPositionKey = "linkdeck.main-window-top-left"
+
     var isBridgeOnly: Bool { CommandLine.arguments.contains("--bridge-only") }
     let codex: CodexAppServerClient
     let codexActivityController: CodexActivityController
@@ -274,20 +276,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             guard let window = Self.mainApplicationWindow(in: NSApp.windows) else { return }
 
             self.mainWindow = window
+            if let screen = NSScreen.main {
+                let position = UserDefaults.standard.string(forKey: Self.mainWindowPositionKey).map(NSPointFromString)
+                let frame = Self.restoredMainWindowFrame(
+                    size: window.frame.size,
+                    topLeft: position,
+                    defaultScreen: screen.visibleFrame,
+                    screens: NSScreen.screens.map(\.visibleFrame)
+                )
+                window.setFrame(frame, display: true)
+            }
             window.delegate = self
-
-            guard let screen = NSScreen.main else { return }
-
-            let visibleFrame = screen.visibleFrame.insetBy(dx: 18, dy: 18)
-            let size = NSSize(
-                width: min(window.frame.width, visibleFrame.width),
-                height: min(window.frame.height, visibleFrame.height)
-            )
-            let origin = NSPoint(
-                x: visibleFrame.midX - size.width / 2,
-                y: visibleFrame.midY - size.height / 2
-            )
-            window.setFrame(NSRect(origin: origin, size: size), display: true)
+            self.saveMainWindowPosition(window)
             window.makeKeyAndOrderFront(nil)
             NSRunningApplication.current.activate(options: [.activateAllWindows])
         }
@@ -319,10 +319,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         return false
     }
 
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === mainWindow else { return }
+        saveMainWindowPosition(window)
+    }
+
+    private func saveMainWindowPosition(_ window: NSWindow) {
+        guard !window.isMiniaturized, !window.styleMask.contains(.fullScreen) else { return }
+        let topLeft = NSPoint(x: window.frame.minX, y: window.frame.maxY)
+        UserDefaults.standard.set(NSStringFromPoint(topLeft), forKey: Self.mainWindowPositionKey)
+    }
+
+    static func restoredMainWindowFrame(
+        size: NSSize, topLeft: NSPoint?, defaultScreen: NSRect, screens: [NSRect]
+    ) -> NSRect {
+        if let topLeft {
+            let proposed = NSRect(x: topLeft.x, y: topLeft.y - size.height, width: size.width, height: size.height)
+            let overlap: (NSRect) -> CGFloat = { screen in
+                let intersection = proposed.intersection(screen)
+                return intersection.isEmpty ? 0 : intersection.width * intersection.height
+            }
+            if let screen = screens.max(by: { overlap($0) < overlap($1) }), overlap(screen) > 0 {
+                let width = min(size.width, screen.width)
+                let height = min(size.height, screen.height)
+                return NSRect(
+                    x: min(max(proposed.minX, screen.minX), screen.maxX - width),
+                    y: min(max(topLeft.y - height, screen.minY), screen.maxY - height),
+                    width: width,
+                    height: height
+                )
+            }
+        }
+        let screen = defaultScreen.insetBy(dx: 18, dy: 18)
+        let width = min(size.width, screen.width)
+        let height = min(size.height, screen.height)
+        return NSRect(x: screen.midX - width / 2, y: screen.midY - height / 2, width: width, height: height)
+    }
+
     func showMainWindow() {
         let window = mainWindow ?? Self.mainApplicationWindow(in: NSApp.windows)
         guard let window else { return }
         mainWindow = window
+        if window.level == MainWindowModeSize.apiAppsBackLevel {
+            window.level = .normal
+        }
         window.makeKeyAndOrderFront(nil)
         NSRunningApplication.current.activate(options: [.activateAllWindows])
     }
@@ -448,13 +488,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             accessibilityDescription: "LinkDeck"
         )
         let menu = NSMenu()
+        menu.delegate = self
         menu.addItem(withTitle: "설정 창 열기", action: #selector(openMainWindowFromMenu), keyEquivalent: "")
+        menu.addItem(withTitle: "API 앱 위치 고정", action: #selector(toggleAPIAppsPositionLock), keyEquivalent: "")
+        menu.addItem(withTitle: "API 앱을 맨 뒤로 보내기", action: #selector(sendAPIAppsToBack), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "재시작", action: #selector(restartFromMenu), keyEquivalent: "")
         menu.addItem(withTitle: "완전히 종료", action: #selector(quitFromMenu), keyEquivalent: "")
         menu.items.forEach { $0.target = self }
         item.menu = menu
         statusItem = item
+    }
+
+    private var isAPIAppsSelected: Bool {
+        UserDefaults.standard.string(forKey: MainScreen.storageKey) == MainScreen.apiApps.rawValue
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let positionLock = menu.items.first { $0.action == #selector(toggleAPIAppsPositionLock) }
+        positionLock?.isHidden = !isAPIAppsSelected
+        positionLock?.state = UserDefaults.standard.bool(forKey: MainScreen.apiAppsPositionLockedKey) ? .on : .off
+        let sendToBack = menu.items.first { $0.action == #selector(sendAPIAppsToBack) }
+        sendToBack?.isHidden = !isAPIAppsSelected
+    }
+
+    @objc private func toggleAPIAppsPositionLock() {
+        guard isAPIAppsSelected else { return }
+        let defaults = UserDefaults.standard
+        let key = MainScreen.apiAppsPositionLockedKey
+        defaults.set(!defaults.bool(forKey: key), forKey: key)
+    }
+
+    @objc private func sendAPIAppsToBack() {
+        guard isAPIAppsSelected, let mainWindow, mainWindow.isVisible else { return }
+        mainWindow.level = MainWindowModeSize.apiAppsBackLevel
+        mainWindow.orderBack(nil)
     }
 
     @objc private func openMainWindowFromMenu() {

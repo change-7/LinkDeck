@@ -3,6 +3,9 @@ import SwiftUI
 enum MainScreen: String, CaseIterable, Hashable {
     case smartphoneButtons
     case apiApps
+
+    static let storageKey = "linkdeck.main-screen"
+    static let apiAppsPositionLockedKey = "linkdeck.api-apps-position-locked"
 }
 
 struct MainScreenSidebarNavigation: View {
