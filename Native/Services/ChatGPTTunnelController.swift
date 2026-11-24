@@ -59,6 +59,7 @@ final class ChatGPTTunnelController {
         }
         tunnelID = id
         preferences.set(id, forKey: "linkdeck.chatgpt-tunnel-id")
+        LinkDeckDiagnosticLog.shared.record("tunnel.connecting")
         isActive = true
         isReady = false
         message = "터널 연결 중…"
@@ -70,6 +71,7 @@ final class ChatGPTTunnelController {
 
     func disconnect() {
         guard isActive else { return }
+        LinkDeckDiagnosticLog.shared.record("tunnel.disconnect_requested")
         message = "연결 종료 중…"
         isReady = false
         task?.cancel()
@@ -80,6 +82,21 @@ final class ChatGPTTunnelController {
     private func run(executable: URL, tunnelID: String, apiKey: String, store: LaunchpadStore, runner: MacActionRunner) async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-tunnel-\(UUID())")
         let healthFile = directory.appendingPathComponent("health.url")
+        let diagnosticPipe = Pipe()
+        diagnosticPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                LinkDeckDiagnosticLog.shared.finishTunnelOutput()
+            }
+            else { LinkDeckDiagnosticLog.shared.consumeTunnelOutput(data) }
+        }
+        defer {
+            diagnosticPipe.fileHandleForReading.readabilityHandler = nil
+            try? diagnosticPipe.fileHandleForReading.close()
+            try? diagnosticPipe.fileHandleForWriting.close()
+            LinkDeckDiagnosticLog.shared.finishTunnelOutput()
+        }
         let server = LinkDeckMCPServer()
         self.server = server
         server.handle = { [weak self] data in
@@ -104,10 +121,11 @@ final class ChatGPTTunnelController {
             process.arguments = launch.arguments
             process.environment = launch.environment
             process.standardInput = FileHandle.nullDevice
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+            process.standardOutput = diagnosticPipe
+            process.standardError = diagnosticPipe
             try process.run()
             self.process = process
+            LinkDeckDiagnosticLog.shared.record("tunnel.started")
             var misses = 0
             while !Task.isCancelled && process.isRunning {
                 let pid = process.processIdentifier
@@ -125,6 +143,9 @@ final class ChatGPTTunnelController {
                     } catch { return false }
                 }.value
                 try Task.checkCancellation()
+                if ready != isReady || (!ready && misses == 0) {
+                    LinkDeckDiagnosticLog.shared.record("tunnel.health", outcome: ready ? "ready" : "unavailable")
+                }
                 isReady = ready
                 if ready { misses = 0; message = "터널 연결됨 · ChatGPT에서 사용할 준비가 됐습니다." }
                 else {
@@ -133,8 +154,12 @@ final class ChatGPTTunnelController {
                 }
                 try await Task.sleep(for: .seconds(3))
             }
+            if !process.isRunning {
+                LinkDeckDiagnosticLog.shared.record("tunnel.exited", code: Int(process.terminationStatus))
+            }
             if !Task.isCancelled { message = "터널 실행이 종료됐습니다. 키와 터널 ID·권한을 확인하세요." }
         } catch {
+            LinkDeckDiagnosticLog.shared.record("tunnel.failed", outcome: Task.isCancelled ? "cancelled" : "error", code: (error as NSError).code)
             message = Task.isCancelled ? "연결 안 됨" : "터널을 시작하지 못했습니다. 설치 상태와 연결 정보를 확인하세요."
         }
         server.stop()
