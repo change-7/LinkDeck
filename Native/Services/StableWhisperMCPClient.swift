@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 
 actor StableWhisperMCPClient {
+    private let diagnosticLog: LinkDeckDiagnosticLog
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
@@ -21,7 +22,8 @@ actor StableWhisperMCPClient {
     private let terminateChatView: @Sendable () async -> Bool
     private let launchChatView: @Sendable (URL) async throws -> Void
 
-    init(jobsDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Stable Whisper/linkdeck-mcp-jobs"), idleTimeout: Duration = .seconds(300), chatView: Bool = false, activityStateTools: [String] = [], terminateChatView: @escaping @Sendable () async -> Bool = StableWhisperMCPClient.quitChatView, launchChatView: @escaping @Sendable (URL) async throws -> Void = StableWhisperMCPClient.launchChatView) {
+    init(jobsDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Stable Whisper/linkdeck-mcp-jobs"), idleTimeout: Duration = .seconds(300), chatView: Bool = false, activityStateTools: [String] = [], terminateChatView: @escaping @Sendable () async -> Bool = StableWhisperMCPClient.quitChatView, launchChatView: @escaping @Sendable (URL) async throws -> Void = StableWhisperMCPClient.launchChatView, diagnosticLog: LinkDeckDiagnosticLog = .shared) {
+        self.diagnosticLog = diagnosticLog
         self.jobsDirectory = jobsDirectory
         self.idleTimeout = idleTimeout
         self.chatView = chatView
@@ -73,7 +75,13 @@ actor StableWhisperMCPClient {
             // Keep LinkDeck's API keys out of the child process.
             child.environment = ["HOME": NSHomeDirectory(), "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                                  "STABLE_WHISPER_MCP_JOBS": jobsDirectory.path]
-            try child.run()
+            let started = ContinuousClock.now
+            do { try child.run() }
+            catch {
+                diagnosticLog.record("app.launch.failed", app: executable.lastPathComponent, code: (error as NSError).code)
+                throw error
+            }
+            diagnosticLog.recordTiming("timing.app.spawn", since: started, app: executable.lastPathComponent)
             process = child
             input = stdin.fileHandleForWriting
             output = stdout.fileHandleForReading
@@ -205,6 +213,7 @@ actor StableWhisperMCPClient {
             if ["chat_view_start_task", "chat_view_start_image_task", "chatgpt_send_text"].contains(tool) { chatViewAnswerPending = true }
             return
         }
+        diagnosticLog.recordChatViewTask(result, tool: tool)
         if ["chat_view_start_task", "chat_view_start_image_task"].contains(tool) {
             if let id = result["taskId"] as? String { chatViewTasks.insert(id) }
             else { chatViewAnswerPending = true }
@@ -282,6 +291,19 @@ actor StableWhisperMCPClient {
     }
 
     private func exchange(_ request: [String: Any]) throws -> Data {
+        let log = diagnosticLog
+        let requestID = LinkDeckRequestContext.id ?? UUID().uuidString
+        let method = request["method"] as? String
+        let tool = (request["params"] as? [String: Any])?["name"] as? String
+        let app = process?.executableURL?.lastPathComponent
+        let started = ContinuousClock.now
+        var outcome = "transport_error"
+        log.record("app.request.started", requestID: requestID, method: method, tool: tool, app: app)
+        defer {
+            let elapsed = started.duration(to: .now).components
+            log.record("app.request.completed", requestID: requestID, method: method, tool: tool, app: app,
+                outcome: outcome, elapsedMS: Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000))
+        }
         sequence += 1
         let id = sequence
         var request = request
@@ -297,7 +319,10 @@ actor StableWhisperMCPClient {
                 guard let reply = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
                     throw failure("위스퍼 MCP가 잘못된 응답을 반환했습니다.")
                 }
-                if reply["id"] as? Int == id { return line }
+                if reply["id"] as? Int == id {
+                    outcome = LinkDeckDiagnosticLog.responseOutcome(line)
+                    return line
+                }
             }
             var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
             let ready = poll(&descriptor, 1, 100)
@@ -312,6 +337,7 @@ actor StableWhisperMCPClient {
                 guard buffer.count <= 4_194_304 else { throw failure("위스퍼 MCP 응답이 너무 큽니다.") }
             }
         }
+        outcome = "timeout"
         throw failure("위스퍼 MCP 응답 시간이 초과되었습니다. 작업 목록을 확인한 뒤 재시도하세요.")
     }
 }

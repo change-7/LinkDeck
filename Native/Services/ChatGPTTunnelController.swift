@@ -96,6 +96,7 @@ final class ChatGPTTunnelController {
         retrySleep: @escaping @MainActor (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         guard task == nil else { return }
+        LinkDeckDiagnosticLog.shared.record("tunnel.connecting")
         isActive = true
         isReady = false
         message = "터널 연결 중…"
@@ -111,6 +112,7 @@ final class ChatGPTTunnelController {
             while !Task.isCancelled {
                 await run()
                 guard self.autoConnect, !Task.isCancelled else { break }
+                LinkDeckDiagnosticLog.shared.record("tunnel.reconnecting", code: delay)
                 self.message = "터널 연결 끊김 · \(delay)초 후 다시 연결합니다."
                 do { try await retrySleep(.seconds(delay)) }
                 catch { break }
@@ -158,6 +160,7 @@ final class ChatGPTTunnelController {
     func disconnect(disableAutoConnect: Bool = false) {
         if disableAutoConnect { autoConnect = false }
         guard isActive else { return }
+        LinkDeckDiagnosticLog.shared.record("tunnel.disconnect_requested")
         message = "연결 종료 중…"
         isReady = false
         task?.cancel()
@@ -175,14 +178,32 @@ final class ChatGPTTunnelController {
     ) async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-tunnel-\(UUID())")
         let healthFile = directory.appendingPathComponent("health.url")
-        let server = LinkDeckMCPServer()
+        let diagnosticPipe = Pipe()
+        diagnosticPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty {
+                handle.readabilityHandler = nil
+                LinkDeckDiagnosticLog.shared.finishTunnelOutput()
+            }
+            else { LinkDeckDiagnosticLog.shared.consumeTunnelOutput(data) }
+        }
+        defer {
+            diagnosticPipe.fileHandleForReading.readabilityHandler = nil
+            try? diagnosticPipe.fileHandleForReading.close()
+            try? diagnosticPipe.fileHandleForWriting.close()
+            LinkDeckDiagnosticLog.shared.finishTunnelOutput()
+        }
+        let server = LinkDeckMCPServer(connectionTimeout: .seconds(60))
         server.instructionsProvider = { (store.customInstructions, store.customInstructionsRevision) }
         let pipeline = SubtitlePipelineRuntime.shared
         let whisper = pipeline.whisper
         self.server = server
         server.handle = { [weak self] data in
+            let discoveryStart = ContinuousClock.now
             let catalog = LinkDeckMCPHandler.buttons(macPages: store.pages, phonePages: store.smartphonePages)
-            return await pipeline.response(to: data, apps: RegisteredAppAPI.discover(buttons: catalog)) {
+            let apps = RegisteredAppAPI.discover(buttons: catalog)
+            LinkDeckDiagnosticLog.shared.recordTiming("timing.app.discovery", since: discoveryStart)
+            return await pipeline.response(to: data, apps: apps) {
                 await StableWhisperMCPBridge.response(to: data, client: whisper, executable: StableWhisperMCPBridge.executable()) {
                     LinkDeckMCPHandler.response(to: data, buttons: catalog, customInstructions: store.customInstructions, folderSyncStore: folderSyncStore) { button in
                         let result = try runner.execute(button.action, commandFileID: button.commandFileID)
@@ -210,10 +231,11 @@ final class ChatGPTTunnelController {
             process.arguments = LinkDeckTunnelLaunch.supervisedArguments(executable: executable.path, arguments: launch.arguments)
             process.environment = launch.environment
             process.standardInput = FileHandle.nullDevice
-            process.standardOutput = FileHandle.nullDevice
-            process.standardError = FileHandle.nullDevice
+            process.standardOutput = diagnosticPipe
+            process.standardError = diagnosticPipe
             try process.run()
             self.process = process
+            LinkDeckDiagnosticLog.shared.record("tunnel.started")
             var misses = 0
             while !Task.isCancelled && process.isRunning {
                 let pid = process.processIdentifier
@@ -232,6 +254,9 @@ final class ChatGPTTunnelController {
                 }.value
                 try Task.checkCancellation()
                 guard process.isRunning else { break }
+                if ready != isReady || (!ready && misses == 0) {
+                    LinkDeckDiagnosticLog.shared.record("tunnel.health", outcome: ready ? "ready" : "unavailable")
+                }
                 isReady = ready
                 if ready { misses = 0; message = "터널 연결됨 · ChatGPT에서 사용할 준비가 됐습니다." }
                 else {
@@ -240,8 +265,12 @@ final class ChatGPTTunnelController {
                 }
                 try await Task.sleep(for: .seconds(3))
             }
+            if !process.isRunning {
+                LinkDeckDiagnosticLog.shared.record("tunnel.exited", code: Int(process.terminationStatus))
+            }
             if !Task.isCancelled { message = "터널 실행이 종료됐습니다. 키와 터널 ID·권한을 확인하세요." }
         } catch {
+            LinkDeckDiagnosticLog.shared.record("tunnel.failed", outcome: Task.isCancelled ? "cancelled" : "error", code: (error as NSError).code)
             message = Task.isCancelled ? "연결 안 됨" : "터널을 시작하지 못했습니다. 설치 상태와 연결 정보를 확인하세요."
         }
         isReady = false

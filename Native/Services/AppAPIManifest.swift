@@ -291,9 +291,12 @@ final class AppAPIMCPBridge {
                 throw AppAPIManifest.invalid("승인된 앱 도구와 올바른 인수를 사용하세요.")
             }
             let upstream = try await call(app, tool: String(name.dropFirst(app.manifest.prefix.count)), arguments: params["arguments"] as? [String: Any] ?? [:])
+            let serializationStart = ContinuousClock.now
             var reply = try JSONSerialization.jsonObject(with: upstream) as? [String: Any] ?? [:]
             reply["id"] = id
-            return encoded(reply)
+            let response = encoded(reply)
+            LinkDeckDiagnosticLog.shared.recordTiming("timing.app.response_serialization", since: serializationStart)
+            return response
         } catch {
             if method == "tools/list" { return await fallback() }
             return encoded(["jsonrpc": "2.0", "id": id, "result": ["isError": true, "content": [["type": "text", "text": error.localizedDescription]]]])
