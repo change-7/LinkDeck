@@ -31,6 +31,11 @@ private func smartphonePagesForRemote(_ pages: [SmartphonePage]) -> [SmartphoneP
     }
 }
 
+struct CodexResetCredit: Codable, Equatable, Sendable {
+    let id: String
+    let expiresAt: TimeInterval
+}
+
 struct CodexRemoteState: Codable, Equatable, Sendable {
     let type: String
     let protocolVersion: Int

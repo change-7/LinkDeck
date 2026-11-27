@@ -44,7 +44,7 @@ final class ChatGPTTunnelController {
             .first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { URL(fileURLWithPath: $0) }
     }
 
-    func connect(store: LaunchpadStore, runner: MacActionRunner) {
+    func connect(store: LaunchpadStore, codex: CodexAppServerClient, runner: MacActionRunner) {
         guard !isActive else { return }
         let id = tunnelID.trimmingCharacters(in: .whitespacesAndNewlines)
         let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -65,7 +65,7 @@ final class ChatGPTTunnelController {
         message = "터널 연결 중…"
         task = Task { [weak self] in
             guard let self else { return }
-            await self.run(executable: executable, tunnelID: id, apiKey: key, store: store, runner: runner)
+            await self.run(executable: executable, tunnelID: id, apiKey: key, store: store, codex: codex, runner: runner)
         }
     }
 
@@ -79,7 +79,7 @@ final class ChatGPTTunnelController {
         if let process, process.isRunning { process.terminate() }
     }
 
-    private func run(executable: URL, tunnelID: String, apiKey: String, store: LaunchpadStore, runner: MacActionRunner) async {
+    private func run(executable: URL, tunnelID: String, apiKey: String, store: LaunchpadStore, codex: CodexAppServerClient, runner: MacActionRunner) async {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("linkdeck-tunnel-\(UUID())")
         let healthFile = directory.appendingPathComponent("health.url")
         let diagnosticPipe = Pipe()
@@ -101,7 +101,7 @@ final class ChatGPTTunnelController {
         self.server = server
         server.handle = { [weak self] data in
             let catalog = LinkDeckMCPHandler.buttons(macPages: store.pages, phonePages: store.smartphonePages)
-            return LinkDeckMCPHandler.response(to: data, buttons: catalog) { button in
+            return LinkDeckMCPHandler.response(to: data, buttons: catalog, codexUsage: codex.usageMCPPayload) { button in
                 let result = try runner.execute(button.action, commandFileID: button.commandFileID)
                 self?.lastAction = button.title + ": " + result
                 return result

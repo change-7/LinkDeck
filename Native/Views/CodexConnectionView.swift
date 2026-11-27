@@ -91,7 +91,7 @@ struct CodexConnectionView: View {
                 case .approvalSound:
                     approvalSoundPane
                 case .chatGPTTunnel:
-                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store)
+                    ChatGPTTunnelView(tunnel: chatGPTTunnel, store: store, codex: codex)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

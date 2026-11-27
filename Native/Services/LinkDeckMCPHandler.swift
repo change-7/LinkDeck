@@ -50,6 +50,7 @@ enum LinkDeckMCPHandler {
 
     static func response(to data: Data, buttons: [LinkDeckMCPButton],
                          sleepStatus: () -> MacSleepStatus = MacSleepStatus.current,
+                         codexUsage: (() -> [String: Any])? = nil,
                          execute: (LinkDeckMCPButton) throws -> String) -> (status: Int, body: Data) {
         func encoded(_ object: [String: Any]) -> Data {
             (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? Data()
@@ -82,6 +83,9 @@ enum LinkDeckMCPHandler {
         case "ping": result = [:]
         case "tools/list":
             result = ["tools": [
+                ["name": "linkdeck_get_codex_usage", "description": "Read Codex usage from the Mac LinkDeck's latest App Server data. Returns 5-hour and weekly usage and remaining percentages, window reset times, and available reset-credit expiration times. Timestamps are ISO 8601 UTC. Null means unknown; an empty expiration list means no available credits in the latest data. Check codex_connected and last_rate_limits_response_at before treating cached values as current. No arguments; does not use credits.",
+                 "inputSchema": ["type": "object", "properties": [:], "additionalProperties": false],
+                 "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]],
                 ["name": "linkdeck_get_sleep_status", "description": "Read the Mac's current caffeinate sleep-prevention state. 불면증 means sleep prevention is active; 숙면 means caffeinate sleep prevention is off (not that the Mac is currently asleep). Checks actual active assertions, not the last button pressed. Other apps may independently prevent sleep.",
                  "inputSchema": ["type": "object", "properties": [:], "additionalProperties": false],
                  "annotations": ["readOnlyHint": true, "destructiveHint": false, "openWorldHint": false]],
@@ -96,6 +100,16 @@ enum LinkDeckMCPHandler {
             guard let name = params["name"] as? String else { return failure(-32602, "Tool name required") }
             let arguments = params["arguments"] as? [String: Any] ?? [:]
             switch name {
+            case "linkdeck_get_codex_usage":
+                guard (params["arguments"] == nil || params["arguments"] is [String: Any]), arguments.isEmpty else {
+                    return failure(-32602, "Unexpected arguments")
+                }
+                guard let codexUsage else {
+                    result = ["isError": true, "content": [["type": "text", "text": "Codex 사용량을 조회할 수 없습니다."]]]
+                    break
+                }
+                let payload = codexUsage()
+                result = ["content": [["type": "text", "text": String(decoding: encoded(payload), as: UTF8.self)]], "structuredContent": payload]
             case "linkdeck_get_sleep_status":
                 guard arguments.isEmpty else { return failure(-32602, "Unexpected arguments") }
                 let status = sleepStatus()

@@ -4,6 +4,49 @@ import XCTest
 
 @MainActor
 final class LinkDeckMCPTests: XCTestCase {
+    func testCodexUsageToolExposesOnlyObservedLimitsAndAvailableExpirationDates() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let expiration = now.addingTimeInterval(3_600)
+        let resetsAt = now.addingTimeInterval(600)
+        let payload = CodexAppServerClient.usageMCPPayload(
+            connected: true, fiveHour: CodexFiveHourUsage(usedPercent: 25, resetsAt: resetsAt),
+            weekly: nil, credits: CodexAppServerClient.resetCredits(from: ["rateLimitResetCredits": ["credits": [
+                ["id": "private-id", "status": "available", "expiresAt": expiration.timeIntervalSince1970],
+                ["id": "expired", "status": "available", "expiresAt": now.timeIntervalSince1970],
+                ["id": "used", "status": "used", "expiresAt": expiration.timeIntervalSince1970]
+            ]]]), lastResponseAt: now, now: now
+        )
+        let name = "linkdeck_get_codex_usage"
+        func invoke(_ method: String, _ params: [String: Any] = [:]) throws -> [String: Any] {
+            let response = LinkDeckMCPHandler.response(to: try request(method, params: params),
+                buttons: [], codexUsage: { payload }) { _ in
+                    XCTFail("Usage read must not execute"); return ""
+                }
+            XCTAssertFalse(String(decoding: response.body, as: UTF8.self).contains("private-id"))
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        }
+        let list = try invoke("tools/list")
+        let tools = try XCTUnwrap((list["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        let tool = try XCTUnwrap(tools.first { $0["name"] as? String == name })
+        XCTAssertEqual((tool["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool, true)
+        let call = try invoke("tools/call", ["name": name])
+        let data = try XCTUnwrap((call["result"] as? [String: Any])?["structuredContent"] as? [String: Any])
+        XCTAssertEqual(data["codex_connected"] as? Bool, true)
+        XCTAssertEqual(data["last_rate_limits_response_at"] as? String, now.ISO8601Format())
+        let fiveHour = try XCTUnwrap(data["five_hour"] as? [String: Any])
+        XCTAssertEqual(fiveHour["used_percent"] as? Int, 25)
+        XCTAssertEqual(fiveHour["remaining_percent"] as? Int, 75)
+        XCTAssertEqual(fiveHour["resets_at"] as? String, resetsAt.ISO8601Format())
+        XCTAssertTrue(data["weekly"] is NSNull)
+        let credits = try XCTUnwrap(data["reset_credits"] as? [String: Any])
+        XCTAssertEqual(credits["available_count"] as? Int, 1)
+        XCTAssertEqual(credits["expires_at"] as? [String], [expiration.ISO8601Format()])
+        let unknown = CodexAppServerClient().usageMCPPayload()
+        XCTAssertTrue(unknown["reset_credits"] is NSNull)
+        let invalid = try invoke("tools/call", ["name": name, "arguments": ["use_credit": true]])
+        XCTAssertEqual((invalid["error"] as? [String: Any])?["code"] as? Int, -32602)
+    }
+
     private func request(_ method: String, params: [String: Any] = [:]) throws -> Data {
         try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": 1, "method": method, "params": params])
     }

@@ -4,6 +4,7 @@ import SwiftUI
 struct ChatGPTTunnelView: View {
     @Bindable var tunnel: ChatGPTTunnelController
     let store: LaunchpadStore
+    let codex: CodexAppServerClient
     private let runner = MacActionRunner()
 
     @State private var logError: String?
@@ -31,7 +32,7 @@ struct ChatGPTTunnelView: View {
                 .disabled(tunnel.isActive)
                 Button(tunnel.isActive ? "연결 해제" : "터널 연결") {
                     if tunnel.isActive { tunnel.disconnect() }
-                    else { tunnel.connect(store: store, runner: runner) }
+                    else { tunnel.connect(store: store, codex: codex, runner: runner) }
                 }
                 .buttonStyle(.borderedProminent)
                 if !tunnel.lastAction.isEmpty {

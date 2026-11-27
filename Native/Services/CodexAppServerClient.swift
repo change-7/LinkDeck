@@ -48,6 +48,8 @@ final class CodexAppServerClient {
     private var reconnectTask: Task<Void, Never>?
     private var automaticReconnectCount = 0
     private var lastUsageRefreshAt: Date?
+    private var lastUsageResponseAt: Date?
+    private var resetCredits: [CodexResetCredit]?
     private var remoteSmartphonePagesProvider: () -> [SmartphonePage] = SmartphoneDefaults.persistedPages
     private var remoteCodexPhoneThemeProvider: () -> CodexPhoneTheme = { .classic }
     private var remoteCompletionSoundProvider: () -> CodexRemoteCompletionSound = { .builtIn }
@@ -281,6 +283,39 @@ final class CodexAppServerClient {
         activity = .idle
         weeklyUsage = nil
         fiveHourUsage = nil
+        resetCredits = nil
+        lastUsageResponseAt = nil
+    }
+
+    func usageMCPPayload() -> [String: Any] {
+        Self.usageMCPPayload(connected: isConnected, fiveHour: fiveHourUsage, weekly: weeklyUsage,
+                             credits: resetCredits, lastResponseAt: lastUsageResponseAt)
+    }
+
+    static func usageMCPPayload(connected: Bool, fiveHour: CodexFiveHourUsage?, weekly: CodexWeeklyUsage?,
+                                credits: [CodexResetCredit]?, lastResponseAt: Date?, now: Date = Date()) -> [String: Any] {
+        func window(_ percent: Int?, resetsAt: Date?) -> Any {
+            guard let percent else { return NSNull() }
+            let used = min(max(percent, 0), 100)
+            return [
+                "used_percent": used,
+                "remaining_percent": 100 - used,
+                "resets_at": (resetsAt?.ISO8601Format() as Any?) ?? NSNull()
+            ] as [String: Any]
+        }
+        let expirations = credits?.map(\.expiresAt)
+            .filter { $0.isFinite && $0 > now.timeIntervalSince1970 }
+            .sorted()
+            .map { Date(timeIntervalSince1970: $0).ISO8601Format() }
+        return [
+            "codex_connected": connected,
+            "last_rate_limits_response_at": (lastResponseAt?.ISO8601Format() as Any?) ?? NSNull(),
+            "five_hour": window(fiveHour?.usedPercent, resetsAt: fiveHour?.resetsAt),
+            "weekly": window(weekly?.usedPercent, resetsAt: weekly?.resetsAt),
+            "reset_credits": expirations.map {
+                ["available_count": $0.count, "expires_at": $0] as [String: Any]
+            } as Any? ?? NSNull()
+        ]
     }
 
     func startTask(prompt: String, workingDirectory: String) {
@@ -481,7 +516,13 @@ final class CodexAppServerClient {
             activity = .running
             message = "Codex 작업 중"
         case .weeklyUsage:
-            let usage = Self.usage(from: object["result"] as? [String: Any])
+            let result = object["result"] as? [String: Any]
+            let usage = Self.usage(from: result)
+            let credits = Self.resetCredits(from: result)
+            if usage.fiveHour != nil || usage.weekly != nil || credits != nil {
+                lastUsageResponseAt = Date()
+            }
+            if let credits { resetCredits = credits }
             fiveHourUsage = Self.retainedUsage(existing: fiveHourUsage, refreshed: usage.fiveHour)
             weeklyUsage = Self.retainedUsage(existing: weeklyUsage, refreshed: usage.weekly)
         }
@@ -825,9 +866,11 @@ final class CodexAppServerClient {
             for windowKey in ["primary", "secondary"] {
                 guard let window = limit[windowKey] as? [String: Any],
                       let duration = number(window["windowDurationMins"]),
-                      let usedPercent = number(window["usedPercent"]) else { continue }
-                let resetsAt = number(window["resetsAt"]).map { Date(timeIntervalSince1970: $0) }
-                let roundedUsedPercent = Int(usedPercent.rounded())
+                      let usedPercent = number(window["usedPercent"]),
+                      let roundedUsedPercent = Int(exactly: usedPercent.rounded()) else { continue }
+                let resetsAt = number(window["resetsAt"]).flatMap {
+                    $0.isFinite ? Date(timeIntervalSince1970: $0) : nil
+                }
                 if duration == 300 {
                     fiveHour = CodexFiveHourUsage(usedPercent: roundedUsedPercent, resetsAt: resetsAt)
                 } else if duration == 10_080 {
@@ -836,6 +879,17 @@ final class CodexAppServerClient {
             }
         }
         return (fiveHour: fiveHour, weekly: weekly)
+    }
+
+    static func resetCredits(from result: [String: Any]?) -> [CodexResetCredit]? {
+        guard let payload = result?["rateLimitResetCredits"] as? [String: Any],
+              let credits = payload["credits"] as? [[String: Any]] else { return nil }
+        return credits.compactMap { credit in
+            guard credit["status"] as? String == "available",
+                  let id = credit["id"] as? String,
+                  let expiresAt = number(credit["expiresAt"]), expiresAt.isFinite else { return nil }
+            return CodexResetCredit(id: id, expiresAt: expiresAt)
+        }.sorted { $0.expiresAt < $1.expiresAt }
     }
 
     private static func number(_ value: Any?) -> TimeInterval? {
