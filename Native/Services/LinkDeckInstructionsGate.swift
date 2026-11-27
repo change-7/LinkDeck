@@ -21,18 +21,23 @@ final class LinkDeckInstructionsGate {
         let name = params["name"] as? String ?? ""
         var forwarded = data
         if method == "tools/call", !readers.contains(name) {
-            guard var arguments = params["arguments"] as? [String: Any],
-                  let receipt = arguments.removeValue(forKey: "instructions_receipt") as? String,
-                  receipts.remove(receipt) != nil else {
-                let text = "실행하지 않았습니다. 먼저 linkdeck_get_custom_instructions 또는 linkdeck_list_buttons로 최신 사용자 지정 지침을 읽고, 응답의 instructions_receipt를 이번 호출의 인수로 전달하세요. 확인값은 한 번만 사용할 수 있습니다. 인수가 보이지 않으면 연결 도구 목록을 새로고침하세요."
-                return (200, encode(["jsonrpc": "2.0", "id": id, "result": ["isError": true,
-                    "content": [["type": "text", "text": text]]]]))
+            var arguments = params["arguments"] as? [String: Any]
+            let receipt = arguments?.removeValue(forKey: "instructions_receipt")
+            if instructions.isEnabled {
+                guard let receipt = receipt as? String, receipts.remove(receipt) != nil else {
+                    let text = "실행하지 않았습니다. 먼저 linkdeck_get_custom_instructions 또는 linkdeck_list_buttons로 최신 사용자 지정 지침을 읽고, 응답의 instructions_receipt를 이번 호출의 인수로 전달하세요. 확인값은 한 번만 사용할 수 있습니다. 인수가 보이지 않으면 연결 도구 목록을 새로고침하세요."
+                    return (200, encode(["jsonrpc": "2.0", "id": id, "result": ["isError": true,
+                        "content": [["type": "text", "text": text]]]]))
+                }
             }
-            params["arguments"] = arguments
-            request["params"] = params
-            forwarded = encode(request)
+            if receipt != nil {
+                params["arguments"] = arguments
+                request["params"] = params
+                forwarded = encode(request)
+            }
         }
         let response = await forward(forwarded)
+        guard instructions.isEnabled, currentRevision == revision else { return response }
         guard response.status == 200,
               var object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
               var result = object["result"] as? [String: Any] else { return response }
@@ -52,7 +57,7 @@ final class LinkDeckInstructionsGate {
                 tool["description"] = "First read LinkDeck custom instructions or list buttons; pass the returned single-use instructions_receipt. " + (tool["description"] as? String ?? "")
                 return tool
             }
-        } else if method == "tools/call", readers.contains(name), currentRevision == revision,
+        } else if method == "tools/call", readers.contains(name),
                   (params["arguments"] == nil || (params["arguments"] as? [String: Any])?.isEmpty == true),
                   result["isError"] as? Bool != true,
                   var content = result["content"] as? [[String: Any]],

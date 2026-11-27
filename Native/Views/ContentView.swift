@@ -16,6 +16,11 @@ struct ContentView: View {
     @AppStorage(MainScreen.storageKey) private var selectedMainScreen: MainScreen = .smartphoneButtons
     @AppStorage(MainScreen.apiAppsPositionLockedKey) private var apiAppsPositionLocked = false
     @AppStorage(AppAppearanceMode.storageKey) private var appearanceMode = AppAppearanceMode.system.rawValue
+    @AppStorage("linkdeck.folder-sync-compact") private var folderSyncCompact = false
+    private var compact: Bool {
+        selectedMainScreen == .apiApps || (selectedMainScreen == .folderSync && folderSyncCompact)
+    }
+
     var body: some View {
         ZStack {
             if selectedMainScreen == .apiApps {
@@ -28,12 +33,23 @@ struct ContentView: View {
             }
             mainContent
         }
-        .frame(minWidth: selectedMainScreen == .apiApps ? 360 : 1100,
-               maxWidth: selectedMainScreen == .apiApps ? 420 : .infinity,
-               minHeight: selectedMainScreen == .apiApps ? 240 : 640,
-               maxHeight: selectedMainScreen == .apiApps ? 400 : .infinity)
+        .frame(minWidth: compact ? 360 : 1100,
+               maxWidth: compact ? 360 : .infinity,
+               minHeight: compact ? 300 : 640,
+               maxHeight: compact ? 300 : .infinity)
+        .toolbar {
+            if selectedMainScreen != .smartphoneButtons {
+                ToolbarItem(placement: .primaryAction) {
+                    CompactModeToolbar(selection: $selectedMainScreen, onOpenSettings: {
+                        if selectedMainScreen == .folderSync { showingFolderSyncSettings = true }
+                        else { showingCodexConnection = true }
+                    })
+                }
+            }
+        }
+        .toolbarBackground(.hidden, for: .windowToolbar)
         .background(MainWindowModeSize(
-            compact: selectedMainScreen == .apiApps,
+            compact: compact,
             translucent: selectedMainScreen == .apiApps,
             positionLocked: selectedMainScreen == .apiApps && apiAppsPositionLocked
         ))
@@ -56,6 +72,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: MacActionRunner.workflowFinishedNotification)) { notification in
             if let message = notification.object as? String { store.statusMessage = message }
         }
+        .onChange(of: selectedMainScreen) { previous, current in
+            if current == .folderSync { folderSyncCompact = previous == .apiApps }
+        }
         .onChange(of: store.smartphonePages) { _, _ in
             codex.publishRemoteState()
         }
@@ -66,7 +85,7 @@ struct ContentView: View {
             codexActivity.updateAppServerActivity(activity)
         }
         .safeAreaInset(edge: .bottom) {
-            if selectedMainScreen != .apiApps { footer }
+            if selectedMainScreen == .smartphoneButtons { footer }
         }
         .alert("손쉬운 사용 권한", isPresented: $showingPermissionAlert) {
             Button("설정 열기") { runner.requestAccessibilityPermission() }
@@ -93,6 +112,9 @@ struct ContentView: View {
     private var mainContent: some View {
         Group {
             switch selectedMainScreen {
+            case .folderSync:
+                FolderSyncWorkspaceView(store: folderSyncStore, compact: compact,
+                                        showSettings: { showingFolderSyncSettings = true })
             case .apiApps:
                 APIAppsView(store: store, selection: $selectedMainScreen,
                             onOpenSettings: { showingCodexConnection = true })
@@ -110,8 +132,8 @@ struct ContentView: View {
                     .frame(minWidth: 900, minHeight: 520)
             }
         }
-        .padding(.horizontal, selectedMainScreen == .apiApps ? 0 : 12)
-        .padding(.bottom, selectedMainScreen == .apiApps ? 0 : 6)
+        .padding(.horizontal, compact ? 0 : 12)
+        .padding(.bottom, compact ? 0 : 6)
     }
 
     private var footer: some View {

@@ -2,26 +2,6 @@ import SwiftUI
 
 struct APIAppsView: View {
     @Environment(\.colorScheme) private var colorScheme
-    private enum Layout: String, CaseIterable {
-        case list, grid, compact
-
-        var title: String {
-            switch self {
-            case .list: "리스트"
-            case .grid: "그리드"
-            case .compact: "간단한 목록"
-            }
-        }
-
-        var icon: String {
-            switch self {
-            case .list: "list.bullet"
-            case .grid: "square.grid.2x2"
-            case .compact: "line.3.horizontal"
-            }
-        }
-    }
-
     let store: LaunchpadStore
     @Binding var selection: MainScreen
     let onOpenSettings: () -> Void
@@ -31,18 +11,11 @@ struct APIAppsView: View {
     @State private var isDropTargeted = false
     @State private var dropError: String?
     @State private var lastDiscovery = Date.distantPast
-    @AppStorage("linkdeck.api-apps-layout") private var layout: Layout = .list
 
     var body: some View {
         VStack(spacing: 0) {
             appContent
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                headerControls
-            }
-        }
-        .toolbarBackground(.hidden, for: .windowToolbar)
         .contentShape(Rectangle())
         .overlay {
             if isDropTargeted {
@@ -72,70 +45,12 @@ struct APIAppsView: View {
         .onChange(of: store.smartphonePages) { lastDiscovery = .distantPast }
     }
 
-    private var headerControls: some View {
-            HStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    ForEach(Layout.allCases, id: \.self) { item in
-                        Button { layout = item } label: {
-                            Image(systemName: item.icon)
-                                .font(.system(size: 12, weight: .regular))
-                                .frame(width: 27.09, height: 20.2)
-                                .background(layout == item ? Color(white: 80 / 255) : .clear,
-                                            in: RoundedRectangle(cornerRadius: 5))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(item.title)
-                        .accessibilityAddTraits(layout == item ? .isSelected : [])
-                        .help(item.title)
-                    }
-                }
-                .foregroundStyle(Color(white: 210 / 255))
-                .background(Color(white: 25 / 255), in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(white: 56 / 255), lineWidth: 0.5))
-                HStack(spacing: 3) {
-                    screenButton(.smartphoneButtons, title: "휴대폰", icon: "iphone")
-                    screenButton(.apiApps, title: "API 앱", icon: "point.3.connected.trianglepath.dotted")
-                }
-                .padding(.leading, 6.5)
-                Button(action: onOpenSettings) { Image(systemName: "gearshape") }
-                    .font(.system(size: 16))
-                    .foregroundStyle(Color(white: 148 / 255))
-                    .frame(width: 18, height: 24)
-                    .padding(.leading, 23.8)
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel("설정")
-            }
-            .padding(.trailing, 6)
-            .frame(height: 24)
-    }
-
     private var appContent: some View {
             Group {
             if apps.isEmpty {
                 Text("API 앱을 여기에 드래그하세요.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if layout == .grid {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 100))], spacing: 10) {
-                        ForEach(apps) { app in
-                            let status = statuses[app.id] ?? .idle
-                            VStack(spacing: 8) {
-                                Image(nsImage: NSWorkspace.shared.icon(forFile: app.appURL.path))
-                                    .resizable().frame(width: 36, height: 36)
-                                Text(app.manifest.name)
-                                    .font(.callout).lineLimit(1)
-                                statusLabel(status, approved: app.approved)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .padding(.horizontal, 6)
-                            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
-                            .contextMenu { approvalMenu(for: app) }
-                        }
-                    }
-                    .padding(12)
-                }
             } else {
                 ScrollView {
                 LazyVStack(spacing: 0) {
@@ -143,16 +58,16 @@ struct APIAppsView: View {
                     let status = statuses[app.id] ?? .idle
                     HStack(spacing: 11) {
                         Image(nsImage: NSWorkspace.shared.icon(forFile: app.appURL.path))
-                            .resizable().frame(width: layout == .compact ? 16 : 28, height: layout == .compact ? 16 : 28)
+                            .resizable().frame(width: 16, height: 16)
                         Text(app.manifest.name)
                             .font(.custom("Helvetica", size: 14))
                             .foregroundStyle(colorScheme == .dark ? Color(white: 215 / 255) : .primary)
                             .lineLimit(1)
                         Spacer(minLength: 4)
-                        statusLabel(status, approved: app.approved, compact: true)
+                        statusLabel(status, approved: app.approved)
                     }
                     .padding(.horizontal, 9)
-                    .frame(height: layout == .compact ? 28 : 44)
+                    .frame(height: 28)
                     .overlay(alignment: .top) {
                         if app.id != apps.first?.id {
                             Rectangle().fill(colorScheme == .dark ? Color(white: 55 / 255) : Color.primary.opacity(0.15))
@@ -226,23 +141,6 @@ struct APIAppsView: View {
     }
 
     @ViewBuilder
-    private func screenButton(_ screen: MainScreen, title: String, icon: String) -> some View {
-        let selected = selection == screen
-        Button { selection = screen } label: {
-            Image(systemName: icon)
-                .font(.system(size: 10))
-                .frame(width: 21.13, height: 19.62)
-                .foregroundStyle(selected ? Color.orange : Color(white: 180 / 255))
-                .background(selected ? Color(red: 51 / 255, green: 33 / 255, blue: 17 / 255) : Color(white: 28 / 255),
-                            in: RoundedRectangle(cornerRadius: 7.5))
-                .overlay(RoundedRectangle(cornerRadius: 7.5).stroke(selected ? Color.orange : Color(white: 64 / 255), lineWidth: 0.75))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(title)
-        .help(title)
-    }
-
-    @ViewBuilder
     private func approvalMenu(for app: RegisteredAppAPI) -> some View {
         if !app.approved {
             Button("연결 허용") {
@@ -260,11 +158,11 @@ struct APIAppsView: View {
         .help("버튼 등록은 유지합니다. 다시 추가하려면 앱을 API 목록에 드래그하세요.")
     }
 
-    private func statusLabel(_ status: AppAPIMCPBridge.ConnectionStatus, approved: Bool, compact: Bool = false) -> some View {
+    private func statusLabel(_ status: AppAPIMCPBridge.ConnectionStatus, approved: Bool) -> some View {
         HStack(spacing: 4.5) {
             APIActivityIndicator(status: status, approved: approved)
             Text(status.rawValue)
-                .font(compact ? .custom("AppleSDGothicNeo-Regular", size: 11) : .callout)
+                .font(.custom("AppleSDGothicNeo-Regular", size: 11))
                 .foregroundStyle(colorScheme == .dark ? Color(white: 155 / 255) : .secondary)
         }
         .fixedSize()
@@ -376,9 +274,9 @@ struct MainWindowModeSize: NSViewRepresentable {
             if compact {
                 expandedFrame = window.frame
                 window.toolbarStyle = .unifiedCompact
-                window.contentMinSize = NSSize(width: 360, height: 240)
-                window.contentMaxSize = NSSize(width: 420, height: 400)
-                window.setContentSize(NSSize(width: 420, height: 400))
+                window.contentMinSize = NSSize(width: 360, height: 300)
+                window.contentMaxSize = NSSize(width: 360, height: 300)
+                window.setContentSize(NSSize(width: 360, height: 300))
             } else {
                 window.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
                 window.contentMinSize = NSSize(width: 1100, height: 640)
@@ -387,4 +285,47 @@ struct MainWindowModeSize: NSViewRepresentable {
             appliedCompact = compact
         }
     }
+}
+
+struct CompactModeToolbar: View {
+    @Binding var selection: MainScreen
+    let onOpenSettings: () -> Void
+    var body: some View {
+            HStack(spacing: 0) {
+                HStack(spacing: 3) {
+                    screenButton(.smartphoneButtons, title: "휴대폰", icon: "iphone")
+                        .padding(.trailing, 14)
+                    screenButton(.apiApps, title: "API 앱", icon: "point.3.connected.trianglepath.dotted")
+                    screenButton(.folderSync, title: "폴더 싱크", icon: "arrow.triangle.2.circlepath")
+                }
+                .padding(.leading, 6.5)
+                Button(action: onOpenSettings) { Image(systemName: "gearshape") }
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color(white: 148 / 255))
+                    .frame(width: 18, height: 24)
+                    .padding(.leading, 23.8)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("설정")
+            }
+            .padding(.trailing, 6)
+            .frame(height: 24)
+    }
+
+    @ViewBuilder
+    private func screenButton(_ screen: MainScreen, title: String, icon: String) -> some View {
+        let selected = selection == screen
+        Button { selection = screen } label: {
+            Image(systemName: icon)
+                .font(.system(size: 10))
+                .frame(width: 21.13, height: 19.62)
+                .foregroundStyle(selected ? Color.orange : Color(white: 180 / 255))
+                .background(selected ? Color(red: 51 / 255, green: 33 / 255, blue: 17 / 255) : Color(white: 28 / 255),
+                            in: RoundedRectangle(cornerRadius: 7.5))
+                .overlay(RoundedRectangle(cornerRadius: 7.5).stroke(selected ? Color.orange : Color(white: 64 / 255), lineWidth: 0.75))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .help(title)
+    }
+
 }

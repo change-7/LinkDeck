@@ -5,14 +5,14 @@ import XCTest
 @MainActor
 final class ManualMonitorScheduler {
     private let cancellationState = ManualMonitorCancellationState()
-    private var tick: (@MainActor @Sendable () -> Void)?
+    private var tick: (@MainActor @Sendable (CodexDesktopTaskScan) -> Void)?
 
     var isCancelled: Bool { cancellationState.isCancelled }
     private(set) var scheduleCallCount = 0
 
     func schedule(
         _: URL,
-        _ tick: @escaping @MainActor @Sendable () -> Void
+        _ tick: @escaping @MainActor @Sendable (CodexDesktopTaskScan) -> Void
     ) -> CodexDesktopTaskMonitorCancellation {
         scheduleCallCount += 1
         self.tick = tick
@@ -23,7 +23,7 @@ final class ManualMonitorScheduler {
     }
 
     func fire() {
-        if !isCancelled { tick?() }
+        if !isCancelled { tick?(.all) }
     }
 }
 

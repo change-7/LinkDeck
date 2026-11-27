@@ -184,25 +184,23 @@ final class CodexAppServerClient {
 
     private func startDesktopApprovalMonitorLoop() {
         guard desktopApprovalMonitorTask == nil else { return }
+        let monitor = CodexDesktopApprovalIPC.Monitor()
         desktopApprovalMonitorTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                let result: (approvals: [CodexDesktopPendingApproval]?, error: String?) = await Task.detached(priority: .utility) {
-                    do {
-                        return (approvals: Optional(try CodexDesktopApprovalIPC.pendingApprovals()), error: nil)
-                    } catch {
-                        return (approvals: nil, error: Optional(error.localizedDescription))
-                    }
-                }.value
-                guard !Task.isCancelled, let self else { return }
-                guard let approvals = result.approvals else {
-                    let error = result.error ?? "unknown error"
-                    if self.desktopApprovalMonitorLastError != error {
-                        NSLog("LinkDeck Codex approval monitor failed: %@", error)
-                        self.desktopApprovalMonitorLastError = error
+                let approvals: [CodexDesktopPendingApproval]
+                do {
+                    approvals = try await monitor.pendingApprovals()
+                } catch {
+                    guard !Task.isCancelled, let self else { return }
+                    let message = error.localizedDescription
+                    if self.desktopApprovalMonitorLastError != message {
+                        NSLog("LinkDeck Codex approval monitor failed: %@", message)
+                        self.desktopApprovalMonitorLastError = message
                     }
                     try? await Task.sleep(for: .seconds(self.desktopApprovalPollingInterval))
                     continue
                 }
+                guard !Task.isCancelled, let self else { return }
                 self.desktopApprovalMonitorLastError = nil
                 if self.desktopPendingApprovals != approvals {
                     let newRequestArrived = approvals.contains { next in

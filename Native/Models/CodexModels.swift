@@ -81,15 +81,6 @@ enum CodexEventReducer {
     }
 }
 
-enum CodexMotionReentryPolicy {
-    static func shouldRestart(for activity: CodexActivity) -> Bool {
-        switch activity {
-        case .connecting, .running, .waitingForApproval: true
-        case .idle, .completed, .failed: false
-        }
-    }
-}
-
 struct DesktopCodexTaskID: Hashable, Sendable {
     let transcriptID: String
     let turnID: String
@@ -399,61 +390,6 @@ struct CodexFiveHourUsage: Equatable, Sendable {
     var resetsAt: Date?
 }
 
-enum CodexWeeklyUsageGrid {
-    private static let digitPixels: [Character: [String]] = [
-        "0": ["111", "101", "101", "101", "111"],
-        "1": ["010", "110", "010", "010", "111"],
-        "2": ["111", "001", "111", "100", "111"],
-        "3": ["111", "001", "111", "001", "111"],
-        "4": ["101", "101", "111", "001", "001"],
-        "5": ["111", "100", "111", "001", "111"],
-        "6": ["111", "100", "111", "101", "111"],
-        "7": ["111", "001", "010", "010", "010"],
-        "8": ["111", "101", "111", "101", "111"],
-        "9": ["111", "101", "111", "001", "111"]
-    ]
-
-    static func remainingCellCount(usedPercent: Int) -> Int {
-        let clampedUsedPercent = min(max(usedPercent, 0), 100)
-        return Int((Double(100 - clampedUsedPercent) * 64 / 100).rounded(.up))
-    }
-
-    static func isRemainingCellActive(index: Int, remainingCellCount: Int) -> Bool {
-        guard (0..<64).contains(index) else { return false }
-        return index >= 64 - min(max(remainingCellCount, 0), 64)
-    }
-
-    static func numericPixels(remainingPercent: Int) -> [Bool] {
-        let normalizedPercent = min(max(remainingPercent, 0), 100)
-        let text: String
-        switch normalizedPercent {
-        case 0: text = "0"
-        case 100: text = "00"
-        default: text = String(format: "%02d", normalizedPercent)
-        }
-        var pixels = Array(repeating: false, count: 64)
-        for (digitIndex, digit) in text.enumerated() {
-            guard let rows = digitPixels[digit] else { continue }
-            let startColumn = digitIndex * 4
-            for (row, pattern) in rows.enumerated() {
-                for (column, character) in pattern.enumerated() where character == "1" {
-                    pixels[(row + 1) * 8 + startColumn + column] = true
-                }
-            }
-        }
-        return pixels
-    }
-
-    static func color(forUsedPercent usedPercent: Int) -> PadColor {
-        switch min(max(usedPercent, 0), 100) {
-        case 0...49: .brightGreen
-        case 50...74: .amber
-        case 75...89: .orange
-        default: .brightRed
-        }
-    }
-}
-
 enum CodexWeeklyUsageDisplayStyle: String, CaseIterable, Codable, Identifiable {
     case level
     case number
@@ -601,27 +537,6 @@ struct LaunchpadIdleScreensaverSettings: Codable, Hashable {
     }
 }
 
-enum LaunchpadIdleScreensaverPolicy {
-    static func shouldPlay(
-        settings: LaunchpadIdleScreensaverSettings,
-        hasPreset: Bool,
-        codexIsBusy: Bool,
-        launchpadAndCodexIdleSeconds: TimeInterval,
-        macIdleSeconds: TimeInterval?
-    ) -> Bool {
-        guard settings.isEnabled, hasPreset, !codexIsBusy else { return false }
-
-        let idleSeconds: TimeInterval
-        switch settings.inputScope {
-        case .launchpadAndCodex:
-            idleSeconds = launchpadAndCodexIdleSeconds
-        case .macAndCodex:
-            idleSeconds = min(launchpadAndCodexIdleSeconds, macIdleSeconds ?? 0)
-        }
-        return idleSeconds >= TimeInterval(settings.clampedDelaySeconds)
-    }
-}
-
 struct CodexMotionDisplaySettings: Codable, Hashable {
     var scope: CodexMotionDisplayScope = .allPages
     var pageID: UUID?
@@ -660,10 +575,6 @@ struct CodexMotionDisplaySettings: Codable, Hashable {
         case .allPages: true
         case .specificPage: self.pageID == pageID
         }
-    }
-
-    func shouldPreservePadLEDsDuringMotion(for activity: CodexActivity) -> Bool {
-        preservesPadLEDsDuringMotion
     }
 
     static func restored(
@@ -715,17 +626,6 @@ struct CodexMotionDisplaySettings: Codable, Hashable {
         launchpadLEDBubbleOriginY = try container.decodeIfPresent(Double.self, forKey: .launchpadLEDBubbleOriginY)
         idleScreensaver = try container.decodeIfPresent(LaunchpadIdleScreensaverSettings.self, forKey: .idleScreensaver) ?? LaunchpadIdleScreensaverSettings()
         weeklyUsageDisplay = try container.decodeIfPresent(CodexWeeklyUsageDisplaySettings.self, forKey: .weeklyUsageDisplay) ?? CodexWeeklyUsageDisplaySettings()
-    }
-}
-
-enum CodexMotionRuleControlPlacement: Equatable {
-    case mainRuleRow
-    case hidden
-}
-
-enum CodexMotionRuleLayout {
-    static func holdTogglePlacement(for activity: CodexActivity) -> CodexMotionRuleControlPlacement {
-        activity == .running ? .mainRuleRow : .hidden
     }
 }
 

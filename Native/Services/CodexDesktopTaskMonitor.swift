@@ -28,22 +28,58 @@ final class CodexDesktopTaskMonitorCancellation: @unchecked Sendable {
     }
 }
 
+enum CodexDesktopTaskScan: Sendable {
+    case all
+    case paths(Set<URL>, includeActive: Bool = false)
+
+    func merging(_ other: Self) -> Self {
+        if case let .paths(current, currentIncludesActive) = self,
+           case let .paths(incoming, incomingIncludesActive) = other {
+            return .paths(current.union(incoming), includeActive: currentIncludesActive || incomingIncludesActive)
+        }
+        return .all
+    }
+}
+
 private final class CodexDesktopTaskMonitorFSEventWatcher: @unchecked Sendable {
-    private static let callback: FSEventStreamCallback = { _, info, eventCount, _, _, _ in
-        guard eventCount > 0, let info else { return }
+    private static let callback: FSEventStreamCallback = { _, info, count, rawPaths, flags, _ in
+        guard count > 0, let info else { return }
         let watcher = Unmanaged<CodexDesktopTaskMonitorFSEventWatcher>
             .fromOpaque(info)
             .takeUnretainedValue()
-        // Events with drop or root-change flags need the same whole-root scan
-        // as ordinary file events, so no event-specific state is retained here.
-        watcher.requestScan()
+        let paths = rawPaths.assumingMemoryBound(to: UnsafePointer<CChar>.self)
+        let recoveryFlags = UInt32(kFSEventStreamEventFlagMustScanSubDirs
+            | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped
+            | kFSEventStreamEventFlagEventIdsWrapped | kFSEventStreamEventFlagRootChanged
+            | kFSEventStreamEventFlagMount | kFSEventStreamEventFlagUnmount)
+        let directoryChanges = UInt32(kFSEventStreamEventFlagItemCreated
+            | kFSEventStreamEventFlagItemRemoved | kFSEventStreamEventFlagItemRenamed)
+        var changed: Set<URL> = []
+        for index in 0..<count {
+            let flag = flags[index]
+            if flag & recoveryFlags != 0 ||
+                (flag & UInt32(kFSEventStreamEventFlagItemIsDir) != 0 && flag & directoryChanges != 0) {
+                watcher.requestScan(.all)
+                return
+            }
+            let url = URL(fileURLWithPath: String(cString: paths[index])).standardizedFileURL
+            if url.pathExtension == "jsonl", let relativePath = watcher.relativePath(for: url) {
+                changed.insert(watcher.rootURL.appendingPathComponent(relativePath))
+            }
+        }
+        if !changed.isEmpty { watcher.requestScan(.paths(changed)) }
     }
 
-    private let tick: @MainActor @Sendable () -> Void
+    private let tick: @MainActor @Sendable (CodexDesktopTaskScan) -> Void
+    private let rootURL: URL
+    private let watchedRootPrefix: String
     private var stream: FSEventStreamRef?
 
-    init?(rootURL: URL, tick: @escaping @MainActor @Sendable () -> Void) {
+    init?(rootURL: URL, tick: @escaping @MainActor @Sendable (CodexDesktopTaskScan) -> Void) {
         self.tick = tick
+        self.rootURL = rootURL
+        let watchedRoot = rootURL.resolvingSymlinksInPath()
+        watchedRootPrefix = watchedRoot.path + "/"
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
@@ -55,7 +91,7 @@ private final class CodexDesktopTaskMonitorFSEventWatcher: @unchecked Sendable {
             kCFAllocatorDefault,
             Self.callback,
             &context,
-            [rootURL.path] as CFArray,
+            [watchedRoot.path] as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.1,
             FSEventStreamCreateFlags(
@@ -86,8 +122,18 @@ private final class CodexDesktopTaskMonitorFSEventWatcher: @unchecked Sendable {
         cancel()
     }
 
-    private func requestScan() {
-        Task { @MainActor [tick] in tick() }
+    private func relativePath(for url: URL) -> String? {
+        let path = url.path
+        if path.hasPrefix(watchedRootPrefix) {
+            return String(path.dropFirst(watchedRootPrefix.count))
+        }
+        let logicalRootPrefix = rootURL.path + "/"
+        guard path.hasPrefix(logicalRootPrefix) else { return nil }
+        return String(path.dropFirst(logicalRootPrefix.count))
+    }
+
+    private func requestScan(_ scan: CodexDesktopTaskScan) {
+        Task { @MainActor [tick] in tick(scan) }
     }
 }
 
@@ -150,6 +196,7 @@ private final class CodexDesktopTaskMonitorWorker: @unchecked Sendable {
     private let discoverTranscripts: Discovery
     private let onRead: ReadObserver
     private var transcripts: [URL: TranscriptState] = [:]
+    private var activeTranscriptURLs: Set<URL> = []
     private var isInitialDiscovery = true
 
     init(sessionsRootURL: URL, discoverTranscripts: @escaping Discovery, onRead: @escaping ReadObserver) {
@@ -161,18 +208,43 @@ private final class CodexDesktopTaskMonitorWorker: @unchecked Sendable {
     func start(deliver: @escaping @Sendable ([Output]) -> Void) {
         queue.async { [self] in
             transcripts.removeAll()
+            activeTranscriptURLs.removeAll()
             isInitialDiscovery = true
             deliver(scan())
             isInitialDiscovery = false
         }
     }
 
-    func requestScan(deliver: @escaping @Sendable ([Output]) -> Void) {
-        queue.async { [self] in deliver(scan()) }
+    func requestScan(_ scope: CodexDesktopTaskScan, deliver: @escaping @Sendable ([Output]) -> Void) {
+        queue.async { [self] in
+            switch scope {
+            case .all: deliver(scan())
+            case let .paths(paths, includeActive):
+                deliver(scan(includeActive ? paths.union(activeTranscriptURLs) : paths))
+            }
+        }
+    }
+
+    private func scan(_ paths: Set<URL>) -> [Output] {
+        var outputs: [Output] = []
+        let rootPrefix = sessionsRootURL.path + "/"
+        for url in paths.sorted(by: { $0.path < $1.path }) where url.path.hasPrefix(rootPrefix) {
+            let relativePath = url.path.dropFirst(rootPrefix.count)
+            guard !relativePath.split(separator: "/").contains(where: { $0.hasPrefix(".") }) else { continue }
+            if (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                inspect(url, outputs: &outputs)
+            } else {
+                abandonTranscript(at: url, outputs: &outputs)
+            }
+        }
+        return outputs
     }
 
     func reset() {
-        queue.async { [self] in transcripts.removeAll() }
+        queue.async { [self] in
+            transcripts.removeAll()
+            activeTranscriptURLs.removeAll()
+        }
     }
 
     func waitUntilIdle() async {
@@ -209,6 +281,14 @@ private final class CodexDesktopTaskMonitorWorker: @unchecked Sendable {
     }
 
     private func inspect(_ url: URL, outputs: inout [Output]) {
+        defer {
+            if let state = transcripts[url], !state.parser.activeTaskIDs.isEmpty {
+                activeTranscriptURLs.insert(url)
+            } else {
+                activeTranscriptURLs.remove(url)
+            }
+        }
+
         let attributes: [FileAttributeKey: Any]
         do {
             attributes = try FileManager.default.attributesOfItem(atPath: url.path)
@@ -396,6 +476,7 @@ private final class CodexDesktopTaskMonitorWorker: @unchecked Sendable {
     }
 
     private func abandonTranscript(at url: URL, outputs: inout [Output]) {
+        activeTranscriptURLs.remove(url)
         guard let state = transcripts.removeValue(forKey: url) else { return }
         publishTerminalEvents(for: state.parser, outputs: &outputs)
     }
@@ -417,7 +498,7 @@ private final class CodexDesktopTaskMonitorWorker: @unchecked Sendable {
 @MainActor
 final class CodexDesktopTaskMonitor {
     typealias Discovery = @Sendable (URL) throws -> [URL]
-    typealias Schedule = @MainActor @Sendable (URL, @escaping @MainActor @Sendable () -> Void) -> CodexDesktopTaskMonitorCancellation
+    typealias Schedule = @MainActor @Sendable (URL, @escaping @MainActor @Sendable (CodexDesktopTaskScan) -> Void) -> CodexDesktopTaskMonitorCancellation
     typealias ReadObserver = @Sendable (UInt64, Int) -> Void
 
     nonisolated static let maximumReadByteCount = 64 * 1_024
@@ -432,6 +513,8 @@ final class CodexDesktopTaskMonitor {
     private var activeDesktopTaskIDs: Set<DesktopCodexTaskID> = []
     private var isRunning = false
     private var generation = 0
+    private var scanInProgress = false
+    private var pendingScan: CodexDesktopTaskScan?
 
     init(
         sessionsRootURL: URL,
@@ -458,8 +541,12 @@ final class CodexDesktopTaskMonitor {
         isRunning = true
         generation += 1
         let activeGeneration = generation
+        scanInProgress = true
         worker.start(deliver: delivery(for: activeGeneration))
-        scheduledScan = schedule(sessionsRootURL) { [weak self] in self?.requestScan() }
+        scheduledScan = schedule(sessionsRootURL) { [weak self] scan in
+            guard self?.generation == activeGeneration else { return }
+            self?.requestScan(scan)
+        }
     }
 
     func stop() {
@@ -471,16 +558,30 @@ final class CodexDesktopTaskMonitor {
         activePollingTimer?.cancel()
         activePollingTimer = nil
         activeDesktopTaskIDs.removeAll()
+        scanInProgress = false
+        pendingScan = nil
         worker.reset()
     }
 
-    func waitUntilIdleForTesting() async {
-        await worker.waitUntilIdle()
+    func scanActiveTranscripts() {
+        guard !activeDesktopTaskIDs.isEmpty else { return }
+        requestScan(.paths([], includeActive: true))
     }
 
-    private func requestScan() {
+    func waitUntilIdleForTesting() async {
+        repeat {
+            await worker.waitUntilIdle()
+        } while scanInProgress
+    }
+
+    private func requestScan(_ scan: CodexDesktopTaskScan) {
         guard isRunning else { return }
-        worker.requestScan(deliver: delivery(for: generation))
+        if scanInProgress {
+            pendingScan = pendingScan?.merging(scan) ?? scan
+            return
+        }
+        scanInProgress = true
+        worker.requestScan(scan, deliver: delivery(for: generation))
     }
 
     private func delivery(for activeGeneration: Int) -> @Sendable ([CodexDesktopTaskMonitorWorker.Output]) -> Void {
@@ -488,12 +589,19 @@ final class CodexDesktopTaskMonitor {
             DispatchQueue.main.async {
                 guard let self, self.isRunning, self.generation == activeGeneration else { return }
                 for output in outputs {
+                    guard self.generation == activeGeneration else { return }
                     switch output {
                     case let .events(events):
                         let reconciledEvents = self.updateActiveDesktopTasks(with: events)
                         self.onEvents(reconciledEvents)
                     case let .diagnostic(diagnostic): self.onDiagnostic(diagnostic)
                     }
+                }
+                guard self.generation == activeGeneration else { return }
+                self.scanInProgress = false
+                if let pendingScan = self.pendingScan {
+                    self.pendingScan = nil
+                    self.requestScan(pendingScan)
                 }
             }
         }
@@ -529,8 +637,8 @@ final class CodexDesktopTaskMonitor {
             activePollingTimer?.cancel()
             activePollingTimer = nil
         } else if activePollingTimer == nil {
-            activePollingTimer = CodexDesktopTaskMonitorPollingTimer(interval: 1) { [weak self] in
-                self?.requestScan()
+            activePollingTimer = CodexDesktopTaskMonitorPollingTimer(interval: 0.2) { [weak self] in
+                self?.scanActiveTranscripts()
             }
         }
         return reconciledEvents
@@ -564,11 +672,10 @@ final class CodexDesktopTaskMonitor {
     @MainActor
     private static func scheduleDefaultScan(
         watching rootURL: URL,
-        _ tick: @escaping @MainActor @Sendable () -> Void
+        _ tick: @escaping @MainActor @Sendable (CodexDesktopTaskScan) -> Void
     ) -> CodexDesktopTaskMonitorCancellation {
         let watcher = CodexDesktopTaskMonitorFSEventWatcher(rootURL: rootURL, tick: tick)
-        // FSEvents is an optimization, not the source of truth. Keep a small
-        let pollingTimer = CodexDesktopTaskMonitorPollingTimer(interval: watcher == nil ? 1 : 15, tick: tick)
+        let pollingTimer = CodexDesktopTaskMonitorPollingTimer(interval: watcher == nil ? 1 : 15) { tick(.all) }
         return CodexDesktopTaskMonitorCancellation {
             watcher?.cancel()
             pollingTimer.cancel()

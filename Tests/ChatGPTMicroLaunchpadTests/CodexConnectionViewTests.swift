@@ -9,8 +9,8 @@ final class CodexConnectionViewTests: XCTestCase {
         ])
     }
 
-    func testMainScreens_includePhoneButtonsAndAPIAppsOnly() {
-        XCTAssertEqual(MainScreen.allCases, [.smartphoneButtons, .apiApps])
+    func testMainScreens_includePhoneButtonsAPIAppsAndFolderSync() {
+        XCTAssertEqual(MainScreen.allCases, [.smartphoneButtons, .apiApps, .folderSync])
         XCTAssertNil(MainScreen(rawValue: "launchpadMini"))
     }
 

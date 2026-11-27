@@ -24,9 +24,11 @@ extension DesktopCodexTaskMonitorTests {
         let idleScan = expectation(description: "no fast scan while idle")
         idleScan.isInverted = true
         let idle = LockedTestValue(false)
+        let discoveryCount = LockedTestValue(0)
         let monitor = CodexDesktopTaskMonitor(
             sessionsRootURL: fixture.root,
             discoverTranscripts: { _ in
+                discoveryCount.update { $0 += 1 }
                 if idle.get() { idleScan.fulfill() }
                 return [transcript]
             },
@@ -51,5 +53,6 @@ extension DesktopCodexTaskMonitorTests {
         await fulfillment(of: [allCompleted], timeout: 2)
         idle.update { $0 = true }
         await fulfillment(of: [idleScan], timeout: 1.3)
+        XCTAssertEqual(discoveryCount.get(), 1)
     }
 }

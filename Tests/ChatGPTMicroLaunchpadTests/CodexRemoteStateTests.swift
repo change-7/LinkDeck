@@ -568,6 +568,72 @@ final class CodexRemoteStateTests: XCTestCase {
         XCTAssertFalse(approvals[1].canRespond)
     }
 
+    func testCodexDesktopIPC_reportsStructuredQuestionsWithoutApprovalButtons() throws {
+        let requests: CodexIPCJSONValue = .array([.object([
+            "method": .string("item/tool/requestUserInput"),
+            "id": .integer(8),
+            "params": .object(["questions": .array([
+                .object(["question": .string("어느 브랜치를 사용할까요?")]),
+                .object(["question": .string("테스트도 실행할까요?")])
+            ])])
+        ])])
+
+        let request = try XCTUnwrap(CodexDesktopApprovalIPC.approvals(in: requests, conversationID: "thread-3").first)
+        XCTAssertEqual(request.title, "Codex 답변 필요")
+        XCTAssertEqual(request.detail, "어느 브랜치를 사용할까요?\n테스트도 실행할까요?")
+        XCTAssertFalse(request.canRespond)
+        XCTAssertNil(CodexDesktopApprovalIPC.route(for: request, decision: "accept"))
+    }
+
+    func testCodexDesktopIPC_reportsOnlyActiveAsyncQuestions() throws {
+        let question: CodexIPCJSONValue = .object([
+            "type": .string("agentMessage"),
+            "id": .string("question-1"),
+            "delivery": .string("async"),
+            "questions": .array([.object(["title": .string("어느 쪽인가요?")])])
+        ])
+        let turns: [CodexIPCJSONValue] = [
+            .object(["status": .string("completed"), "items": .array([question])]),
+            .object(["status": .string("inProgress"), "items": .array([question])]),
+            .object(["status": .string("inProgress"), "items": .array([
+                question, .object(["type": .string("userMessage")])
+            ])])
+        ]
+        let questions = CodexDesktopApprovalIPC.asyncQuestions(in: turns, conversationID: "thread-3")
+        let request = try XCTUnwrap(questions.first)
+        XCTAssertEqual(questions.count, 1)
+        XCTAssertEqual(request.title, "Codex 답변 필요")
+        XCTAssertEqual(request.detail, "어느 쪽인가요?")
+        XCTAssertFalse(request.canRespond)
+    }
+
+    func testCodexDesktopIPC_matchesLoggedRepliesToTheirQuestionIDs() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: url) }
+        let replies = [
+            ["questionItemId": "[\"request_user_input_async\",\"question-1\",0]", "answer": "First"],
+            ["questionItemId": "[\"request_user_input_async\",\"different-question\",0]", "answer": "Second"]
+        ]
+        let data = try JSONSerialization.data(withJSONObject: replies)
+        let text = "<send_user_message_question_reply>\n" + String(decoding: data, as: UTF8.self)
+            + "\n</send_user_message_question_reply>\n"
+        let record: [String: Any] = [
+            "type": "event_msg",
+            "payload": ["type": "item_completed", "item": [
+                "type": "UserMessage", "content": [["type": "text", "text": text]]
+            ]]
+        ]
+        var transcript = try JSONSerialization.data(withJSONObject: record)
+        transcript.append(0x0A)
+        transcript.append(Data(repeating: 0x0A, count: 70_000))
+        try transcript.write(to: url)
+
+        XCTAssertEqual(
+            CodexDesktopApprovalIPC.answeredAsyncQuestionIDs(in: url, pendingIDs: ["question-1", "question-2"]),
+            ["question-1"]
+        )
+    }
+
     @MainActor
     func testAppServerElicitation_isRecognizedForPhoneAlertsWithoutUnsafeAutoResponse() {
         let method = "mcpServer/elicitation/request"

@@ -88,6 +88,35 @@ final class CodexActivityIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testAppServerCompletionChecksActiveTranscriptWithoutWatcherNotification() async throws {
+        let fixture = try MonitorFixture()
+        let controller = makeController(fixture: fixture)
+        var completedTurnIDs: [String] = []
+        controller.onTaskCompletion = { completedTurnIDs.append($0.turnID) }
+        controller.startDesktopMonitoring()
+        defer { controller.stopDesktopMonitoring() }
+        await fixture.waitForMonitorToBecomeIdle()
+        let transcript = try fixture.writeTranscript(
+            relativePath: "2026/08/01/terminal-signal.jsonl",
+            contents: #"{"type":"session_meta","payload":{"id":"stable-session-id","originator":"Codex Desktop","thread_source":"user"}}"#
+                + "\n" + taskStarted(turnID: "desktop")
+        )
+        fixture.scheduler.fire()
+        await fixture.waitForMonitorToBecomeIdle()
+        XCTAssertEqual(controller.activity, .running)
+
+        try fixture.append(taskCompleted(turnID: "desktop"), to: transcript)
+        controller.updateAppServerActivity(.completed)
+        await fixture.waitForMonitorToBecomeIdle()
+        XCTAssertEqual(controller.activity, .completed)
+        XCTAssertEqual(completedTurnIDs, ["desktop"])
+
+        fixture.scheduler.fire()
+        await fixture.waitForMonitorToBecomeIdle()
+        XCTAssertEqual(completedTurnIDs, ["desktop"])
+    }
+
+    @MainActor
     func testMultipleDesktopSessions_whenOneCompletes_emitsCompletionAttentionWhileAnotherRuns() async throws {
         // Given
         let fixture = try MonitorFixture()

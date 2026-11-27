@@ -182,3 +182,13 @@ struct GitSyncEditor: View {
         }
     }
 }
+
+private extension GitSyncDirection {
+    var uiTitle: String {
+        switch self {
+        case .pull: "Pull · 원격 → 로컬"
+        case .push: "Push · 로컬 → 원격"
+        case .bidirectional: "양방향"
+        }
+    }
+}

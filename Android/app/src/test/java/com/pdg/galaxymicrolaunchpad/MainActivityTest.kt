@@ -441,11 +441,15 @@ class MainActivityTest {
 
     @Test
     fun horizontalSwipe_repeatedSameDirectionContinuesCycling() {
-        var pageIndex = 0
-        repeat(4) {
-            pageIndex = horizontalSwipeTarget(currentIndex = pageIndex, pageCount = 2, dragDistance = -40f)
+        for ((drag, expectedDirection) in listOf(-40f to 1, 40f to -1)) {
+            var pageIndex = 0
+            repeat(4) {
+                val nextIndex = horizontalSwipeTarget(currentIndex = pageIndex, pageCount = 2, dragDistance = drag)
+                assertEquals(expectedDirection, pageTransitionDirection(pageIndex, nextIndex, 2, horizontalSwipeTransitionDirection(drag)))
+                pageIndex = nextIndex
+            }
+            assertEquals(0, pageIndex)
         }
-        assertEquals(0, pageIndex)
     }
 
     @Test

@@ -93,23 +93,12 @@ final class FolderPairStore {
         selectedPairID = pairID
         saveSelectedPairID()
     }
-    func refreshSelectedPair() {
-        selectedPairID = Self.loadSelectedPairID()
-    }
-
     func sync(_ pair: FolderPair) async {
         await sync(
             pair,
             waitsForStableInput: appSettings.waitsForFileOperations,
             appliesRealtimeAction: false
         )
-    }
-
-    func setGitSyncLink(_ link: GitSyncLink?, for pair: FolderPair) {
-        guard state(for: pair) != .syncing,
-              let index = pairs.firstIndex(where: { $0.id == pair.id }) else { return }
-        pairs[index].gitSyncLink = link
-        savePairs()
     }
 
     private func runGitLink(for pair: FolderPair, position: GitSyncLinkPosition) async throws {
@@ -250,18 +239,6 @@ final class FolderPairStore {
         configureGitHubWatcher(for: pairs[index])
     }
 
-    func setIncludeHiddenFiles(_ isIncluded: Bool, for pair: FolderPair) {
-        updateOptions(for: pair) { $0.includeHiddenFiles = isIncluded }
-    }
-
-    func setDeleteExtraFiles(_ isEnabled: Bool, for pair: FolderPair) {
-        updateOptions(for: pair) { $0.deleteExtraFiles = isEnabled }
-    }
-
-    func setMaxFileSize(_ maxFileSize: MaxFileSize, for pair: FolderPair) {
-        updateOptions(for: pair) { $0.maxFileSize = maxFileSize }
-    }
-
     func setOptions(_ options: SyncOptions, for pair: FolderPair) {
         guard let index = pairs.firstIndex(where: { $0.id == pair.id }) else { return }
         pairs[index].options = options
@@ -360,26 +337,6 @@ final class FolderPairStore {
         }
         if value.hasSuffix(".git") { value = String(value.dropLast(4)) }
         return value
-    }
-
-    func syncLocalWorkspaceToGitHubForMCP(_ pairID: UUID) async -> SyncState? {
-        guard let pair = pairs.first(where: { $0.id == pairID }),
-              let configuration = pair.githubSync,
-              isGitHubPushDirection(for: pair, configuration: configuration) else {
-            return nil
-        }
-        await syncToGitHub(pair)
-        return state(for: pair)
-    }
-
-    func syncGitHubToLocalForMCP(_ pairID: UUID) async -> SyncState? {
-        guard let pair = pairs.first(where: { $0.id == pairID }),
-              let configuration = pair.githubSync,
-              !isGitHubPushDirection(for: pair, configuration: configuration) else {
-            return nil
-        }
-        await syncToGitHub(pair)
-        return state(for: pair)
     }
 
     func startSyncFromMCP(_ requestedID: UUID?) -> (pair: FolderPair?, error: String?) {
@@ -738,12 +695,6 @@ final class FolderPairStore {
         logs.insert(SyncLogEntry(level: level, event: event), at: 0)
         logs = Array(logs.prefix(1_000))
         saveLogs()
-    }
-
-    private func updateOptions(for pair: FolderPair, _ update: (inout SyncOptions) -> Void) {
-        guard let index = pairs.firstIndex(where: { $0.id == pair.id }) else { return }
-        update(&pairs[index].options)
-        savePairs()
     }
 
     private func setFolder(

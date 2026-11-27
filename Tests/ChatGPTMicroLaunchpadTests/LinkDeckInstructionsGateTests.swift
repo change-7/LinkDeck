@@ -24,7 +24,7 @@ final class LinkDeckInstructionsGateTests: XCTestCase {
 
     func testHTTPEntryGuardsAppToolsAndPublishesReceiptSchemaWithoutChangingAppArguments() async throws {
         let server = LinkDeckMCPServer()
-        let preferences = CustomInstructions(text: "実機接続の確認", isEnabled: true)
+        var preferences = CustomInstructions(text: "実機接続の確認", isEnabled: true)
         var revision = UUID()
         server.instructionsProvider = { (preferences, revision) }
         var appCalls = 0
@@ -89,6 +89,24 @@ final class LinkDeckInstructionsGateTests: XCTestCase {
         revision = UUID()
         _ = try await send("tools/call", params)
         XCTAssertEqual(appCalls, 1)
+
+        preferences.isEnabled = false
+        revision = UUID()
+        let initialized = try await send("initialize")
+        let guidance = try XCTUnwrap((initialized["result"] as? [String: Any])?["instructions"] as? String)
+        XCTAssertFalse(guidance.contains("linkdeck_get_custom_instructions"))
+        XCTAssertFalse(guidance.contains("instructions_receipt"))
+
+        let disabledCatalog = try await send("tools/list")
+        let disabledTools = try XCTUnwrap((disabledCatalog["result"] as? [String: Any])?["tools"] as? [[String: Any]])
+        let disabledSchema = try XCTUnwrap(disabledTools.first?["inputSchema"] as? [String: Any])
+        XCTAssertEqual(disabledSchema["required"] as? [String], ["value"])
+        XCTAssertNil((disabledSchema["properties"] as? [String: Any])?["instructions_receipt"])
+        _ = try await send("tools/call", ["name": "linkdeck_app_test", "arguments": ["value": "test"]])
+        _ = try await send("tools/call", params)
+        XCTAssertEqual(appCalls, 3)
+        _ = try await send("tools/call", params, authenticated: false)
+        XCTAssertEqual(appCalls, 3)
     }
 
     func testEveryToolCallRequiresFreshReceiptAndChangesInvalidateOutstandingReceipts() async throws {
@@ -140,8 +158,22 @@ final class LinkDeckInstructionsGateTests: XCTestCase {
         XCTAssertEqual(executions, 2)
         instructions.isEnabled = false
         revision = UUID()
-        let disabled = try await receipt()
-        _ = try await send("linkdeck_press_button", ["button_id": "test", "instructions_receipt": disabled])
+        for name in ["linkdeck_get_custom_instructions", "linkdeck_list_buttons"] {
+            let response = try await send(name)
+            let content = try XCTUnwrap((response["result"] as? [String: Any])?["content"] as? [[String: Any]])
+            let text = try XCTUnwrap(content.first?["text"] as? String)
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+            let preferences = name == "linkdeck_list_buttons" ? try XCTUnwrap(payload["custom_instructions"] as? [String: Any]) : payload
+            XCTAssertEqual(preferences["enabled"] as? Bool, false)
+            XCTAssertEqual(preferences["instructions"] as? String, "")
+            XCTAssertNil(preferences["instructions_receipt"])
+        }
+        _ = try await send("linkdeck_press_button", ["button_id": "test"])
+        XCTAssertEqual(executions, 3)
+
+        instructions.isEnabled = true
+        revision = UUID()
+        _ = try await send("linkdeck_press_button", ["button_id": "test"])
         XCTAssertEqual(executions, 3)
     }
 }

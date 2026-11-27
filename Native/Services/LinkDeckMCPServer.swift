@@ -53,6 +53,8 @@ struct LinkDeckHTTPRequest {
 
 @MainActor
 final class LinkDeckMCPServer {
+    private let log: LinkDeckDiagnosticLog
+    private let connectionTimeout: Duration
     let token = UUID().uuidString + UUID().uuidString
     private var listener: NWListener?
     private var connections: [UUID: NWConnection] = [:]
@@ -63,6 +65,11 @@ final class LinkDeckMCPServer {
     private let instructionsGate = LinkDeckInstructionsGate()
     var onFailure: (() -> Void)?
     var onRequestRejected: ((String) -> Void)?
+
+    init(log: LinkDeckDiagnosticLog = .shared, connectionTimeout: Duration = .seconds(15)) {
+        self.log = log
+        self.connectionTimeout = connectionTimeout
+    }
 
     func start() async throws -> URL {
         let parameters = NWParameters.tcp
@@ -81,10 +88,12 @@ final class LinkDeckMCPServer {
                     case .ready:
                         if let port = self.listener?.port,
                            let url = URL(string: "http://127.0.0.1:\(port.rawValue)/mcp") {
+                            self.log.record("server.ready")
                             self.startup?.resume(returning: url)
                             self.startup = nil
                         }
                     case .failed(let error):
+                        self.log.record("server.failed", code: (error as NSError).code)
                         self.startup?.resume(throwing: error)
                         self.startup = nil
                         self.onFailure?()
@@ -101,6 +110,7 @@ final class LinkDeckMCPServer {
     }
 
     func stop() {
+        if listener != nil { log.record("server.stopped", code: connections.count) }
         startup?.resume(throwing: CancellationError())
         startup = nil
         listener?.cancel()
@@ -112,12 +122,17 @@ final class LinkDeckMCPServer {
     }
 
     private func accept(_ connection: NWConnection) {
-        guard listener != nil, connections.count < 16 else { connection.cancel(); return }
+        guard listener != nil, connections.count < 16 else {
+            log.record("request.rejected", outcome: "connection_limit")
+            connection.cancel(); return
+        }
         let id = UUID()
         connections[id] = connection
-        timeouts[id] = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(15))
+        log.record("connection.accepted", requestID: id.uuidString)
+        timeouts[id] = Task { [weak self, connectionTimeout] in
+            try? await Task.sleep(for: connectionTimeout)
             guard !Task.isCancelled else { return }
+            self?.log.record("request.timeout", requestID: id.uuidString, outcome: "connection_deadline")
             self?.close(id)
         }
         connection.start(queue: .main)
@@ -132,9 +147,13 @@ final class LinkDeckMCPServer {
                 if let data { next.append(data) }
                 switch LinkDeckHTTPRequest.parse(next) {
                 case .incomplete:
-                    if complete || error != nil { self.close(id) }
+                    if complete || error != nil {
+                        self.log.record("request.incomplete", requestID: id.uuidString, code: error.map { ($0 as NSError).code })
+                        self.close(id)
+                    }
                     else { self.receive(connection, id: id, buffer: next) }
                 case .rejected(let status):
+                    self.log.record("request.rejected", requestID: id.uuidString, code: status)
                     let head = String(decoding: next.prefix(16_384), as: UTF8.self).components(separatedBy: "\r\n\r\n")[0]
                     let framing = head.components(separatedBy: "\r\n").filter {
                         let line = $0.lowercased()
@@ -144,16 +163,22 @@ final class LinkDeckMCPServer {
                     self.respond(connection, id: id, status: status, body: Data())
                 case .complete(let request):
                     if let status = request.authorizationStatus(token: self.token) {
+                        self.log.record("request.rejected", requestID: id.uuidString, code: status)
                         self.onRequestRejected?("HTTP \(status), MCP \(request.headers["mcp-protocol-version"] ?? "unspecified")")
                         self.respond(connection, id: id, status: status, body: Data())
                     } else if let handle = self.handle {
-                        let response: (status: Int, body: Data)
-                        if let preferences = self.instructionsProvider?() {
-                            response = await self.instructionsGate.response(to: request.body,
-                                instructions: preferences.value, revision: preferences.revision, forward: handle)
-                        } else {
-                            response = await handle(request.body)
+                        let started = ContinuousClock.now
+                        let metadata = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]
+                        let method = metadata?["method"] as? String
+                        let tool = (metadata?["params"] as? [String: Any])?["name"] as? String
+                        self.log.record("request.started", requestID: id.uuidString, method: method, tool: tool)
+                        let response = await LinkDeckRequestContext.$id.withValue(id.uuidString) {
+                            await self.forward(request.body, handle: handle)
                         }
+                        let elapsed = started.duration(to: .now).components
+                        self.log.record("request.completed", requestID: id.uuidString, method: method, tool: tool,
+                            outcome: self.connections[id] == nil ? "late_response" : LinkDeckDiagnosticLog.responseOutcome(response.body, httpStatus: response.status),
+                            code: response.status, elapsedMS: Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000))
                         self.respond(connection, id: id, status: response.status, body: response.body)
                     } else { self.respond(connection, id: id, status: 503, body: Data()) }
                 }
@@ -161,14 +186,29 @@ final class LinkDeckMCPServer {
         }
     }
 
+    private func forward(_ body: Data, handle: (Data) async -> (status: Int, body: Data)) async -> (status: Int, body: Data) {
+        if let preferences = instructionsProvider?() {
+            return await instructionsGate.response(to: body,
+                instructions: preferences.value, revision: preferences.revision, forward: handle)
+        }
+        return await handle(body)
+    }
+
     private func respond(_ connection: NWConnection, id: UUID, status: Int, body: Data) {
+        guard connections[id] != nil else { return }
         let labels = [200: "OK", 202: "Accepted", 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden",
                       404: "Not Found", 405: "Method Not Allowed", 413: "Content Too Large",
                       415: "Unsupported Media Type", 431: "Request Header Fields Too Large", 503: "Service Unavailable"]
         var response = Data("HTTP/1.1 \(status) \(labels[status] ?? "Error")\r\nContent-Type: application/json\r\nContent-Length: \(body.count)\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n".utf8)
         response.append(body)
-        connection.send(content: response, completion: .contentProcessed { [weak self] _ in
-            Task { @MainActor in self?.close(id) }
+        let sendStarted = ContinuousClock.now
+        connection.send(content: response, completion: .contentProcessed { [weak self] error in
+            Task { @MainActor in
+                self?.log.recordTiming("timing.http.send", since: sendStarted, requestID: id.uuidString)
+                self?.log.record("response.sent", requestID: id.uuidString,
+                    outcome: error == nil ? "success" : "send_failed", code: error.map { ($0 as NSError).code })
+                self?.close(id)
+            }
         })
     }
 

@@ -35,6 +35,58 @@ final class SubtitlePipelineRuntime {
         return ["whisper": executable.resolvingSymlinksInPath().path, "render": try toolkit().approvalKey]
     }
 
+    private func shareStack() throws -> RegisteredAppAPI {
+        let matches = apps.filter { $0.approved && ["share_stack", "sharestack"].contains($0.manifest.id) }
+        guard matches.count == 1, let app = matches.first,
+              ["prepare_media_job", "register_processed_media", "get_job"].allSatisfy(app.manifest.tools.contains) else {
+            throw SubtitlePipelineFailure("Register and approve ShareStack's media resolution and result registration API in LinkDeck")
+        }
+        return app
+    }
+
+    private func isPrivateShareStackTool(_ name: String, apps: [RegisteredAppAPI]) -> Bool {
+        apps.contains { app in
+            ["share_stack", "sharestack"].contains(app.manifest.id) &&
+            ["prepare_media_job", "register_processed_media"].contains { app.manifest.prefix + $0 == name }
+        }
+    }
+
+    private func appResponse(to data: Data, apps: [RegisteredAppAPI], fallback: () async -> (status: Int, body: Data)) async -> (status: Int, body: Data) {
+        let response = await appAPIs.response(to: data, apps: apps, fallback: fallback)
+        let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard request?["method"] as? String == "tools/list",
+              var object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+              var result = object["result"] as? [String: Any] else { return response }
+        let hidden = Set(apps.filter { ["share_stack", "sharestack"].contains($0.manifest.id) }
+            .flatMap { app in ["prepare_media_job", "register_processed_media"].map { app.manifest.prefix + $0 } })
+        result["tools"] = (result["tools"] as? [[String: Any]] ?? []).filter { !hidden.contains($0["name"] as? String ?? "") }
+        object["result"] = result
+        return (200, (try? JSONSerialization.data(withJSONObject: object)) ?? response.body)
+    }
+
+    private func shareStackBindings() throws -> [String: String] {
+        var result = try bindings()
+        result["share_stack"] = try shareStack().approvalKey
+        return result
+    }
+
+    private func shareStackCall(_ tool: String, arguments: [String: Any]) async throws -> [String: Any] {
+        let app = try shareStack()
+        let response: Data
+        do { response = try await appAPIs.call(app, tool: tool, arguments: arguments) }
+        catch { throw SubtitlePipelineFailure("ShareStack media request failed") }
+        guard let reply = try JSONSerialization.jsonObject(with: response) as? [String: Any],
+              let result = reply["result"] as? [String: Any], result["isError"] as? Bool != true else {
+            throw SubtitlePipelineFailure("ShareStack media request failed")
+        }
+        let text = (result["content"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.first ?? ""
+        guard let object = result["structuredContent"] as? [String: Any]
+                ?? (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] else {
+            throw SubtitlePipelineFailure("ShareStack returned an invalid media response")
+        }
+        return object
+    }
+
     private func call(_ step: SubtitlePipelineStep, tool: String, arguments: [String: Any]) async throws -> [String: Any] {
         var args = arguments
         let binding = args.removeValue(forKey: "_pipeline_bindings") as? [String: String] ?? [:]
@@ -42,6 +94,10 @@ final class SubtitlePipelineRuntime {
         if step == .render {
             let app = try toolkit()
             guard binding["render"] == app.approvalKey else { throw SubtitlePipelineFailure("Renderer registration or approval changed; restore the original app registration") }
+            response = try await appAPIs.call(app, tool: tool, arguments: args)
+        } else if step == .publish {
+            let app = try shareStack()
+            guard binding["share_stack"] == app.approvalKey else { throw SubtitlePipelineFailure("ShareStack registration or approval changed; restore the original app registration") }
             response = try await appAPIs.call(app, tool: tool, arguments: args)
         } else {
             guard let executable = StableWhisperMCPBridge.executable(), binding["whisper"] == executable.resolvingSymlinksInPath().path else {
@@ -80,11 +136,14 @@ final class SubtitlePipelineRuntime {
         let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         let params = request?["params"] as? [String: Any] ?? [:]
         let name = params["name"] as? String ?? ""
+        if request?["method"] as? String == "tools/call", isPrivateShareStackTool(name, apps: apps) {
+            return failure(data, "ShareStack media resolution and publishing are available only through the LinkDeck subtitle pipeline")
+        }
         guard let manager else {
             if SubtitlePipelineMCPBridge.names.map({ "linkdeck_" + $0 }).contains(name) || name.hasSuffix("start_transcription") || name.hasSuffix("burn_subtitles") || name.hasSuffix("start_download") {
                 return failure(data, initializationError ?? "Pipeline unavailable")
             }
-            return await appAPIs.response(to: data, apps: apps, fallback: fallback)
+            return await appResponse(to: data, apps: apps, fallback: fallback)
         }
         var legacyStep: SubtitlePipelineStep?
         if request?["method"] as? String == "tools/call" {
@@ -103,9 +162,11 @@ final class SubtitlePipelineRuntime {
             }
         }
         defer { if let legacyToken { manager.releaseLegacy(legacyToken) } }
-        let bridge = SubtitlePipelineMCPBridge(manager: manager, bindings: { try self.bindings() })
+        let bridge = SubtitlePipelineMCPBridge(manager: manager, bindings: { try self.bindings() },
+            shareStackBindings: { try self.shareStackBindings() },
+            resolveShareStack: { tool, arguments in try await self.shareStackCall(tool, arguments: arguments) })
         return await bridge.response(to: data) {
-            await self.appAPIs.response(to: data, apps: apps, fallback: fallback)
+            await self.appResponse(to: data, apps: apps, fallback: fallback)
         }
     }
 

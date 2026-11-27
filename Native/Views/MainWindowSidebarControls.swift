@@ -3,6 +3,7 @@ import SwiftUI
 enum MainScreen: String, CaseIterable, Hashable {
     case smartphoneButtons
     case apiApps
+    case folderSync
 
     static let storageKey = "linkdeck.main-screen"
     static let apiAppsPositionLockedKey = "linkdeck.api-apps-position-locked"
@@ -21,11 +22,13 @@ struct MainScreenSidebarNavigation: View {
                 HStack(spacing: 4) {
                     screenButton(.smartphoneButtons, title: "휴대폰", systemImage: "iphone")
                     screenButton(.apiApps, title: "API 앱", systemImage: "point.3.connected.trianglepath.dotted")
+                    screenButton(.folderSync, title: "폴더 싱크", systemImage: "arrow.triangle.2.circlepath")
                 }
             } else {
                 VStack(spacing: 4) {
                     screenButton(.smartphoneButtons, title: "휴대폰", systemImage: "iphone")
                     screenButton(.apiApps, title: "API 앱", systemImage: "point.3.connected.trianglepath.dotted")
+                    screenButton(.folderSync, title: "폴더 싱크", systemImage: "arrow.triangle.2.circlepath")
                 }
             }
         }

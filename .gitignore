@@ -11,4 +11,4 @@ Android/app/build/
 .gradle/
 .kotlin/
 .DS_Store
-.DS_Store
+/default.profraw

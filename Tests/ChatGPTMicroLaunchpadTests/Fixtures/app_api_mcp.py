@@ -16,7 +16,7 @@ for line in sys.stdin:
         continue
     method = request["method"]
     if method == "initialize":
-        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}},
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {"listChanged": "--dynamic-tools" in sys.argv}},
                   "serverInfo": {"name": "LinkDeck test fixture", "version": "1"}}
     elif method == "tools/list":
         second_page = "cursor" in request.get("params", {})
@@ -54,6 +54,8 @@ for line in sys.stdin:
         if request["params"]["name"] == "chat_view_start_task":
             task_starts += 1
         result = {"content": [{"type": "text", "text": json.dumps({"taskId": "chat-task", "status": "completed", "answer": "fixture answer", "taskStarts": task_starts, "unavailableStates": unavailable_states})}]}
+    elif request.get("params", {}).get("name") in {"create_miu_event", "update_miu_event", "sync_miu_calendar"} and request["params"].get("arguments", {}).get("dryRun") is True:
+        result = {"content": [{"type": "text", "text": json.dumps({"dryRun": True})}]}
     elif request.get("params", {}).get("name") in {"start_download", "burn_subtitles", "create_miu_event", "update_miu_event", "sync_miu_calendar", "control_device", "start_status_read", "send_files"}:
         name = request["params"]["name"]
         job_id = "fixture-job" if name in {"start_download", "burn_subtitles"} else f"{name}-fixture-job"

@@ -6,6 +6,7 @@ enum CodexDesktopApprovalKind: Equatable, Sendable {
     case fileChange
     case permissions
     case elicitation
+    case userInput
     case unsupported
 
     init?(method: String) {
@@ -14,6 +15,7 @@ enum CodexDesktopApprovalKind: Equatable, Sendable {
         case "item/fileChange/requestApproval": self = .fileChange
         case "item/permissions/requestApproval": self = .permissions
         case "mcpServer/elicitation/request": self = .elicitation
+        case "item/tool/requestUserInput": self = .userInput
         default:
             let normalized = method.lowercased()
             guard normalized.contains("requestapproval")
@@ -29,6 +31,7 @@ enum CodexDesktopApprovalKind: Equatable, Sendable {
         case .fileChange: "파일 변경 승인 필요"
         case .permissions: "권한 승인 필요"
         case .elicitation: "Codex 확인 필요"
+        case .userInput: "Codex 답변 필요"
         case .unsupported: "Codex 확인 필요"
         }
     }
@@ -51,6 +54,7 @@ struct CodexDesktopPendingApproval: Equatable, Sendable {
     var kind: CodexDesktopApprovalKind? { CodexDesktopApprovalKind(method: method) }
     var numericRequestID: Int? { Int(requestID.stringValue ?? "") }
     var canRespond: Bool {
+        guard kind != .userInput else { return false }
         if let decisions { return !decisions.isEmpty }
         guard kind != .elicitation && kind != .unsupported else { return false }
         guard kind == .permissions else { return true }
@@ -60,13 +64,31 @@ struct CodexDesktopPendingApproval: Equatable, Sendable {
 }
 
 enum CodexDesktopApprovalIPC {
-    // Codex Desktop exposes no public attach-to-existing-thread approval API; this follows its private local IPC protocol.
-    static func pendingApprovals(
-        socketPath: String = NSHomeDirectory() + "/.codex/ipc/ipc.sock",
-        globalStateURL: URL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".codex/.codex-global-state.json")
-    ) throws -> [CodexDesktopPendingApproval] {
-        let client = try CodexDesktopIPCClient(socketPath: socketPath)
-        return try client.pendingApprovals(globalStateURL: globalStateURL)
+    // The read-only monitor owns its connection for the lifetime of one bridge run.
+    actor Monitor {
+        private let socketPath: String
+        private let globalStateURL: URL
+        private var client: CodexDesktopIPCClient?
+
+        init(
+            socketPath: String = NSHomeDirectory() + "/.codex/ipc/ipc.sock",
+            globalStateURL: URL = URL(fileURLWithPath: NSHomeDirectory()).appending(path: ".codex/.codex-global-state.json")
+        ) {
+            self.socketPath = socketPath
+            self.globalStateURL = globalStateURL
+        }
+
+        func pendingApprovals() throws -> [CodexDesktopPendingApproval] {
+            do {
+                let connection = try client ?? CodexDesktopIPCClient(socketPath: socketPath)
+                let approvals = try connection.pendingApprovals(globalStateURL: globalStateURL)
+                client = connection.canReuseConnection ? connection : nil
+                return approvals
+            } catch {
+                client = nil
+                throw error
+            }
+        }
     }
 
     static func respond(
@@ -139,7 +161,7 @@ enum CodexDesktopApprovalIPC {
             }
             params["response"] = ["permissions": permissions, "scope": decision == "acceptForSession" ? "session" : "turn"]
             return ("thread-follower-permissions-request-approval-response", params)
-        case .elicitation, .unsupported:
+        case .elicitation, .userInput, .unsupported:
             return nil
         }
     }
@@ -157,13 +179,22 @@ enum CodexDesktopApprovalIPC {
             let params: [String: CodexIPCJSONValue]
             if case let .object(values)? = fields["params"] { params = values }
             else { params = [:] }
-            let detail = [
+            let questions: [String]
+            if kind == .userInput, case let .array(items)? = params["questions"] {
+                questions = items.compactMap { item in
+                    guard case let .object(fields) = item else { return nil }
+                    return fields["question"]?.stringValue
+                }
+            } else {
+                questions = []
+            }
+            let detail = (questions + [
                 params["message"]?.stringValue,
                 params["serverName"].map { "MCP 서버: \($0.stringValue ?? $0.description)" },
                 params["reason"]?.stringValue,
                 params["command"]?.stringValue,
                 params["cwd"].map { "위치: \($0.stringValue ?? $0.description)" }
-            ].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+            ].compactMap { $0 }).filter { !$0.isEmpty }.joined(separator: "\n")
             let requestIDText = requestID.stringValue ?? requestID.description
             return CodexDesktopPendingApproval(
                 conversationID: conversationID,
@@ -177,6 +208,102 @@ enum CodexDesktopApprovalIPC {
             )
         }
     }
+
+    static func asyncQuestions(
+        in turns: [CodexIPCJSONValue],
+        conversationID: String
+    ) -> [CodexDesktopPendingApproval] {
+        var seen = Set<String>()
+        return turns.compactMap { turn in
+            guard case let .object(fields) = turn,
+                  fields["status"] == .string("inProgress"),
+                  case let .array(items)? = fields["items"] else { return nil }
+            for item in items.reversed() {
+                guard case let .object(message) = item else { continue }
+                if message["type"] == .string("userMessage") ||
+                    message["phase"] == .string("finalAnswer") { break }
+                guard message["type"] == .string("agentMessage"),
+                      message["delivery"] == .string("async"),
+                      let id = message["id"]?.stringValue,
+                      case let .array(questions)? = message["questions"] else { continue }
+                let titles = questions.compactMap { question -> String? in
+                    guard case let .object(fields) = question,
+                          let title = fields["title"]?.stringValue, !title.isEmpty else { return nil }
+                    return title
+                }
+                guard !titles.isEmpty, seen.insert(id).inserted else { break }
+                return CodexDesktopPendingApproval(
+                    conversationID: conversationID,
+                    requestID: .string(id),
+                    requestKey: "desktop:\(conversationID):async-question:\(id)",
+                    method: "item/tool/requestUserInput",
+                    title: CodexDesktopApprovalKind.userInput.title,
+                    detail: titles.joined(separator: "\n"),
+                    requestedPermissions: nil,
+                    decisions: []
+                )
+            }
+            return nil
+        }
+    }
+
+    static func answeredAsyncQuestionIDs(in transcript: URL, pendingIDs: Set<String>) -> Set<String> {
+        guard !pendingIDs.isEmpty, let file = try? FileHandle(forReadingFrom: transcript) else { return [] }
+        defer { try? file.close() }
+        let openTag = "<send_user_message_question_reply>"
+        let closeTag = "</send_user_message_question_reply>"
+        let replyMarker = Data(openTag.utf8)
+        let questionMarker = Data("\"AgentMessage\"".utf8)
+        var remaining = pendingIDs
+        var answered = Set<String>()
+        var offset = (try? file.seekToEnd()) ?? 0
+        var partial = Data()
+
+        // Read backwards only as far as the original question messages.
+        while offset > 0 && !remaining.isEmpty {
+            let count = min(offset, 64 * 1024)
+            offset -= count
+            guard (try? file.seek(toOffset: offset)) != nil,
+                  var data = try? file.read(upToCount: Int(count)), data.count == Int(count) else { break }
+            data.append(partial)
+            let lines = data.split(separator: 0x0A, omittingEmptySubsequences: false)
+            partial = offset > 0 ? Data(lines[0]) : Data()
+            for line in (offset > 0 ? lines.dropFirst() : lines[...]).reversed() {
+                guard line.range(of: replyMarker) != nil || line.range(of: questionMarker) != nil,
+                      let record = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      record["type"] as? String == "event_msg",
+                      let payload = record["payload"] as? [String: Any],
+                      payload["type"] as? String == "item_completed",
+                      let item = payload["item"] as? [String: Any] else { continue }
+                if item["type"] as? String == "AgentMessage",
+                   item["delivery"] as? String == "async",
+                   let id = item["id"] as? String {
+                    remaining.remove(id)
+                }
+                if item["type"] as? String == "UserMessage",
+                   let content = item["content"] as? [[String: Any]] {
+                    for entry in content {
+                        guard let rawText = entry["text"] as? String else { continue }
+                        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard
+                              text.hasPrefix(openTag), text.hasSuffix(closeTag),
+                              let replies = try? JSONSerialization.jsonObject(with: Data(
+                                text.dropFirst(openTag.count).dropLast(closeTag.count).utf8
+                              )) as? [[String: Any]] else { continue }
+                        for reply in replies {
+                            guard let itemID = reply["questionItemId"] as? String,
+                                  let parts = try? JSONSerialization.jsonObject(with: Data(itemID.utf8)) as? [Any],
+                                  parts.count == 3, parts[0] as? String == "request_user_input_async",
+                                  let id = parts[1] as? String, remaining.remove(id) != nil else { continue }
+                            answered.insert(id)
+                        }
+                    }
+                }
+                if remaining.isEmpty { return answered }
+            }
+        }
+        return answered
+    }
 }
 
 private struct CodexDesktopApprovalContext {
@@ -187,6 +314,7 @@ private struct CodexDesktopApprovalContext {
 private final class CodexDesktopIPCClient {
     private let socket: CodexUnixDomainSocket
     private var clientID = UUID().uuidString.lowercased()
+    private(set) var canReuseConnection = true
 
     init(socketPath: String) throws {
         socket = try CodexUnixDomainSocket(path: socketPath)
@@ -209,16 +337,22 @@ private final class CodexDesktopIPCClient {
         for conversationID in conversationIDs {
             let snapshot: (ownerClientID: String, approvals: [CodexDesktopPendingApproval])
             do {
-                snapshot = try followedSnapshot(conversationID: conversationID)
+                snapshot = try followedSnapshot(
+                    conversationID: conversationID,
+                    sessionsRoot: globalStateURL.deletingLastPathComponent().appending(path: "sessions")
+                )
             } catch {
                 if followedIDs.contains(conversationID) { throw error }
+                // A late response to an optional pinned thread can arrive in the next poll.
+                canReuseConnection = false
                 continue
             }
             contexts += snapshot.approvals.map {
                 CodexDesktopApprovalContext(ownerClientID: snapshot.ownerClientID, approval: $0)
             }
         }
-        return contexts
+        let approvals = contexts.filter { $0.approval.kind != .userInput }
+        return approvals.isEmpty ? contexts : approvals
     }
 
     func sendFollowerRequest(method: String, params: [String: Any], targetClientID: String) throws {
@@ -305,7 +439,9 @@ private final class CodexDesktopIPCClient {
         return followed.sorted()
     }
 
-    private func followedSnapshot(conversationID: String) throws -> (ownerClientID: String, approvals: [CodexDesktopPendingApproval]) {
+    private func followedSnapshot(
+        conversationID: String, sessionsRoot: URL
+    ) throws -> (ownerClientID: String, approvals: [CodexDesktopPendingApproval]) {
         try sendFollowing(conversationID: conversationID, following: true)
         defer { try? sendFollowing(conversationID: conversationID, following: false) }
         let deadline = Date().addingTimeInterval(0.7)
@@ -317,12 +453,25 @@ private final class CodexDesktopIPCClient {
                   message.params?.conversationID == conversationID,
                   message.params?.hostID == "local",
                   message.params?.change?.type == "snapshot",
-                  let ownerClientID = message.sourceClientID else { continue }
-            let approvals = CodexDesktopApprovalIPC.approvals(
-                in: message.params?.change?.conversationState?.requests,
+                  let ownerClientID = message.sourceClientID,
+                  let state = message.params?.change?.conversationState else { continue }
+            let questions = CodexDesktopApprovalIPC.asyncQuestions(
+                in: (state.turnHistory?.history?.entitiesByKey?.values.map { $0 } ?? []) + (state.turns ?? []),
                 conversationID: conversationID
             )
-            return (ownerClientID, approvals)
+            var answered = Set<String>()
+            if !questions.isEmpty, let path = state.rolloutPath, path.hasPrefix("/") {
+                let transcript = URL(fileURLWithPath: path).resolvingSymlinksInPath()
+                if transcript.pathExtension == "jsonl",
+                   transcript.path.hasPrefix(sessionsRoot.resolvingSymlinksInPath().path + "/") {
+                    answered = CodexDesktopApprovalIPC.answeredAsyncQuestionIDs(
+                        in: transcript, pendingIDs: Set(questions.compactMap { $0.requestID.stringValue })
+                    )
+                }
+            }
+            return (ownerClientID, CodexDesktopApprovalIPC.approvals(
+                in: state.requests, conversationID: conversationID
+            ) + questions.filter { !answered.contains($0.requestID.stringValue ?? "") })
         }
         throw CodexDesktopIPCError.timeout
     }
@@ -398,6 +547,17 @@ private struct CodexIPCMessage: Decodable {
 
     struct ConversationState: Decodable {
         let requests: CodexIPCJSONValue?
+        let rolloutPath: String?
+        let turns: [CodexIPCJSONValue]?
+        let turnHistory: TurnHistory?
+    }
+
+    struct TurnHistory: Decodable {
+        let history: History?
+    }
+
+    struct History: Decodable {
+        let entitiesByKey: [String: CodexIPCJSONValue]?
     }
 }
 
@@ -555,8 +715,12 @@ private final class CodexUnixDomainSocket {
         let rawLength = header.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
         let length = Int(UInt32(littleEndian: rawLength))
         guard length > 0, length <= Self.maximumFrameBytes else { throw CodexDesktopIPCError.invalidFrame }
-        let payload = try readExact(count: length, until: deadline)
-        return try JSONDecoder().decode(CodexIPCMessage.self, from: payload)
+        do {
+            let payload = try readExact(count: length, until: deadline)
+            return try JSONDecoder().decode(CodexIPCMessage.self, from: payload)
+        } catch CodexDesktopIPCError.timeout {
+            throw CodexDesktopIPCError.invalidFrame
+        }
     }
 
     private func writeAll(_ data: Data) throws {
@@ -576,12 +740,12 @@ private final class CodexUnixDomainSocket {
         var offset = 0
         while offset < count {
             let remaining = deadline.timeIntervalSinceNow
-            guard remaining > 0 else { throw CodexDesktopIPCError.timeout }
+            guard remaining > 0 else { throw offset == 0 ? CodexDesktopIPCError.timeout : .invalidFrame }
             var pollDescriptor = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
             let milliseconds = Int32(min(max(1, remaining * 1_000), Double(Int32.max)))
             let ready = Darwin.poll(&pollDescriptor, 1, milliseconds)
             if ready < 0, errno == EINTR { continue }
-            if ready == 0 { throw CodexDesktopIPCError.timeout }
+            if ready == 0 { throw offset == 0 ? CodexDesktopIPCError.timeout : .invalidFrame }
             guard ready > 0 else { throw CodexDesktopIPCError.socket(Self.errorText()) }
             let received = data.withUnsafeMutableBytes { bytes in
                 Darwin.recv(descriptor, bytes.baseAddress!.advanced(by: offset), count - offset, 0)

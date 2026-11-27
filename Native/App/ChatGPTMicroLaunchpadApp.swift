@@ -101,6 +101,7 @@ final class CodexActivityController {
     func updateAppServerActivity(_ activity: CodexActivity) {
         appServerActivity = activity
         if activity == .completed || activity == .failed {
+            desktopMonitor?.scanActiveTranscripts()
             scheduleDesktopCompletionFallback()
         }
         // Do not cancel the fallback when the App Server repeats a stale

@@ -1,7 +1,10 @@
 package com.pdg.galaxymicrolaunchpad
 
 import android.Manifest
+import android.content.Context
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Movie
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,6 +18,7 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.util.Base64
+import android.view.View
 import java.io.File
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -130,14 +134,14 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.asComposeRenderEffect
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -155,6 +159,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
@@ -519,6 +524,33 @@ class MainActivity : ComponentActivity() {
 
 }
 
+private class LoopingGifView(context: Context) : View(context) {
+    private val movie = context.resources.openRawResource(R.raw.sleepy_dot).use { Movie.decodeStream(it) }
+    private val startedAtMillis = SystemClock.uptimeMillis()
+
+    init {
+        contentDescription = "졸린 도트"
+        setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val gif = movie ?: return
+        if (width <= 0 || height <= 0 || gif.width() <= 0 || gif.height() <= 0) return
+        val scale = minOf(width.toFloat() / gif.width(), height.toFloat() / gif.height())
+        val drawWidth = gif.width() * scale
+        val drawHeight = gif.height() * scale
+        val frameTime = ((SystemClock.uptimeMillis() - startedAtMillis) % gif.duration().coerceAtLeast(1)).toInt()
+        gif.setTime(frameTime)
+        canvas.save()
+        canvas.translate((width - drawWidth) / 2f, (height - drawHeight) / 2f)
+        canvas.scale(scale, scale)
+        gif.draw(canvas, 0f, 0f)
+        canvas.restore()
+        postInvalidateOnAnimation()
+    }
+}
+
 @Composable
 internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivityResumed: Boolean) {
     val context = LocalContext.current
@@ -551,8 +583,13 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     var page by remember { mutableStateOf(AppPage.Controls) }
     var buttonPageIndex by rememberSaveable { mutableStateOf(0) }
+    var buttonSwipeDirection by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(remoteBridge.smartphonePages.map { it.id }) {
-        buttonPageIndex = buttonPageIndex.coerceIn(0, (remoteBridge.smartphonePages.size - 1).coerceAtLeast(0))
+        val validIndex = buttonPageIndex.coerceIn(0, (remoteBridge.smartphonePages.size - 1).coerceAtLeast(0))
+        if (validIndex != buttonPageIndex) {
+            buttonSwipeDirection = null
+            buttonPageIndex = validIndex
+        }
     }
     var openFolderAction by remember { mutableStateOf<ControlAction?>(null) }
     val currentFolderAction = openFolderAction?.let { folder ->
@@ -578,6 +615,7 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
     var screenKeepAwakeExpired by remember { mutableStateOf(false) }
     var lastInteractionElapsedMillis by remember { mutableStateOf(SystemClock.elapsedRealtime()) }
     var lastUserInteractionElapsedMillis by remember { mutableStateOf(lastInteractionElapsedMillis) }
+    var idleMascotButtonID by remember { mutableStateOf<String?>(null) }
     var localMessage by remember { mutableStateOf("Mac을 찾는 중…") }
     var dismissedApproval by remember { mutableStateOf<RemoteApproval?>(null) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -700,6 +738,22 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
     val currentButtonPageIndex by rememberUpdatedState(buttonPageIndex)
     val currentButtonPageCount by rememberUpdatedState(remoteBridge.smartphonePages.size)
     val currentSwipeCommitDistancePx by rememberUpdatedState(swipeCommitDistancePx)
+    val visiblePlaceholders = if (isPortrait || page == AppPage.Controls) {
+        currentFolderAction?.let { folderGridItems(it) }
+            ?: remoteBridge.smartphonePages.getOrNull(buttonPageIndex)?.actions
+    } else {
+        null
+    }
+    val idleMascotCandidates = visiblePlaceholders.orEmpty()
+        .filter { it.isPlaceholder }
+        .map { it.id }
+    LaunchedEffect(lastInteractionElapsedMillis, idleMascotCandidates) {
+        idleMascotButtonID = null
+        val remainingMillis = IdleBlackoutTimeoutMillis -
+            (SystemClock.elapsedRealtime() - lastInteractionElapsedMillis)
+        if (remainingMillis > 0L) delay(remainingMillis)
+        idleMascotButtonID = idleMascotCandidates.randomOrNull()
+    }
 
     Surface(color = Black, modifier = Modifier.fillMaxSize()) {
         Column(
@@ -730,6 +784,7 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
                                     commitDistancePx = currentSwipeCommitDistancePx
                                 )
                                 if (nextIndex != currentIndex) {
+                                    buttonSwipeDirection = horizontalSwipeTransitionDirection(horizontalDrag)
                                     buttonPageIndex = nextIndex
                                     openFolderAction = null
                                 }
@@ -796,6 +851,8 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
                             onMicrophoneToggle = toggleMicrophone,
                             pages = remoteBridge.smartphonePages,
                             pageIndex = buttonPageIndex,
+                            swipeDirection = buttonSwipeDirection,
+                            idleMascotButtonID = idleMascotButtonID,
                             folderAction = currentFolderAction,
                             fiveHourRemaining = remoteBridge.fiveHourRemainingPercent,
                             weeklyRemaining = remoteBridge.remainingPercent,
@@ -806,6 +863,7 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
                             pixelQuestSkin = remoteBridge.codexPhoneTheme == PixelQuestCodexPhoneTheme,
                             onPageChange = {
                                 openFolderAction = null
+                                buttonSwipeDirection = null
                                 buttonPageIndex = it
                             },
                             onConnectionSettings = { showConnectionSettings = true },
@@ -831,7 +889,7 @@ internal fun GalaxyMicroLaunchpadApp(remoteBridge: RemoteBridgeClient, isActivit
                 }
             }
         }
-        if (idleBlackoutEnabled && blackoutVisible) {
+        if (idleBlackoutEnabled && blackoutVisible && idleMascotButtonID == null) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -970,16 +1028,11 @@ private fun Header(
         Green
     }
     val completionStatusColor = if (completionBlinkOn) Green else Green.copy(alpha = 0.25f)
-    val completionRingAlpha by animateFloatAsState(
-        targetValue = if (isCompletion && !completionBlinkOn) 0.25f else 1f,
-        animationSpec = tween((completionBlinkDurationMillis / 8).coerceIn(80L, 450L).toInt()),
-        label = "completion-ring-fade"
-    )
     val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     val density = LocalDensity.current
     val cutoutHeight = WindowInsets.displayCutout.getTop(density)
     val cutout = androidx.core.view.ViewCompat.getRootWindowInsets(LocalView.current)?.displayCutout
-    val topCutouts = cutout?.boundingRects.orEmpty().filter { it.top <= 0 && it.bottom > 0 }
+    val topCutouts = cutout?.boundingRects.orEmpty().filter { it.top < cutoutHeight && it.bottom in 1..cutoutHeight }
     val headerHeight = if (isPortrait) with(density) { cutoutHeight.toDp().coerceAtLeast(32.dp) } else 32.dp
     BoxWithConstraints(
         modifier = Modifier
@@ -1017,53 +1070,37 @@ private fun Header(
                 )
               }
             }
-            Canvas(
-                Modifier.fillMaxSize()
-                    .graphicsLayer {
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            val blur = if (connectionState == RemoteConnectionState.Connected && isCodexWorking) pulseProgress * 10.dp.toPx() else 0f
-                            renderEffect = if (blur > 0.1f) android.graphics.RenderEffect.createBlurEffect(
-                                blur, 0.1f, android.graphics.Shader.TileMode.DECAL
-                            ).asComposeRenderEffect() else null
-                        }
-                    }
-                    .semantics {
-                        stateDescription = if (connectionState == RemoteConnectionState.Connected) "Connected" else "Disconnected"
-                    }
-            ) {
-                val radius = size.height / 2
-                val ringColor = when {
-                    connectionState != RemoteConnectionState.Connected -> Color(0xFF383838)
-                    else -> Color.White.copy(alpha = completionRingAlpha)
-                }
-                val spread = if (connectionState == RemoteConnectionState.Connected && isCodexWorking) pulseProgress else 0f
-                val extension = radius * spread * 2.4f
-                val bands = 24
-                val innerEdge = 0.5f
-                val peak = 0.8f
-                val bandWidth = radius * (1f - innerEdge) / bands
-                repeat(bands) { index ->
-                    val fraction = innerEdge + (index + 0.5f) * (1f - innerEdge) / bands
-                    val bandRadius = radius * fraction
-                    val ramp = if (fraction < peak) (fraction - innerEdge) / (peak - innerEdge) else (1f - fraction) / (1f - peak)
-                    val feather = ramp * ramp * (3f - 2f * ramp)
-                    val samples = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S && spread > 0f) 7 else 1
-                    repeat(samples) { sample ->
-                      val offset = if (samples == 1) 0f else (sample - 3) * spread * 4.dp.toPx()
-                      val weight = if (samples == 1) 1f else when (sample) {
-                          0, 6 -> 1f / 64f
-                          1, 5 -> 6f / 64f
-                          2, 4 -> 15f / 64f
-                          else -> 20f / 64f
-                      }
-                      drawRoundRect(
-                        color = ringColor.copy(alpha = ringColor.alpha * feather * (1f - spread * 0.4f) * weight),
-                        topLeft = Offset(center.x - extension - bandRadius + offset, center.y - bandRadius),
-                        size = Size((extension + bandRadius) * 2, bandRadius * 2),
-                        cornerRadius = CornerRadius(bandRadius),
-                        style = Stroke(width = bandWidth + 0.5f)
+            if (isCodexWorking) {
+                val camera = topCutouts.singleOrNull()
+                var canvasOrigin by remember { mutableStateOf(Offset.Zero) }
+                val motion = rememberInfiniteTransition(label = "portrait-camera-ring")
+                val angle by motion.animateFloat(
+                    initialValue = 0f,
+                    targetValue = 360f,
+                    animationSpec = infiniteRepeatable(tween(1200, easing = LinearEasing)),
+                    label = "portrait-camera-ring-angle"
+                )
+                Canvas(
+                    Modifier.fillMaxSize()
+                        .onGloballyPositioned { canvasOrigin = it.positionInWindow() }
+                        .semantics { stateDescription = "Codex 작업중" }
+                ) {
+                    val ringCenter = camera?.let {
+                        Offset(it.exactCenterX(), it.exactCenterY()) - canvasOrigin
+                    } ?: center
+                    val strokeWidth = if (camera == null) 2.dp.toPx() else 1.dp.toPx()
+                    val radius = camera?.let {
+                        maxOf(it.width(), it.height()) / 2f + strokeWidth / 2f
+                    } ?: 8.dp.toPx()
+                    drawArc(
+                        color = workingAccent,
+                        startAngle = angle,
+                        sweepAngle = 260f,
+                        useCenter = false,
+                        topLeft = ringCenter - Offset(radius, radius),
+                        size = Size(radius * 2f, radius * 2f),
+                        style = Stroke(width = strokeWidth, cap = StrokeCap.Round)
                     )
-                    }
                 }
             }
         } else {
@@ -1134,7 +1171,7 @@ private fun MacSleepStatusBadge(connectionState: RemoteConnectionState, mode: St
             .border(1.dp, color.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
             .padding(horizontal = if (compact) 4.dp else 8.dp, vertical = 3.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(if (compact) 2.dp else 4.dp)
+        horizontalArrangement = Arrangement.spacedBy(if (compact) 1.dp else 4.dp)
     ) {
         Icon(icon, contentDescription = null, tint = color, modifier = Modifier.size(if (compact) 12.dp else 14.dp))
         Text(text = label, color = color, fontSize = if (compact) 10.sp else 12.sp, fontWeight = FontWeight.Medium, maxLines = 1)
@@ -1757,6 +1794,8 @@ private fun ControlsPage(
     onMicrophoneToggle: (Boolean) -> Unit,
     pages: List<ButtonPage>,
     pageIndex: Int,
+    swipeDirection: Int?,
+    idleMascotButtonID: String?,
     folderAction: ControlAction?,
     fiveHourRemaining: Int?,
     weeklyRemaining: Int?,
@@ -1826,7 +1865,7 @@ private fun ControlsPage(
                     IconButton(
                         onClick = { onMicrophoneToggle(!microphoneActive) },
                         enabled = microphoneEnabled,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(40.dp)
                             .background(if (microphoneActive) Green.copy(alpha = 0.18f) else Tile, RoundedCornerShape(12.dp))
                     ) {
                         Icon(
@@ -1835,25 +1874,27 @@ private fun ControlsPage(
                             tint = if (microphoneActive) Green else TextMuted
                         )
                     }
-                    IconButton(onClick = onConnectionSettings, modifier = Modifier.size(44.dp)) {
+                    IconButton(onClick = onConnectionSettings, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Outlined.Settings, contentDescription = "연결 설정", tint = TextMuted)
                     }
                 }
-                Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(4.dp))
                 ControlsPageContent(
                     phoneTheme = phoneTheme,
                     modifier = Modifier.weight(1f).fillMaxWidth(),
                     isPortrait = true,
                     pages = pages,
                     pageIndex = pageIndex,
+                    swipeDirection = swipeDirection,
                     folderAction = folderAction,
+                    idleMascotButtonID = idleMascotButtonID,
                     onPageChange = onPageChange,
                     onOpenFolder = onOpenFolder,
                     onCloseFolder = onCloseFolder,
                     onAction = onAction
                 )
                 Spacer(Modifier.height(8.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (phoneTheme == DotConsoleCodexPhoneTheme) {
                         DotConsoleUsageCard("주간 한도", weeklyRemaining, weeklyResetsAt, true, nowEpochSeconds, DotMatrixPurple, compact = true)
                         DotConsoleUsageCard("5시간 한도", fiveHourRemaining, fiveHourResetsAt, false, nowEpochSeconds, DotMatrixCyan, compact = true)
@@ -1931,7 +1972,9 @@ private fun ControlsPage(
                     isPortrait = false,
                     pages = pages,
                     pageIndex = pageIndex,
+                    swipeDirection = null,
                     folderAction = folderAction,
+                    idleMascotButtonID = idleMascotButtonID,
                     onPageChange = onPageChange,
                     onOpenFolder = onOpenFolder,
                     onCloseFolder = onCloseFolder,
@@ -1949,7 +1992,9 @@ private fun ControlsPageContent(
     isPortrait: Boolean,
     pages: List<ButtonPage>,
     pageIndex: Int,
+    swipeDirection: Int?,
     folderAction: ControlAction?,
+    idleMascotButtonID: String?,
     onPageChange: (Int) -> Unit,
     onOpenFolder: (ControlAction) -> Unit,
     onCloseFolder: () -> Unit,
@@ -1983,7 +2028,7 @@ private fun ControlsPageContent(
             modifier = Modifier.fillMaxSize(),
             transitionSpec = {
                 if (isPortrait && initialState.first != targetState.first) {
-                    val direction = pageTransitionDirection(initialState.first, targetState.first, pages.size)
+                    val direction = pageTransitionDirection(initialState.first, targetState.first, pages.size, swipeDirection)
                     (slideInHorizontally(tween(ButtonPageTransitionDurationMillis, easing = PageTransitionEasing)) { direction * transitionDistancePx } +
                         fadeIn(tween(ButtonPageFadeDurationMillis, easing = PageTransitionEasing))) togetherWith
                         (slideOutHorizontally(tween(ButtonPageTransitionDurationMillis, easing = PageTransitionEasing)) { -direction * transitionDistancePx } +
@@ -2006,6 +2051,7 @@ private fun ControlsPageContent(
                     maxWidth = availableWidth,
                     maxHeight = availableHeight,
                     isPortrait = isPortrait,
+                    idleMascotButtonID = idleMascotButtonID,
                     onCloseFolder = onCloseFolder,
                     onAction = onAction
                 )
@@ -2036,6 +2082,7 @@ private fun ControlsPageContent(
                                 phoneTheme = phoneTheme,
                                 action = action,
                                 tileHeight = tileHeight,
+                                idleMascotButtonID = idleMascotButtonID,
                                 onClick = {
                                     if (action.hasSecondAction && action.nextActionKind == "appFolder") {
                                         onOpenFolder(action.copy(actionKind = "appFolder"))
@@ -2063,6 +2110,7 @@ private fun FolderContentsPage(
     maxWidth: androidx.compose.ui.unit.Dp,
     maxHeight: androidx.compose.ui.unit.Dp,
     isPortrait: Boolean,
+    idleMascotButtonID: String?,
     onCloseFolder: () -> Unit,
     onAction: (ControlAction) -> Unit
 ) {
@@ -2094,6 +2142,7 @@ private fun FolderContentsPage(
                     phoneTheme = phoneTheme,
                     action = action,
                     tileHeight = tileHeight,
+                    idleMascotButtonID = idleMascotButtonID,
                     onClick = { if (action.command == "closeFolder") onCloseFolder() else onAction(action) },
                     onLongClick = action.longPressAction?.let { longAction -> { onAction(longAction) } }
                 )
@@ -2137,7 +2186,8 @@ internal fun folderGridItems(folderAction: ControlAction): List<ControlAction> {
     return items
 }
 
-internal fun pageTransitionDirection(initialPage: Int, targetPage: Int, pageCount: Int): Int {
+internal fun pageTransitionDirection(initialPage: Int, targetPage: Int, pageCount: Int, swipeDirection: Int? = null): Int {
+    if (swipeDirection != null) return swipeDirection
     if (initialPage == targetPage) return 1
     if (initialPage == pageCount - 1 && targetPage == 0) return 1
     if (initialPage == 0 && targetPage == pageCount - 1) return -1
@@ -2188,6 +2238,7 @@ private fun ActionTile(
     phoneTheme: String,
     action: ControlAction,
     tileHeight: androidx.compose.ui.unit.Dp,
+    idleMascotButtonID: String?,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null
 ) {
@@ -2370,6 +2421,11 @@ private fun ActionTile(
                         }
                     }
                 }
+            } else if (action.id == idleMascotButtonID) {
+                AndroidView(
+                    factory = ::LoopingGifView,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
             if (hasLongPressAction) {
                 Canvas(
@@ -2700,12 +2756,14 @@ private fun DotConsoleStatusPage(
 
 @Composable
 private fun DotConsoleResetCredits(credits: List<Double>?, nowEpochSeconds: Long, compact: Boolean = false) {
+    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     val available = credits?.filter { it > nowEpochSeconds }?.sorted()
     Column(Modifier.fillMaxWidth()
         .background(Color(0xFF0D1822), RoundedCornerShape(6.dp))
         .border(1.dp, Color(0xFF284754), RoundedCornerShape(6.dp))
+        .then(if (isPortrait) Modifier.heightIn(max = 180.dp).verticalScroll(rememberScrollState()) else Modifier)
         .padding(horizontal = if (compact) 10.dp else 16.dp, vertical = if (compact) 8.dp else 16.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        verticalArrangement = Arrangement.spacedBy(if (isPortrait) 1.dp else 6.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically) {
             Row(horizontalArrangement = Arrangement.spacedBy(7.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2726,7 +2784,7 @@ private fun DotConsoleResetCredits(credits: List<Double>?, nowEpochSeconds: Long
             Text(if (available == null) "정보 확인 중" else "사용 가능한 재설정권 없음", color = TextMuted, fontSize = 12.sp)
         } else {
             available.forEach { expiresAt ->
-                UsageResetInfo(expiresAt, true, nowEpochSeconds, TextPrimary, DotMatrixLime)
+                UsageResetInfo(expiresAt, true, nowEpochSeconds, TextPrimary, DotMatrixLime, compact = isPortrait)
             }
         }
     }
@@ -3116,10 +3174,11 @@ private fun PixelQuestCodexStatusPage(
 
 @Composable
 private fun ResetCreditList(credits: List<Double>?, nowEpochSeconds: Long) {
+    val isPortrait = LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT
     val available = credits?.filter { it > nowEpochSeconds }
     Column(
         Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+        verticalArrangement = Arrangement.spacedBy(if (isPortrait) 1.dp else 6.dp)
     ) {
         if (available.isNullOrEmpty()) {
             Text(if (available == null) "재설정권 정보 확인 중" else "사용 가능한 재설정권 없음", color = TextMuted, fontSize = 12.sp)
@@ -3394,14 +3453,14 @@ private fun PixelQuestUsageProgress(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun UsageResetInfo(resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long, timeColor: Color = PixelQuestMuted, remainingColor: Color = PixelQuestGold) {
+private fun UsageResetInfo(resetAt: Double?, includeDate: Boolean, nowEpochSeconds: Long, timeColor: Color = PixelQuestMuted, remainingColor: Color = PixelQuestGold, compact: Boolean = false) {
     val fontSize = if (LocalConfiguration.current.orientation == Configuration.ORIENTATION_PORTRAIT) PortraitUsageResetFontSize else LandscapeUsageResetFontSize
     FlowRow(
         modifier = Modifier.fillMaxWidth()
             .drawBehind { drawLine(timeColor.copy(alpha = 0.25f), Offset.Zero, Offset(size.width, 0f), 1.dp.toPx()) }
-            .padding(top = 8.dp),
+            .padding(top = if (compact) 1.dp else 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(if (compact) 1.dp else 4.dp)
     ) {
         Text(
             formatResetTime(resetAt, includeDate),

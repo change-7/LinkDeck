@@ -110,10 +110,6 @@ final class LaunchpadStore {
 
     var currentPage: LaunchPage { pages[selectedPage] }
     var selectedPad: Pad? { currentPage.pads.first { $0.id == selectedPadID } }
-    func selectPage(_ index: Int) {
-        selectedPage = index
-        selectedPadID = "grid_0_0"
-    }
 
     func update(_ pad: Pad) {
         if pad.id.hasPrefix("side_") {
@@ -249,26 +245,6 @@ final class LaunchpadStore {
         return true
     }
 
-    func updatePageColor(_ color: String, selected: Bool, at index: Int) {
-        guard pages.indices.contains(index) else { return }
-        if selected {
-            pages[index].pageActiveColor = PadColor(rawValue: color)?.rawValue ?? "off"
-        } else {
-            pages[index].pageIdleColor = PadColor(rawValue: color)?.rawValue ?? "off"
-        }
-        save()
-    }
-
-    func updatePageName(_ name: String, at index: Int) {
-        guard pages.indices.contains(index) else { return }
-        pages[index].name = name
-        save()
-    }
-
-    func resetSelectedPad() {
-        update(PadDefaults.defaultPad(for: selectedPadID))
-    }
-
     func save() {
         guard let data = try? JSONEncoder().encode(pages) else { return }
         preferences.set(data, forKey: storageKey)
@@ -369,111 +345,6 @@ final class LaunchpadStore {
         return true
     }
 
-    func codexMotionPresetID(for activity: CodexActivity) -> UUID? {
-        codexMotionPresentations[activity.rawValue]?.presetID ?? codexMotionPresetIDs[activity.rawValue]
-    }
-
-    func codexMotionPreset(for activity: CodexActivity) -> MotionPreset? {
-        guard let id = codexMotionPresetID(for: activity) else { return nil }
-        return motionPresets.first { $0.id == id }
-    }
-
-    func setCodexMotionPresetID(_ id: UUID?, for activity: CodexActivity) {
-        var presentation = codexMotionPresentation(for: activity)
-        presentation.presetID = id
-        codexMotionPresentations[activity.rawValue] = presentation
-        codexMotionPresetIDs[activity.rawValue] = id
-        if id == nil { codexMotionPresetIDs.removeValue(forKey: activity.rawValue) }
-        saveCodexMotionBindings()
-        saveCodexMotionPresentations()
-    }
-
-    func codexMotionPresentation(for activity: CodexActivity) -> CodexMotionPresentation {
-        codexMotionPresentations[activity.rawValue] ?? CodexMotionPresentation(presetID: codexMotionPresetIDs[activity.rawValue])
-    }
-
-    func setCodexMotionPresentation(_ presentation: CodexMotionPresentation, for activity: CodexActivity) {
-        codexMotionPresentations[activity.rawValue] = presentation
-        if let id = presentation.presetID { codexMotionPresetIDs[activity.rawValue] = id }
-        else { codexMotionPresetIDs.removeValue(forKey: activity.rawValue) }
-        saveCodexMotionBindings()
-        saveCodexMotionPresentations()
-    }
-
-    func setCodexMotionDisplayPageID(_ pageID: UUID) {
-        codexMotionDisplaySettings.pageID = pageID
-        codexMotionDisplaySettings.scope = .specificPage
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setCodexMotionPreservesPadLEDsDuringMotion(_ preservesPadLEDs: Bool) {
-        codexMotionDisplaySettings.preservesPadLEDsDuringMotion = preservesPadLEDs
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setLaunchpadLEDBubbleVisible(_ isVisible: Bool) {
-        codexMotionDisplaySettings.showsLaunchpadLEDBubble = isVisible
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setLaunchpadLEDBubbleSize(_ size: LaunchpadLEDBubbleSize) {
-        codexMotionDisplaySettings.launchpadLEDBubbleSize = size
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setLaunchpadLEDBubbleOrigin(_ origin: CGPoint) {
-        codexMotionDisplaySettings.launchpadLEDBubbleOriginX = origin.x
-        codexMotionDisplaySettings.launchpadLEDBubbleOriginY = origin.y
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setIdleScreensaverEnabled(_ isEnabled: Bool) {
-        codexMotionDisplaySettings.idleScreensaver.isEnabled = isEnabled
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setIdleScreensaverInputScope(_ scope: LaunchpadIdleInputScope) {
-        codexMotionDisplaySettings.idleScreensaver.inputScope = scope
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setIdleScreensaverDelaySeconds(_ seconds: Int) {
-        codexMotionDisplaySettings.idleScreensaver.delaySeconds = min(
-            max(seconds, LaunchpadIdleScreensaverSettings.minimumDelaySeconds),
-            LaunchpadIdleScreensaverSettings.maximumDelaySeconds
-        )
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setIdleScreensaverDurationSeconds(_ seconds: Int) {
-        codexMotionDisplaySettings.idleScreensaver.durationSeconds = min(
-            max(seconds, LaunchpadIdleScreensaverSettings.minimumDurationSeconds),
-            LaunchpadIdleScreensaverSettings.maximumDurationSeconds
-        )
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setIdleScreensaverPresetID(_ presetID: UUID?) {
-        codexMotionDisplaySettings.idleScreensaver.presetID = presetID
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setWeeklyUsageDisplayEnabled(_ isEnabled: Bool) {
-        codexMotionDisplaySettings.weeklyUsageDisplay.isEnabled = isEnabled
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setWeeklyUsageDisplayPageID(_ pageID: UUID) {
-        codexMotionDisplaySettings.weeklyUsageDisplay.pageID = pageID
-        codexMotionDisplaySettings.weeklyUsageDisplay.scope = .specificPage
-        saveCodexMotionDisplaySettings()
-    }
-
-    func setWeeklyUsageDisplayStyle(_ style: CodexWeeklyUsageDisplayStyle) {
-        codexMotionDisplaySettings.weeklyUsageDisplay.style = style
-        saveCodexMotionDisplaySettings()
-    }
-
     func setCodexPhoneTheme(_ theme: CodexPhoneTheme) {
         guard !deletedCodexPhoneThemes.contains(theme.rawValue), codexPhoneTheme != theme else { return }
         codexPhoneTheme = theme
@@ -494,19 +365,6 @@ final class LaunchpadStore {
     func restoreCodexPhoneThemes() {
         deletedCodexPhoneThemes.removeAll()
         preferences.removeObject(forKey: deletedCodexPhoneThemesStorageKey)
-    }
-
-    var idleScreensaverPreset: MotionPreset? {
-        guard let presetID = codexMotionDisplaySettings.idleScreensaver.presetID else { return nil }
-        return motionPresets.first { $0.id == presetID }
-    }
-
-    func shouldPreservePadLEDsDuringCodexMotion(for activity: CodexActivity) -> Bool {
-        codexMotionDisplaySettings.shouldPreservePadLEDsDuringMotion(for: activity)
-    }
-
-    func shouldPresentCodexMotion(on page: LaunchPage) -> Bool {
-        codexMotionDisplaySettings.allowsPresentation(on: page.id)
     }
 
     private func saveCodexMotionBindings() {

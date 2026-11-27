@@ -2,11 +2,37 @@ import AppKit
 import Darwin
 
 actor StableWhisperMCPClient {
+    private let diagnosticLog: LinkDeckDiagnosticLog
     private var process: Process?
     private var input: FileHandle?
     private var output: FileHandle?
     private var buffer = Data()
     private var sequence = 0
+    private struct ToolCatalogSource: Equatable {
+        let executable: URL
+        let arguments: [String]
+        let binary: NSDictionary
+        let manifest: NSDictionary?
+
+        init?(executable: URL, arguments: [String]) {
+            guard let binary = Self.identity(executable) else { return nil }
+            self.executable = executable
+            self.arguments = arguments
+            self.binary = binary
+            self.manifest = Self.identity(executable.deletingLastPathComponent().deletingLastPathComponent()
+                .appendingPathComponent("Resources/linkdeck.json"))
+        }
+
+        private static func identity(_ url: URL) -> NSDictionary? {
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.resolvingSymlinksInPath().path) else { return nil }
+            let keys: [FileAttributeKey] = [.systemNumber, .systemFileNumber, .modificationDate, .size]
+            return NSDictionary(dictionary: attributes.filter { keys.contains($0.key) })
+        }
+    }
+
+    private var toolCatalog: (source: ToolCatalogSource, expires: ContinuousClock.Instant, data: Data)?
+    private var catalogSourceAtLaunch: ToolCatalogSource?
+    private var toolsCanChange = true
     private let jobsDirectory: URL
     private let idleTimeout: Duration
     private var idleTask: Task<Void, Never>?
@@ -21,7 +47,8 @@ actor StableWhisperMCPClient {
     private let terminateChatView: @Sendable () async -> Bool
     private let launchChatView: @Sendable (URL) async throws -> Void
 
-    init(jobsDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Stable Whisper/linkdeck-mcp-jobs"), idleTimeout: Duration = .seconds(300), chatView: Bool = false, activityStateTools: [String] = [], terminateChatView: @escaping @Sendable () async -> Bool = StableWhisperMCPClient.quitChatView, launchChatView: @escaping @Sendable (URL) async throws -> Void = StableWhisperMCPClient.launchChatView) {
+    init(jobsDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/Library/Application Support/Stable Whisper/linkdeck-mcp-jobs"), idleTimeout: Duration = .seconds(300), chatView: Bool = false, activityStateTools: [String] = [], terminateChatView: @escaping @Sendable () async -> Bool = StableWhisperMCPClient.quitChatView, launchChatView: @escaping @Sendable (URL) async throws -> Void = StableWhisperMCPClient.launchChatView, diagnosticLog: LinkDeckDiagnosticLog = .shared) {
+        self.diagnosticLog = diagnosticLog
         self.jobsDirectory = jobsDirectory
         self.idleTimeout = idleTimeout
         self.chatView = chatView
@@ -31,6 +58,13 @@ actor StableWhisperMCPClient {
     }
 
     func stop() {
+        toolCatalog = nil
+        stopProcess()
+    }
+
+    private func stopProcess() {
+        catalogSourceAtLaunch = nil
+        toolsCanChange = true
         idleTask?.cancel()
         idleTask = nil
         pendingJobs.removeAll()
@@ -57,11 +91,43 @@ actor StableWhisperMCPClient {
         return false
     }
 
+    func toolDefinitions(executable: URL, arguments: [String] = ["--mcp"]) async throws -> Data {
+        let source = ToolCatalogSource(executable: executable, arguments: arguments)
+        if let cached = toolCatalog, cached.source == source, cached.expires > .now {
+            return cached.data
+        }
+        toolCatalog = nil
+        var cursor: String?
+        var definitions: [[String: Any]] = []
+        for _ in 0..<20 {
+            let request = try JSONSerialization.data(withJSONObject: [
+                "method": "tools/list", "params": cursor.map { ["cursor": $0] } ?? [:]
+            ])
+            let response = try await self.request(request, executable: executable, arguments: arguments)
+            guard let reply = try JSONSerialization.jsonObject(with: response) as? [String: Any],
+                  let result = reply["result"] as? [String: Any],
+                  let tools = result["tools"] as? [[String: Any]] else {
+                throw failure("MCP 도구 목록을 읽지 못했습니다.")
+            }
+            definitions.append(contentsOf: tools)
+            cursor = result["nextCursor"] as? String
+            if cursor == nil {
+                let data = try JSONSerialization.data(withJSONObject: definitions)
+                if data.count <= 1_048_576, !toolsCanChange, let source, source == catalogSourceAtLaunch {
+                    toolCatalog = (source, .now.advanced(by: .seconds(900)), data)
+                }
+                return data
+            }
+        }
+        throw failure("도구 목록은 최대 20페이지까지 지원합니다.")
+    }
+
     func request(_ data: Data, executable: URL, arguments: [String] = ["--mcp"]) async throws -> Data {
         idleTask?.cancel()
         defer { scheduleIdleStop() }
         if process?.isRunning != true {
-            stop()
+            stopProcess()
+            catalogSourceAtLaunch = ToolCatalogSource(executable: executable, arguments: arguments)
             let child = Process()
             let stdin = Pipe()
             let stdout = Pipe()
@@ -73,32 +139,56 @@ actor StableWhisperMCPClient {
             // Keep LinkDeck's API keys out of the child process.
             child.environment = ["HOME": NSHomeDirectory(), "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
                                  "STABLE_WHISPER_MCP_JOBS": jobsDirectory.path]
-            try child.run()
+            let started = ContinuousClock.now
+            do { try child.run() }
+            catch {
+                recordStage("spawn", executable: executable, since: started, outcome: "launch_failed", code: (error as NSError).code)
+                throw error
+            }
+            recordStage("spawn", executable: executable, since: started, outcome: "success")
             process = child
             input = stdin.fileHandleForWriting
             output = stdout.fileHandleForReading
+            let initializationStart = ContinuousClock.now
             do {
                 let initialized = try exchange(["method": "initialize", "params": ["protocolVersion": "2025-06-18",
                     "capabilities": [:], "clientInfo": ["name": "LinkDeck", "version": "1.0.0"]]])
                 let reply = try JSONSerialization.jsonObject(with: initialized) as? [String: Any]
-                guard reply?["result"] != nil else { throw failure("위스퍼 MCP 초기화에 실패했습니다.") }
+                guard let result = reply?["result"] as? [String: Any] else { throw failure("위스퍼 MCP 초기화에 실패했습니다.") }
+                let capabilities = result["capabilities"] as? [String: Any]
+                let tools = capabilities?["tools"] as? [String: Any]
+                toolsCanChange = tools?["listChanged"] as? Bool == true
                 try write(["jsonrpc": "2.0", "method": "notifications/initialized"])
-            } catch { stop(); throw error }
+                recordStage("handshake", executable: executable, since: initializationStart, outcome: "success")
+            } catch {
+                recordStage("handshake", executable: executable, since: initializationStart,
+                            outcome: "initialization_failed", code: (error as NSError).code)
+                stop()
+                throw error
+            }
         }
         guard let request = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw failure("잘못된 위스퍼 요청입니다.")
         }
         do {
             if chatView, request["method"] as? String == "tools/call" {
+                let readyStart = ContinuousClock.now
+                var readiness = "launch_failed"
+                defer { recordStage("chat_view_ready", executable: executable, since: readyStart, outcome: readiness) }
                 try await launchChatView(executable)
-                let deadline = Date().addingTimeInterval(8)
+                readiness = "readiness_failed"
+                let deadline = ContinuousClock.now.advanced(by: .seconds(8))
                 while true {
                     // Probe readiness before sending a task; retrying the task could duplicate work.
                     let state = try exchange(["method": "tools/call", "params": ["name": "chatgpt_state", "arguments": [:]]])
                     if toolObject(state) != nil {
+                        readiness = "success"
                         break
                     }
-                    guard Date() < deadline else { throw failure("챗뷰를 실행했지만 API가 준비되지 않았습니다. 챗뷰의 연결 설정을 확인하세요.") }
+                    guard ContinuousClock.now < deadline else {
+                        readiness = "readiness_timeout"
+                        throw failure("챗뷰를 실행했지만 API가 준비되지 않았습니다. 챗뷰의 연결 설정을 확인하세요.")
+                    }
                     try await Task.sleep(for: .milliseconds(200))
                 }
             }
@@ -144,7 +234,7 @@ actor StableWhisperMCPClient {
                 observeJob(reply, tool: status.tool)
             }
         }
-        if pendingJobs.isEmpty && !unknownJob { stop() }
+        if pendingJobs.isEmpty && !unknownJob { stopProcess() }
         else { scheduleIdleStop() }
     }
 
@@ -157,7 +247,9 @@ actor StableWhisperMCPClient {
         case "start_transcription": statusTool = ("get_transcription_status", "job_id")
         case "start_download": statusTool = ("get_download_status", "job_id")
         case "burn_subtitles": statusTool = ("get_subtitle_status", "job_id")
-        case "create_miu_event", "update_miu_event", "sync_miu_calendar": statusTool = ("get_miu_job_status", "jobID")
+        case "create_miu_event", "update_miu_event", "sync_miu_calendar":
+            if job?["dryRun"] as? Bool == true { return }
+            statusTool = ("get_miu_job_status", "jobID")
         case "control_device", "start_status_read": statusTool = ("get_job_status", "jobID")
         case "receive_files", "receive_all", "cancel_inbox_files", "cancel_outbox_files", "send_text", "send_files", "add_inbox_files": statusTool = ("get_job", "id")
         default: statusTool = nil
@@ -205,6 +297,7 @@ actor StableWhisperMCPClient {
             if ["chat_view_start_task", "chat_view_start_image_task", "chatgpt_send_text"].contains(tool) { chatViewAnswerPending = true }
             return
         }
+        diagnosticLog.recordChatViewTask(result, tool: tool)
         if ["chat_view_start_task", "chat_view_start_image_task"].contains(tool) {
             if let id = result["taskId"] as? String { chatViewTasks.insert(id) }
             else { chatViewAnswerPending = true }
@@ -281,37 +374,82 @@ actor StableWhisperMCPClient {
         try input.write(contentsOf: JSONSerialization.data(withJSONObject: object) + Data([10]))
     }
 
+    private func recordStage(_ method: String, executable: URL, since start: ContinuousClock.Instant,
+                             outcome: String, code: Int? = nil) {
+        let elapsed = start.duration(to: .now).components
+        diagnosticLog.record("app.request.completed", method: method, app: executable.lastPathComponent,
+                             outcome: outcome, code: code,
+                             elapsedMS: Int(elapsed.seconds * 1_000 + elapsed.attoseconds / 1_000_000_000_000_000))
+    }
+
     private func exchange(_ request: [String: Any]) throws -> Data {
+        let log = diagnosticLog
+        let requestID = LinkDeckRequestContext.id ?? UUID().uuidString
+        let method = request["method"] as? String
+        let tool = (request["params"] as? [String: Any])?["name"] as? String
+        let app = process?.executableURL?.lastPathComponent
+        let started = ContinuousClock.now
+        var outcome = "write_failed"
+        var code: Int?
+        log.record("app.request.started", requestID: requestID, method: method, tool: tool, app: app)
+        defer {
+            let elapsed = started.duration(to: .now).components
+            log.record("app.request.completed", requestID: requestID, method: method, tool: tool, app: app,
+                outcome: outcome, code: code, elapsedMS: Int(elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000))
+        }
         sequence += 1
         let id = sequence
         var request = request
         request["jsonrpc"] = "2.0"
         request["id"] = id
-        try write(request)
+        do { try write(request) }
+        catch {
+            code = (error as NSError).code
+            throw error
+        }
+        outcome = "connection_missing"
         guard let output else { throw failure("위스퍼 MCP 연결이 없습니다.") }
-        let deadline = Date().addingTimeInterval(10)
-        while Date() < deadline {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while ContinuousClock.now < deadline {
             while let newline = buffer.firstIndex(of: 10) {
                 let line = Data(buffer[..<newline])
                 buffer.removeSubrange(...newline)
                 guard let reply = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else {
+                    outcome = "invalid_response"
                     throw failure("위스퍼 MCP가 잘못된 응답을 반환했습니다.")
                 }
-                if reply["id"] as? Int == id { return line }
+                if reply["method"] as? String == "notifications/tools/list_changed" {
+                    toolCatalog = nil
+                    toolsCanChange = true
+                }
+                if reply["id"] as? Int == id {
+                    outcome = LinkDeckDiagnosticLog.responseOutcome(line)
+                    code = (reply["error"] as? [String: Any])?["code"] as? Int
+                    return line
+                }
             }
             var descriptor = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
             let ready = poll(&descriptor, 1, 100)
             if ready < 0 {
                 if errno == EINTR { continue }
+                code = Int(errno)
+                outcome = "read_failed"
                 throw failure("위스퍼 MCP 응답을 읽지 못했습니다.")
             }
             if ready > 0 {
                 let chunk = output.availableData
-                guard !chunk.isEmpty else { throw failure("위스퍼 MCP가 종료되었습니다. 앱 설치와 엔진 설정을 확인하세요.") }
+                guard !chunk.isEmpty else {
+                    outcome = "app_exited"
+                    throw failure("위스퍼 MCP가 종료되었습니다. 앱 설치와 엔진 설정을 확인하세요.")
+                }
                 buffer.append(chunk)
-                guard buffer.count <= 4_194_304 else { throw failure("위스퍼 MCP 응답이 너무 큽니다.") }
+                guard buffer.count <= 4_194_304 else {
+                    outcome = "response_too_large"
+                    throw failure("위스퍼 MCP 응답이 너무 큽니다.")
+                }
             }
         }
+        outcome = "timeout"
         throw failure("위스퍼 MCP 응답 시간이 초과되었습니다. 작업 목록을 확인한 뒤 재시도하세요.")
     }
 }
@@ -346,9 +484,8 @@ enum StableWhisperMCPBridge {
                               userInfo: [NSLocalizedDescriptionKey: "Stable Whisper 앱을 설치하세요."])
             }
             if method == "tools/list" {
-                let upstream = try await client.request(JSONSerialization.data(withJSONObject: ["method": "tools/list"]), executable: executable)
-                let reply = try JSONSerialization.jsonObject(with: upstream) as? [String: Any]
-                guard let result = reply?["result"] as? [String: Any], let tools = result["tools"] as? [[String: Any]] else {
+                let upstream = try await client.toolDefinitions(executable: executable)
+                guard let tools = try JSONSerialization.jsonObject(with: upstream) as? [[String: Any]] else {
                     throw NSError(domain: "LinkDeck.WhisperMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: "위스퍼 도구 목록을 읽지 못했습니다."])
                 }
                 let forwarded = tools.compactMap { tool -> [String: Any]? in

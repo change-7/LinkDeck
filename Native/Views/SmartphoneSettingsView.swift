@@ -31,7 +31,6 @@ struct SmartphoneSettingsView: View {
     @State private var customIconError = ""
     @State private var isSymbolPickerPresented = false
     @State private var symbolSearchText = ""
-    @State private var showingFolderSync = false
     @State private var pagePendingDeletion: SmartphonePage?
 
     private let symbolChoices = [
@@ -110,13 +109,6 @@ struct SmartphoneSettingsView: View {
         GeometryReader { geometry in
             HStack(alignment: .top, spacing: 12) {
                 pageList
-                if showingFolderSync {
-                    FolderSyncWorkspaceView(
-                        store: folderSyncStore,
-                        showSettings: onOpenFolderSyncSettings
-                    )
-                    .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
-                } else {
                     GeometryReader { gridGeometry in
                         if selectedAction.kind == .workflow {
                             buttonGrids.frame(height: gridGeometry.size.height, alignment: .top)
@@ -131,7 +123,6 @@ struct SmartphoneSettingsView: View {
                     }
                     .frame(width: editorPanelWidth, height: max(0, geometry.size.height - 28))
                     .scrollIndicators(selectedAction.kind == .workflow ? .hidden : .visible)
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .padding(14)
@@ -199,7 +190,7 @@ struct SmartphoneSettingsView: View {
                 onSelectScreen: { screen in
                     selectedMainScreen = screen
                     if screen == .smartphoneButtons {
-                        showingFolderSync = false
+                        selectedMainScreen = .smartphoneButtons
                     }
                 }
             )
@@ -210,7 +201,7 @@ struct SmartphoneSettingsView: View {
                 Button {
                     pageIndex = store.addSmartphonePage()
                     buttonIndex = 0
-                    showingFolderSync = false
+                    selectedMainScreen = .smartphoneButtons
                     editingLongPress = false
                     editingSecondAction = false
                 } label: { Image(systemName: "plus") }
@@ -226,7 +217,7 @@ struct SmartphoneSettingsView: View {
                         withAnimation(.easeInOut(duration: 0.18)) {
                             pageIndex = index
                             buttonIndex = 0
-                            showingFolderSync = false
+                            selectedMainScreen = .smartphoneButtons
                         }
                     } label: {
                         VStack(alignment: .leading, spacing: 5) {
@@ -272,16 +263,16 @@ struct SmartphoneSettingsView: View {
             Button {
                 folderButtonID = nil
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    showingFolderSync = true
+                    selectedMainScreen = .folderSync
                 }
             } label: {
                 Label("폴더 싱크", systemImage: "arrow.triangle.2.circlepath")
                     .font(.system(size: 11, weight: .semibold))
                     .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
                     .padding(.horizontal, 9)
-                    .foregroundStyle(showingFolderSync ? theme.accentForeground : theme.foreground.opacity(0.78))
+                    .foregroundStyle(theme.foreground.opacity(0.78))
                     .background(
-                        showingFolderSync ? theme.accent : theme.control,
+                        theme.control,
                         in: RoundedRectangle(cornerRadius: 8)
                     )
                     .contentShape(RoundedRectangle(cornerRadius: 8))

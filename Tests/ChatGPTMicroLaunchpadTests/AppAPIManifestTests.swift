@@ -126,6 +126,64 @@ final class AppAPIManifestTests: XCTestCase {
         await bridge.stop()
     }
 
+    func testToolListReusesValidatedPagesAfterIdleWithoutStartingApp() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
+        let executable = URL(fileURLWithPath: "/usr/bin/python3")
+        let client = StableWhisperMCPClient(idleTimeout: .milliseconds(100))
+        let app = RegisteredAppAPI(bundleID: "com.pdg.stablewhisper", appURL: fixture, executable: executable,
+            manifest: AppAPIManifest(schemaVersion: 1, id: "fixture", name: "Fixture", transport: "mcp_stdio",
+                arguments: [fixture.path], tools: ["echo"]), approvalKey: UUID().uuidString)
+        let key = "linkdeck.app-api." + app.bundleID
+        let original = UserDefaults.standard.object(forKey: key)
+        UserDefaults.standard.set(app.approvalKey, forKey: key)
+        defer { UserDefaults.standard.set(original, forKey: key) }
+        let bridge = AppAPIMCPBridge(sharedWhisper: client)
+        let request = Data(#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.utf8)
+        func list() async -> Data {
+            await bridge.response(to: request, apps: [app]) {
+                LinkDeckMCPHandler.response(to: request, buttons: []) { _ in "" }
+            }.body
+        }
+
+        let first = await list()
+        XCTAssertTrue(String(decoding: first, as: UTF8.self).contains("linkdeck_app_fixture__echo"))
+        let deadline = ContinuousClock.now + .seconds(3)
+        while await client.isRunning(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let idle = await client.isRunning()
+        XCTAssertFalse(idle)
+        let cached = await list()
+        XCTAssertTrue(String(decoding: cached, as: UTF8.self).contains("linkdeck_app_fixture__echo"))
+        let restarted = await client.isRunning()
+        XCTAssertFalse(restarted)
+        UserDefaults.standard.removeObject(forKey: key)
+        let revoked = await list()
+        XCTAssertFalse(String(decoding: revoked, as: UTF8.self).contains("linkdeck_app_fixture__echo"))
+        await client.stop()
+    }
+
+    func testDynamicToolListRefreshesAfterIdle() async throws {
+        let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
+        let executable = URL(fileURLWithPath: "/usr/bin/python3")
+        let client = StableWhisperMCPClient(idleTimeout: .milliseconds(100))
+        let arguments = [fixture.path, "--dynamic-tools"]
+        let first = try await client.toolDefinitions(executable: executable, arguments: arguments)
+        let deadline = ContinuousClock.now + .seconds(3)
+        while await client.isRunning(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let idle = await client.isRunning()
+        XCTAssertFalse(idle)
+        let refreshed = try await client.toolDefinitions(executable: executable, arguments: arguments)
+        let restarted = await client.isRunning()
+        await client.stop()
+        let firstTools = try XCTUnwrap(JSONSerialization.jsonObject(with: first) as? NSArray)
+        let refreshedTools = try XCTUnwrap(JSONSerialization.jsonObject(with: refreshed) as? NSArray)
+        XCTAssertEqual(firstTools, refreshedTools)
+        XCTAssertTrue(restarted)
+    }
+
     func testBridgeDiscoversPagesForwardsAllowedToolsAndRevokesAccess() async throws {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
         let configuration = AppAPIManifest(schemaVersion: 1, id: "fixture", name: "Fixture", transport: "mcp_stdio", arguments: [fixture.path], tools: ["echo"])

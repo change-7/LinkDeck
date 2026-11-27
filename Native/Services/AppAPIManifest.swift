@@ -225,6 +225,28 @@ final class AppAPIMCPBridge {
         clients.removeAll()
     }
 
+    private func fetchToolDefinitions(for apps: [RegisteredAppAPI]) async -> [Result<Data, Error>] {
+        let sources = apps.map { (client($0), $0.executable, $0.manifest.arguments) }
+        let fetch: @Sendable (Int) async -> (Int, Result<Data, Error>) = { index in
+            let (connection, executable, arguments) = sources[index]
+            do { return (index, .success(try await connection.toolDefinitions(executable: executable, arguments: arguments))) }
+            catch { return (index, .failure(error)) }
+        }
+        return await withTaskGroup(of: (Int, Result<Data, Error>).self) { group in
+            var results = Array<Result<Data, Error>?>(repeating: nil, count: sources.count)
+            var nextIndex = min(3, sources.count)
+            for index in 0..<nextIndex { group.addTask { await fetch(index) } }
+            for await (index, result) in group {
+                results[index] = result
+                if nextIndex < sources.count {
+                    group.addTask { [index = nextIndex] in await fetch(index) }
+                    nextIndex += 1
+                }
+            }
+            return results.compactMap { $0 }
+        }
+    }
+
     func response(to data: Data, apps: [RegisteredAppAPI], fallback: () async -> (status: Int, body: Data)) async -> (status: Int, body: Data) {
         guard let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let id = request["id"], let method = request["method"] as? String else { return await fallback() }
@@ -251,33 +273,33 @@ final class AppAPIMCPBridge {
                 var tools = result["tools"] as? [[String: Any]] ?? []
                 tools.append(["name": "linkdeck_app_api_status", "description": "Read registered app API approvals and discovery errors. Does not execute app tools.", "inputSchema": ["type": "object", "properties": [:], "additionalProperties": false], "annotations": ["readOnlyHint": true]])
                 let counts = Dictionary(grouping: approved, by: { $0.manifest.id }).mapValues(\.count)
-                for app in approved {
-                    guard counts[app.manifest.id] == 1 else { failures[app.bundleID] = "중복된 앱 API id입니다."; continue }
+                let unique = approved.filter { app in
+                    guard counts[app.manifest.id] == 1 else {
+                        failures[app.bundleID] = "중복된 앱 API id입니다."
+                        return false
+                    }
+                    return true
+                }
+                let listings = await fetchToolDefinitions(for: unique)
+                for (app, listing) in zip(unique, listings) where app.approved {
                     do {
-                    var appTools: [[String: Any]] = []
-                    var cursor: String?
-                    for page in 0..<20 {
-                        let upstream = try await client(app).request(JSONSerialization.data(withJSONObject: ["method": "tools/list", "params": cursor.map { ["cursor": $0] } ?? [:]]), executable: app.executable, arguments: app.manifest.arguments)
-                        let reply = try JSONSerialization.jsonObject(with: upstream) as? [String: Any]
-                        guard let remote = reply?["result"] as? [String: Any], let entries = remote["tools"] as? [[String: Any]] else { throw AppAPIManifest.invalid("\(app.manifest.name)의 도구 목록을 읽지 못했습니다.") }
-                        for var tool in entries {
-                            guard let remoteName = tool["name"] as? String, app.manifest.tools.contains(remoteName) else { continue }
-                            guard let schema = tool["inputSchema"] as? [String: Any], schema["type"] as? String == "object" else {
+                        let data = try listing.get()
+                        let definitions = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+                        let appTools = try definitions.compactMap { entry -> [String: Any]? in
+                            guard let remoteName = entry["name"] as? String, app.manifest.tools.contains(remoteName) else { return nil }
+                            guard let schema = entry["inputSchema"] as? [String: Any], schema["type"] as? String == "object" else {
                                 throw AppAPIManifest.invalid("\(remoteName)의 inputSchema는 object여야 합니다.")
                             }
+                            var tool = entry
                             tool["name"] = app.manifest.prefix + remoteName
                             tool["description"] = app.manifest.name + " via LinkDeck. " + (tool["description"] as? String ?? "")
-                            appTools.append(tool)
+                            return tool
                         }
-                        cursor = remote["nextCursor"] as? String
-                        if cursor == nil { break }
-                        if page == 19 { throw AppAPIManifest.invalid("도구 목록은 최대 20페이지까지 지원합니다.") }
-                    }
-                    guard Set(appTools.compactMap { $0["name"] as? String }) == Set(app.manifest.tools.map { app.manifest.prefix + $0 }) else {
-                        throw AppAPIManifest.invalid("JSON에 선언된 도구와 실제 MCP 도구 목록이 일치하지 않습니다.")
-                    }
-                    tools.append(contentsOf: appTools)
-                    failures.removeValue(forKey: app.bundleID)
+                        guard Set(appTools.compactMap { $0["name"] as? String }) == Set(app.manifest.tools.map { app.manifest.prefix + $0 }) else {
+                            throw AppAPIManifest.invalid("JSON에 선언된 도구와 실제 MCP 도구 목록이 일치하지 않습니다.")
+                        }
+                        tools.append(contentsOf: appTools)
+                        failures.removeValue(forKey: app.bundleID)
                     } catch { failures[app.bundleID] = error.localizedDescription }
                 }
                 result["tools"] = tools
@@ -291,9 +313,12 @@ final class AppAPIMCPBridge {
                 throw AppAPIManifest.invalid("승인된 앱 도구와 올바른 인수를 사용하세요.")
             }
             let upstream = try await call(app, tool: String(name.dropFirst(app.manifest.prefix.count)), arguments: params["arguments"] as? [String: Any] ?? [:])
+            let serializationStart = ContinuousClock.now
             var reply = try JSONSerialization.jsonObject(with: upstream) as? [String: Any] ?? [:]
             reply["id"] = id
-            return encoded(reply)
+            let response = encoded(reply)
+            LinkDeckDiagnosticLog.shared.recordTiming("timing.app.response_serialization", since: serializationStart)
+            return response
         } catch {
             if method == "tools/list" { return await fallback() }
             return encoded(["jsonrpc": "2.0", "id": id, "result": ["isError": true, "content": [["type": "text", "text": error.localizedDescription]]]])

@@ -159,9 +159,19 @@ final class AppAPIIdleTests: XCTestCase {
         }
     }
 
-    private func call(_ client: StableWhisperMCPClient, _ name: String) async throws -> String {
+    func testMiuPreviewsDoNotKeepConnectionWorking() async throws {
+        let client = StableWhisperMCPClient()
+        for tool in ["create_miu_event", "update_miu_event", "sync_miu_calendar"] {
+            _ = try await call(client, tool, arguments: ["dryRun": true])
+            let working = await client.isWorking()
+            XCTAssertFalse(working, tool)
+        }
+        await client.stop()
+    }
+
+    private func call(_ client: StableWhisperMCPClient, _ name: String, arguments: [String: Any] = [:]) async throws -> String {
         let fixture = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Fixtures/app_api_mcp.py")
-        let request = try JSONSerialization.data(withJSONObject: ["method": "tools/call", "params": ["name": name, "arguments": [:]]])
+        let request = try JSONSerialization.data(withJSONObject: ["method": "tools/call", "params": ["name": name, "arguments": arguments]])
         let reply = try await client.request(request, executable: URL(fileURLWithPath: "/usr/bin/python3"), arguments: [fixture.path])
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: reply) as? [String: Any])
         let result = try XCTUnwrap(object["result"] as? [String: Any])

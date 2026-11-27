@@ -1,12 +1,12 @@
 import Foundation
 import Darwin
 
-enum SubtitlePipelineStep: String, Codable { case transcription, translation, render }
+enum SubtitlePipelineStep: String, Codable { case transcription, translation, render, publish }
 
 enum SubtitlePipelineState: String, Codable {
     case queuedTranscription = "queued_transcription", transcribing
     case awaitingTranslation = "awaiting_translation", savingTranslation = "saving_translation"
-    case queuedRender = "queued_render", rendering, cancelling, cancelled, failed, interrupted, completed
+    case queuedRender = "queued_render", rendering, publishing, cancelling, cancelled, failed, interrupted, completed
 
     var terminal: Bool { [.cancelled, .failed, .interrupted, .completed].contains(self) }
 }
@@ -15,6 +15,18 @@ struct SubtitlePipelineCue: Codable, Equatable {
     let id: Int
     let timing: String
     let text: String
+}
+
+struct SubtitlePipelineShareStackSource: Codable, Equatable {
+    let fileID: String
+    let leaseID: String
+    let sha256: String
+    var resultDirectory: String? = nil
+    var originalName: String? = nil
+    var subtitleRequestKey: String? = nil
+    var outputRequestKey: String? = nil
+    var subtitleFileID: String? = nil
+    var outputFileID: String? = nil
 }
 
 struct SubtitlePipelineJob: Codable, Identifiable {
@@ -32,6 +44,7 @@ struct SubtitlePipelineJob: Codable, Identifiable {
     var translations: [String: String] = [:]
     var subtitlePath: String?
     var outputPath: String?
+    var shareStackSource: SubtitlePipelineShareStackSource? = nil
     var bindings: [String: String] = [:]
     var queueOrder = 0
 }
@@ -98,7 +111,7 @@ final class SubtitlePipelineManager {
             }
             for b in record.batches.indices {
                 for j in record.batches[b].jobs.indices {
-                    if [.transcribing, .rendering, .savingTranslation, .cancelling].contains(record.batches[b].jobs[j].state) {
+                    if [.transcribing, .rendering, .publishing, .savingTranslation, .cancelling].contains(record.batches[b].jobs[j].state) {
                         record.batches[b].jobs[j].state = .interrupted
                         record.batches[b].jobs[j].error = "LinkDeck stopped during this step. Retry explicitly to reconcile the app job."
                     }
@@ -113,7 +126,8 @@ final class SubtitlePipelineManager {
 
     var batches: [SubtitlePipelineBatch] { record.batches }
     var heavyJobLimit: Int { record.heavyJobLimit }
-    var heavyBusy: Bool { !reserved.isEmpty }
+    func batch(requestKey: String) -> SubtitlePipelineBatch? { record.batches.first { $0.requestKey == requestKey } }
+
     func busy(_ step: SubtitlePipelineStep) -> Bool {
         reserved.values.contains(step) || reserved.count >= record.heavyJobLimit
     }
@@ -168,9 +182,12 @@ final class SubtitlePipelineManager {
         try commit(next)
     }
 
-    func start(paths: [String], fontSize: Double = 16, requestKey: String, heavyJobLimit: Int? = nil, bindings: [String: String] = [:]) throws -> SubtitlePipelineBatch {
+    func start(paths: [String], fontSize: Double = 16, requestKey: String, heavyJobLimit: Int? = nil, bindings: [String: String] = [:], shareStackSources: [SubtitlePipelineShareStackSource]? = nil) throws -> SubtitlePipelineBatch {
         guard !paths.isEmpty, paths.count <= 100, !requestKey.isEmpty, requestKey.utf8.count <= 200,
-              fontSize.isFinite, (10...36).contains(fontSize), heavyJobLimit == nil || (1...2).contains(heavyJobLimit!) else {
+              fontSize.isFinite, (10...36).contains(fontSize), heavyJobLimit == nil || (1...2).contains(heavyJobLimit!),
+              shareStackSources == nil || shareStackSources?.count == paths.count,
+              shareStackSources?.allSatisfy({ !$0.fileID.isEmpty && !$0.leaseID.isEmpty && $0.sha256.range(of: #"^[0-9a-fA-F]{64}$"#, options: .regularExpression) != nil }) ?? true,
+              Set(shareStackSources?.map(\.fileID) ?? []).count == (shareStackSources?.count ?? 0) else {
             throw SubtitlePipelineFailure("Provide 1–100 files, request_key, font_size 10–36 and heavy_job_limit 1 or 2")
         }
         let canonical = try paths.map { path -> String in
@@ -183,7 +200,9 @@ final class SubtitlePipelineManager {
         }
         guard Set(canonical).count == canonical.count else { throw SubtitlePipelineFailure("Duplicate media in batch") }
         if let existing = record.batches.first(where: { $0.requestKey == requestKey }) {
-            guard existing.jobs.map(\.mediaPath) == canonical, existing.jobs.allSatisfy({ $0.fontSize == fontSize }) else {
+            let requestedIDs: [String?] = shareStackSources?.map { Optional($0.fileID) } ?? Array<String?>(repeating: nil, count: paths.count)
+            guard existing.jobs.map(\.mediaPath) == canonical, existing.jobs.allSatisfy({ $0.fontSize == fontSize }),
+                  existing.jobs.map({ $0.shareStackSource?.fileID }) == requestedIDs else {
                 throw SubtitlePipelineFailure("request_key already belongs to different inputs")
             }
             return existing
@@ -191,10 +210,11 @@ final class SubtitlePipelineManager {
         let active = Set(record.batches.flatMap(\.jobs).filter { ![.completed, .cancelled].contains($0.state) }.map(\.mediaPath))
         guard active.isDisjoint(with: canonical) else { throw SubtitlePipelineFailure("A file already has an active pipeline job; inspect existing batches") }
         var next = record
-        let jobs = canonical.map { path in
+        let jobs = canonical.enumerated().map { index, path in
             next.sequence += 1
             var job = SubtitlePipelineJob(id: UUID().uuidString, mediaPath: path, fontSize: fontSize)
             job.bindings = bindings
+            job.shareStackSource = shareStackSources?[index]
             job.queueOrder = next.sequence
             return job
         }
@@ -258,7 +278,7 @@ final class SubtitlePipelineManager {
         try update(jobID) { job in
             job.error = nil
             job.progress = 0
-            job.state = step == .transcription ? .queuedTranscription : step == .translation ? .savingTranslation : .queuedRender
+            job.state = step == .transcription ? .queuedTranscription : step == .translation ? .savingTranslation : step == .render ? .queuedRender : .publishing
         }
     }
 
@@ -270,10 +290,11 @@ final class SubtitlePipelineManager {
             case .queuedTranscription: step = .transcription
             case .queuedRender: step = .render
             case .savingTranslation: step = .translation
+            case .publishing: step = .publish
             case .cancelling: step = current.step
             default: continue
             }
-            if step != .translation {
+            if step == .transcription || step == .render {
                 guard !busy(step) else { continue }
                 reserved[current.id] = step
                 if current.upstreamID == nil {
@@ -286,7 +307,7 @@ final class SubtitlePipelineManager {
             }
             do {
                 try update(current.id) { job in
-                    if job.state != .cancelling { job.state = step == .transcription ? .transcribing : step == .render ? .rendering : .savingTranslation }
+                    if job.state != .cancelling { job.state = step == .transcription ? .transcribing : step == .render ? .rendering : step == .publish ? .publishing : .savingTranslation }
                     job.step = step
                 }
                 workers[current.id] = Task { [weak self] in await self?.run(current.id, step: step) }
@@ -306,6 +327,10 @@ final class SubtitlePipelineManager {
             guard let initial = job(id) else { return }
             if step == .translation {
                 try await exportTranslation(id)
+                return
+            }
+            if step == .publish {
+                try await publish(id)
                 return
             }
             var upstreamID = initial.upstreamID
@@ -341,7 +366,7 @@ final class SubtitlePipelineManager {
                     guard let subtitle = initial.subtitlePath, FileManager.default.isReadableFile(atPath: subtitle) else { throw SubtitlePipelineFailure("Translated SRT is missing") }
                     let stem = URL(fileURLWithPath: initial.mediaPath).deletingPathExtension().lastPathComponent
                     result = try await invoke(id, step, "burn_subtitles", ["media_path": initial.mediaPath, "subtitle_path": subtitle,
-                        "font_size": initial.fontSize, "output_name": stem + "-ko-" + id])
+                        "font_size": initial.fontSize, "output_name": initial.shareStackSource?.originalName.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent } ?? (stem + "-ko-" + id)])
                 }
                 guard let remote = (result["job_id"] ?? result["id"]) as? String, !remote.isEmpty else {
                     throw SubtitlePipelineFailure("App start returned no job ID; inspect app before retrying")
@@ -396,7 +421,11 @@ final class SubtitlePipelineManager {
             guard let output = result["output_path"] as? String, output.hasPrefix("/"), FileManager.default.isReadableFile(atPath: output) else { throw SubtitlePipelineFailure("Renderer completed without a readable MP4") }
             try update(id) { job in
                 guard job.state != .cancelling else { job.state = .cancelled; return }
-                job.outputPath = output; job.state = .completed; job.progress = 1; job.upstreamID = nil
+                job.outputPath = output
+                job.state = job.shareStackSource == nil ? .completed : .publishing
+                job.step = job.shareStackSource == nil ? .render : .publish
+                job.progress = job.shareStackSource == nil ? 1 : 0
+                job.upstreamID = nil
             }
         } else {
             guard let remote = job(id)?.transcriptionID else { throw SubtitlePipelineFailure("Missing transcription ID") }
@@ -445,6 +474,78 @@ final class SubtitlePipelineManager {
         try update(id) { job in
             guard job.state != .cancelling else { job.state = .cancelled; return }
             job.subtitlePath = path; job.step = .render; job.state = .queuedRender; job.progress = 0
+        }
+    }
+
+    private func publish(_ id: String) async throws {
+        guard let current = job(id), let source = current.shareStackSource,
+              let subtitlePath = current.subtitlePath, FileManager.default.isReadableFile(atPath: subtitlePath),
+              let outputPath = current.outputPath, FileManager.default.isReadableFile(atPath: outputPath) else {
+            throw SubtitlePipelineFailure("ShareStack publish inputs are unavailable")
+        }
+        let results: [(kind: String, path: String, fileID: String?)] = [
+            ("srt", subtitlePath, source.subtitleFileID), ("mp4", outputPath, source.outputFileID)
+        ]
+        for result in results where result.fileID == nil {
+            if job(id)?.state == .cancelling { try update(id) { $0.state = .cancelled }; return }
+            guard let directory = source.resultDirectory, let originalName = source.originalName else {
+                throw SubtitlePipelineFailure("ShareStack lease must be prepared again")
+            }
+            let filename = URL(fileURLWithPath: originalName).deletingPathExtension().lastPathComponent + "." + result.kind
+            let destination = URL(fileURLWithPath: directory, isDirectory: true).appendingPathComponent(filename)
+            let input = URL(fileURLWithPath: result.path)
+            if input.standardizedFileURL != destination.standardizedFileURL {
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    guard FileManager.default.contentsEqual(atPath: input.path, andPath: destination.path) else {
+                        throw SubtitlePipelineFailure("ShareStack result filename already contains different data")
+                    }
+                } else { try FileManager.default.copyItem(at: input, to: destination) }
+            }
+            let existingKey = result.kind == "srt" ? job(id)?.shareStackSource?.subtitleRequestKey : job(id)?.shareStackSource?.outputRequestKey
+            let requestKey = existingKey ?? UUID().uuidString
+            try update(id) { job in
+                if result.kind == "srt" { job.shareStackSource?.subtitleRequestKey = requestKey }
+                else { job.shareStackSource?.outputRequestKey = requestKey }
+            }
+            let registration = try await invoke(id, .publish, "register_processed_media", [
+                "leaseID": source.leaseID, "filename": filename,
+                "mimeType": result.kind == "srt" ? "application/x-subrip" : "video/mp4", "requestKey": requestKey
+            ])
+            let response = try await SubtitleShareStackJob.wait(registration) { remoteID in
+                try await self.invoke(id, .publish, "get_job", ["id": remoteID])
+            }
+            guard let media = response["processedMedia"] as? [String: Any], let fileID = media["id"] as? String, !fileID.isEmpty else {
+                throw SubtitlePipelineFailure("ShareStack did not return the registered file ID")
+            }
+            try update(id) { job in
+                if result.kind == "srt" { job.shareStackSource?.subtitleFileID = fileID }
+                else { job.shareStackSource?.outputFileID = fileID }
+                let published = [job.shareStackSource?.subtitleFileID, job.shareStackSource?.outputFileID].compactMap { $0 }.count
+                job.progress = Double(published) / 2
+            }
+        }
+        try update(id) { job in
+            if job.state == .cancelling { job.state = .cancelled; return }
+            guard job.shareStackSource?.subtitleFileID != nil, job.shareStackSource?.outputFileID != nil else {
+                throw SubtitlePipelineFailure("ShareStack results are not fully registered")
+            }
+            job.state = .completed; job.progress = 1; job.error = nil
+        }
+    }
+}
+
+@MainActor
+enum SubtitleShareStackJob {
+    static func wait(_ initial: [String: Any], poll: (String) async throws -> [String: Any]) async throws -> [String: Any] {
+        guard let id = initial["id"] as? String, UUID(uuidString: id) != nil else { throw SubtitlePipelineFailure("ShareStack returned no job ID") }
+        var current = initial
+        while true {
+            try Task.checkCancellation()
+            let status = current["status"] as? String ?? ""
+            if status == "succeeded" { return current }
+            guard ["queued", "running", "cancelling"].contains(status) else { throw SubtitlePipelineFailure("ShareStack job failed: " + status) }
+            try await Task.sleep(for: .milliseconds(500))
+            current = try await poll(id)
         }
     }
 }

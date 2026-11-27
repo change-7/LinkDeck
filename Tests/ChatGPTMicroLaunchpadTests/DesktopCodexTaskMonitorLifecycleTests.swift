@@ -3,13 +3,14 @@ import XCTest
 
 extension DesktopCodexTaskMonitorTests {
     @MainActor
-    func testMonitor_whenUsingTheDefaultScheduleAndTheSessionsDirectoryIsQuiet_doesNotPollForScans() async throws {
+    func testMonitor_whenUsingTheDefaultSchedule_readsChangedFileWithoutRediscoveringSessions() async throws {
         // Given
         let fixture = try MonitorFixture()
+        let transcript = try fixture.writeTranscript(relativePath: "sentinel.jsonl", contents: userMetadata)
         let filesystemScan = expectation(description: "filesystem-triggered scan")
         let unexpectedScan = expectation(description: "unexpected scheduled scan")
         unexpectedScan.isInverted = true
-        let scanState = LockedTestValue((calls: 0, expectFilesystemScan: false, detectUnexpectedScan: false))
+        let scanState = LockedTestValue((calls: 0, detectUnexpectedScan: false))
         let monitor = CodexDesktopTaskMonitor(
             sessionsRootURL: fixture.root,
             discoverTranscripts: { _ in
@@ -17,33 +18,34 @@ extension DesktopCodexTaskMonitorTests {
                     $0.calls += 1
                     return $0
                 }
-                if state.expectFilesystemScan { filesystemScan.fulfill() }
                 if state.detectUnexpectedScan { unexpectedScan.fulfill() }
-                return []
+                return [transcript]
             },
-            onEvents: { _ in }
+            onEvents: { events in
+                if events.contains(.started(DesktopCodexTaskID(transcriptID: "sentinel.jsonl", turnID: "watched"))) {
+                    filesystemScan.fulfill()
+                }
+            }
         )
         monitor.start()
         await monitor.waitUntilIdleForTesting()
-        scanState.update { $0.expectFilesystemScan = true }
-        _ = try fixture.writeTranscript(relativePath: "sentinel.jsonl", contents: "")
-        await fulfillment(of: [filesystemScan], timeout: 2)
-        await monitor.waitUntilIdleForTesting()
-        scanState.update {
-            $0.expectFilesystemScan = false
-            $0.detectUnexpectedScan = true
+        let startupDiscoveryCount = scanState.update { state in
+            state.detectUnexpectedScan = true
+            return state.calls
         }
+        try fixture.append(taskStarted(turnID: "watched"), to: transcript)
+        await fulfillment(of: [filesystemScan], timeout: 0.9)
 
         // When
         await fulfillment(of: [unexpectedScan], timeout: 0.7)
         monitor.stop()
 
         // Then
-        XCTAssertGreaterThanOrEqual(scanState.get().calls, 2)
+        XCTAssertEqual(scanState.get().calls, startupDiscoveryCount)
     }
 
     @MainActor
-    func testMonitor_whenTicksArriveDuringAScan_neverRunsScansConcurrently() async throws {
+    func testMonitor_whenTicksArriveDuringAScan_coalescesThemIntoOneFollowUp() async throws {
         // Given
         let fixture = try MonitorFixture()
         let firstScanEntered = expectation(description: "first background scan entered discovery")
@@ -80,7 +82,7 @@ extension DesktopCodexTaskMonitorTests {
 
         // Then
         let result = state.get()
-        XCTAssertEqual(result.calls, 4)
+        XCTAssertEqual(result.calls, 2)
         XCTAssertEqual(result.maximumActive, 1)
     }
 

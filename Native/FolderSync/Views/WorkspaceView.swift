@@ -1,22 +1,37 @@
 import SwiftUI
 import AppKit
-import UniformTypeIdentifiers
 
 struct FolderSyncWorkspaceView: View {
     @Environment(\.colorScheme) private var colorScheme
     private var theme: MacAppearance { MacAppearance(scheme: colorScheme) }
     let store: FolderPairStore
+    let compact: Bool
     let showSettings: () -> Void
     @State private var isAddingPair = false
+    @State private var showsDetail = false
     @State private var selection: FolderPair.ID?
 
-    init(store: FolderPairStore, showSettings: @escaping () -> Void = {}) {
+    init(store: FolderPairStore, compact: Bool = false, showSettings: @escaping () -> Void = {}) {
         self.store = store
+        self.compact = compact
         self.showSettings = showSettings
     }
 
     var body: some View {
-        pairList
+        Group {
+            if compact { compactList } else { pairList }
+        }
+        .sheet(isPresented: $showsDetail) {
+            VStack(spacing: 0) {
+                ScrollView { detailContent }
+                HStack {
+                    Spacer()
+                    Button(AppText.close) { showsDetail = false }
+                        .keyboardShortcut(.cancelAction)
+                }.padding()
+            }
+            .frame(width: 640, height: 600)
+        }
         .onAppear {
             store.startRealtimeSync()
             store.syncAllOnLaunch()
@@ -40,6 +55,74 @@ struct FolderSyncWorkspaceView: View {
                 store.add(pair)
                 selection = pair.id
             }
+        }
+    }
+
+    private var compactList: some View {
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                if store.pairs.isEmpty {
+                    Button(AppText.addFolderPair) { isAddingPair = true }
+                        .padding()
+                }
+                ForEach(store.pairs) { pair in
+                    let state = store.state(for: pair)
+                    Button {
+                        selection = pair.id
+                        showsDetail = true
+                    } label: {
+                        HStack(spacing: 11) {
+                            Image(systemName: "folder.fill")
+                                .foregroundStyle(.orange)
+                                .frame(width: 16, height: 16)
+                            Text(pair.name)
+                                .font(.custom("Helvetica", size: 14))
+                                .foregroundStyle(colorScheme == .dark ? Color(white: 215 / 255) : .primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            HStack(spacing: 4.5) {
+                                Circle().fill(syncColor(state)).frame(width: 8, height: 8)
+                                Text(state.label)
+                                    .font(.custom("AppleSDGothicNeo-Regular", size: 11))
+                                    .foregroundStyle(colorScheme == .dark ? Color(white: 155 / 255) : .secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(.horizontal, 9)
+                        .frame(height: 28)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .overlay(alignment: .top) {
+                        if pair.id != store.pairs.first?.id {
+                            Rectangle().fill(colorScheme == .dark ? Color(white: 55 / 255) : Color.primary.opacity(0.15))
+                                .frame(height: 1).padding(.leading, 20)
+                        }
+                    }
+                    .contextMenu {
+                        Button(AppText.sync) { Task { await store.sync(pair) } }
+                        Button(AppText.addFolderPair) { isAddingPair = true }
+                        Button(AppText.delete, role: .destructive) { delete(pair) }
+                    }
+                }
+            }
+        }
+        .background(colorScheme == .dark ? Color(white: 31 / 255) : Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 12)
+        .background(colorScheme == .dark ? Color(white: 9 / 255) : theme.canvas)
+        .contextMenu {
+            Button(AppText.addFolderPair) { isAddingPair = true }
+        }
+        .accessibilityIdentifier("folder-sync-list")
+    }
+
+    private func syncColor(_ state: SyncState) -> Color {
+        switch state {
+        case .failed: .gray
+        case .syncing: .orange
+        default: Color(red: 39 / 255, green: 207 / 255, blue: 92 / 255)
         }
     }
 
@@ -109,7 +192,10 @@ struct FolderSyncWorkspaceView: View {
                         pair: pair,
                         state: store.state(for: pair),
                         isSelected: selection == pair.id,
-                        onSelect: { selection = pair.id }
+                        onSelect: {
+                            selection = pair.id
+                            if compact { showsDetail = true }
+                        }
                     ) {
                         delete(pair)
                     }
@@ -193,81 +279,6 @@ private struct PairRow: View {
         if case .failed = state { return true }
         return false
     }
-}
-
-private struct GitHubEndpointRow: View {
-    let title: String
-    let folderPath: String?
-    let isLatest: Bool
-    @Binding var repositoryURL: String
-    let allowsGitHubRepository: Bool
-    let githubAuthState: GitHubAuthState
-    let githubRepositories: [GitHubRepository]
-    let githubRepositoryState: GitHubRepositoryState
-    let loadGitHubRepositories: () -> Void
-    let chooseFolder: () -> Void
-    let saveConfiguration: () -> Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if allowsGitHubRepository && !repositoryURL.isEmpty {
-                HStack(alignment: .center, spacing: 8) {
-                    Text(title)
-                    latestLabel
-                    repositorySelector
-                }
-            } else {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(title)
-                    latestLabel
-                    if let folderPath, repositoryURL.isEmpty {
-                        Text(folderPath)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    Spacer(minLength: 8)
-                    if repositoryURL.isEmpty {
-                        Button(action: chooseFolder) {
-                            Image(systemName: "folder")
-                                .foregroundStyle(AppPalette.accent)
-                        }
-                        .buttonStyle(.plain)
-                        .help(AppText.folderRowHint)
-                    }
-                }
-                if allowsGitHubRepository {
-                    repositorySelector
-                }
-            }
-        }
-    }
-
-    private var repositorySelector: some View {
-        GitHubRepositorySelector(
-            placeholder: title,
-            repositoryURL: $repositoryURL,
-            authState: githubAuthState,
-            repositories: githubRepositories,
-            repositoryState: githubRepositoryState,
-            loadRepositories: loadGitHubRepositories,
-            onSubmit: { _ = saveConfiguration() }
-        )
-    }
-
-    @ViewBuilder
-    private var latestLabel: some View {
-        if isLatest {
-            Text(AppText.latest)
-                .font(.caption.weight(.bold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 3)
-                .background(AppPalette.accent, in: Capsule())
-        }
-    }
-
 }
 
 private struct EndpointSummary {
@@ -651,82 +662,6 @@ private struct PairDetailView: View {
             return configuration.endpointSide == endpoint
         case .local:
             return configuration.endpointSide != endpoint
-        }
-    }
-
-    private func folderSelectionRow(
-        title: String,
-        path: String,
-        action: @escaping () -> Void,
-        dropFolder: @escaping (URL) -> String?
-    ) -> some View {
-        FolderSelectionRow(
-            title: title,
-            path: path,
-            action: action,
-            dropFolder: dropFolder,
-            reportError: { folderChangeError = $0 }
-        )
-    }
-
-    private struct FolderSelectionRow: View {
-        let title: String
-        let path: String
-        let action: () -> Void
-        let dropFolder: (URL) -> String?
-        let reportError: (String?) -> Void
-        @State private var isDropTargeted = false
-
-        var body: some View {
-            Button(action: action) {
-                HStack(spacing: 12) {
-                    Text(title)
-                    Spacer(minLength: 16)
-                    Text(path)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Image(systemName: "folder")
-                        .foregroundStyle(AppPalette.accent)
-                }
-                .frame(maxWidth: .infinity, minHeight: 28, maxHeight: 28, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .focusEffectDisabled()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .help(AppText.folderRowHint)
-            .accessibilityLabel("\(title), \(AppText.changeFolder)")
-            .onDrop(
-                of: [UTType.fileURL.identifier],
-                isTargeted: $isDropTargeted,
-                perform: handleDrop
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 4)
-                    .stroke(AppPalette.accent, lineWidth: 2)
-                    .opacity(isDropTargeted ? 1 : 0)
-                    .allowsHitTesting(false)
-            }
-        }
-
-        private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-            guard let provider = providers.first else { return false }
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                let url = data.flatMap { URL(dataRepresentation: $0, relativeTo: nil) }
-                Task { @MainActor in
-                    guard let url else {
-                        reportError(AppText.invalidFolderDrop)
-                        return
-                    }
-                    var isDirectory = ObjCBool(false)
-                    guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
-                        reportError(AppText.inputFolderIsNotDirectory(url.path))
-                        return
-                    }
-                    reportError(dropFolder(url))
-                }
-            }
-            return true
         }
     }
 

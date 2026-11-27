@@ -146,27 +146,6 @@ enum AppText {
     static var githubLoggingIn: String { value("Complete GitHub login in your browser.") }
     static var githubCLIUnavailable: String { value("Install GitHub CLI to sign in with GitHub.") }
     static var generalSettings: String { value("General") }
-    static var localAPI: String { value("Local API") }
-    static var localAPIDescription: String { value("FolderSync starts a local HTTP API automatically when the app launches. Other apps on this Mac can start syncs and read their status through 127.0.0.1:8765.") }
-    static var localAPIUsage: String { value("How to use") }
-    static var localAPIStepOne: String { value("Keep FolderSync running. The API is available automatically; no separate server command is needed.") }
-    static var localAPIStepTwo: String { value("Call the start endpoint. Omit pairId to use the sync list currently selected in FolderSync, or send a specific pairId.") }
-    static var localAPIStepThree: String { value("Save the returned jobId and poll the job endpoint until the status becomes completed or failed.") }
-    static var localAPIEndpoints: String { value("Endpoints") }
-    static var localAPIHealth: String { value("Connection check") }
-    static var localAPIStart: String { value("Start sync") }
-    static var localAPIJobs: String { value("List jobs") }
-    static var localAPIJobStatus: String { value("Job status") }
-    static var localAPIExamples: String { value("Usage examples") }
-    static var localAPIHealthExample: String { value("Check the API") }
-    static var localAPIStartExample: String { value("Start the selected sync") }
-    static var localAPIStatusExample: String { value("Read a job") }
-    static var localAPIStatuses: String { value("Status values") }
-    static var localAPIQueued: String { value("Waiting to start") }
-    static var localAPIRunning: String { value("Sync is in progress") }
-    static var localAPICompleted: String { value("Sync finished successfully") }
-    static var localAPIFailed: String { value("Sync failed; the response includes error and finishedAt") }
-    static var localAPISecurityNote: String { value("The API listens only on 127.0.0.1, so it is not exposed directly to the internet. It controls the same selected workspace and sync engine as the FolderSync app.") }
     static var mcpServer: String { value("ChatGPT MCP server") }
     static var mcpServerDescription: String { value("ChatGPT developer-mode apps do not launch local MCP programs directly. Use Secure MCP Tunnel to connect FolderSync privately.") }
     static var mcpChatGPTConnection: String { value("ChatGPT connection") }
