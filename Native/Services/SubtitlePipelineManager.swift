@@ -71,6 +71,7 @@ final class SubtitlePipelineManager {
     private var workers: [String: Task<Void, Never>] = [:]
     private var reserved: [String: SubtitlePipelineStep] = [:]
     private var timer: Task<Void, Never>?
+    private var dispatchEnabled = false
     private var lockDescriptor: Int32 = -1
     private var stopped = false
     private(set) var storageError: String?
@@ -109,7 +110,10 @@ final class SubtitlePipelineManager {
         if automatic { resume() }
     }
 
-    deinit { if lockDescriptor >= 0 { close(lockDescriptor) } }
+    deinit {
+        timer?.cancel()
+        if lockDescriptor >= 0 { close(lockDescriptor) }
+    }
 
     var batches: [SubtitlePipelineBatch] { record.batches }
     var heavyJobLimit: Int { record.heavyJobLimit }
@@ -124,16 +128,35 @@ final class SubtitlePipelineManager {
         return token
     }
     func releaseLegacy(_ token: String) { reserved.removeValue(forKey: token) }
-    func job(_ id: String) -> SubtitlePipelineJob? { record.batches.flatMap(\.jobs).first { $0.id == id } }
+    func job(_ id: String) -> SubtitlePipelineJob? { record.batches.lazy.flatMap(\.jobs).first { $0.id == id } }
 
     func resume() {
-        guard timer == nil, !stopped else { return }
+        guard !dispatchEnabled, !stopped else { return }
+        dispatchEnabled = true
+        scheduleDispatchIfNeeded()
+    }
+
+    private func scheduleDispatchIfNeeded() {
+        guard dispatchEnabled, timer == nil, needsDispatch else { return }
         timer = Task { [weak self, pollInterval] in
-            while !Task.isCancelled {
-                await self?.dispatch()
-                do { try await Task.sleep(for: pollInterval) } catch { break }
+            while !Task.isCancelled, await self?.dispatchAndCheckQueue() == true {
+                do { try await Task.sleep(for: pollInterval) } catch { return }
             }
         }
+    }
+
+    private var needsDispatch: Bool {
+        // Running jobs poll their own status. The dispatcher only looks for the next job to start.
+        !stopped && storageError == nil && record.batches.contains { batch in
+            batch.jobs.contains { pendingStep(for: $0) != nil }
+        }
+    }
+
+    private func dispatchAndCheckQueue() async -> Bool {
+        await dispatch()
+        if needsDispatch { return true }
+        timer = nil
+        return false
     }
 
     func stop() async {
@@ -152,6 +175,7 @@ final class SubtitlePipelineManager {
             try JSONEncoder().encode(next).write(to: storage, options: .atomic)
             record = next
             storageError = nil
+            scheduleDispatchIfNeeded()
         } catch { storageError = error.localizedDescription; throw error }
     }
 
@@ -262,27 +286,33 @@ final class SubtitlePipelineManager {
         }
     }
 
+    private func pendingStep(for job: SubtitlePipelineJob) -> SubtitlePipelineStep? {
+        guard workers[job.id] == nil else { return nil }
+        return switch job.state {
+        case .queuedTranscription: .transcription
+        case .queuedRender: .render
+        case .savingTranslation: .translation
+        case .cancelling: job.step
+        default: nil
+        }
+    }
+
     private func dispatch() async {
         guard !stopped, storageError == nil else { return }
-        for current in record.batches.flatMap(\.jobs).sorted(by: { $0.queueOrder < $1.queueOrder }) where workers[current.id] == nil {
-            let step: SubtitlePipelineStep
-            switch current.state {
-            case .queuedTranscription: step = .transcription
-            case .queuedRender: step = .render
-            case .savingTranslation: step = .translation
-            case .cancelling: step = current.step
-            default: continue
-            }
+        let pending = record.batches.lazy.flatMap(\.jobs).compactMap { job in
+            self.pendingStep(for: job).map { (job: job, step: $0) }
+        }.sorted { $0.job.queueOrder < $1.job.queueOrder }
+        for (current, step) in pending {
             if step != .translation {
                 guard !busy(step) else { continue }
                 reserved[current.id] = step
                 if current.upstreamID == nil {
                     if await externalBusy(step) { reserved.removeValue(forKey: current.id); continue }
                 }
-                guard !stopped, storageError == nil, job(current.id)?.state == current.state, workers[current.id] == nil else {
-                    reserved.removeValue(forKey: current.id)
-                    continue
-                }
+            }
+            guard !stopped, storageError == nil, job(current.id)?.state == current.state, workers[current.id] == nil else {
+                reserved.removeValue(forKey: current.id)
+                continue
             }
             do {
                 try update(current.id) { job in
@@ -301,7 +331,11 @@ final class SubtitlePipelineManager {
     }
 
     private func run(_ id: String, step: SubtitlePipelineStep) async {
-        defer { workers.removeValue(forKey: id); reserved.removeValue(forKey: id) }
+        defer {
+            workers.removeValue(forKey: id)
+            reserved.removeValue(forKey: id)
+            scheduleDispatchIfNeeded()
+        }
         do {
             guard let initial = job(id) else { return }
             if step == .translation {
@@ -369,7 +403,10 @@ final class SubtitlePipelineManager {
                     return
                 }
                 if let progress = status["progress"] as? Double, progress.isFinite {
-                    try update(id) { $0.progress = min(1, max(0, progress)) }
+                    let normalized = min(1, max(0, progress))
+                    if storageError != nil || job(id)?.progress != normalized {
+                        try update(id) { $0.progress = normalized }
+                    }
                 }
                 try await Task.sleep(for: pollInterval)
             }

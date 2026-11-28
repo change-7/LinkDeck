@@ -312,4 +312,61 @@ final class SubtitlePipelineTests: XCTestCase {
         XCTAssertEqual(try manager.pendingCues(jobID: "waiting").first?.text, "Hello")
         await manager.stop()
     }
+
+    func testRepeatedProgressDoesNotRewritePipelineState() async throws {
+        final class Status {
+            var progress = 0.5
+            var reads = 0
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = root.appendingPathComponent("state.json")
+        let media = root.appendingPathComponent("input.wav")
+        try Data([0]).write(to: media)
+        let status = Status()
+        let manager = try SubtitlePipelineManager(storage: storage, pollInterval: .milliseconds(10)) { _, tool, _ in
+            if tool == "start_transcription" { return ["id": "transcription", "state": "transcribing"] }
+            status.reads += 1
+            return ["state": "transcribing", "progress": status.progress]
+        }
+        let batch = try manager.start(paths: [media.path], requestKey: "progress")
+        let id = try XCTUnwrap(batch.jobs.first?.id)
+        try await eventually { manager.job(id)?.progress == 0.5 }
+
+        let recordedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: recordedDate], ofItemAtPath: storage.path)
+        let readsBefore = status.reads
+        try await eventually { status.reads >= readsBefore + 3 }
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: storage.path)[.modificationDate] as? Date, recordedDate)
+
+        status.progress = 0.75
+        try await eventually { manager.job(id)?.progress == 0.75 }
+        XCTAssertNotEqual(try FileManager.default.attributesOfItem(atPath: storage.path)[.modificationDate] as? Date, recordedDate)
+        await manager.stop()
+    }
+
+    func testResumedPipelineStartsNewWorkAfterWaitingForTranslation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = root.appendingPathComponent("first.wav")
+        let second = root.appendingPathComponent("second.wav")
+        try Data([0]).write(to: first)
+        try Data([0]).write(to: second)
+        let manager = try SubtitlePipelineManager(storage: root.appendingPathComponent("state.json"), pollInterval: .milliseconds(10), automatic: false) { _, tool, _ in
+            switch tool {
+            case "start_transcription": return ["id": "transcription", "state": "transcribing"]
+            case "get_transcription_status": return ["state": "completed"]
+            default: return ["cues": [["id": 1, "timing": "00:00:00,000 --> 00:00:01,000", "text": "Hello"]], "total_cues": 1, "next_offset": 1, "has_more": false]
+            }
+        }
+        manager.resume()
+        let batch = try manager.start(paths: [first.path], requestKey: "first")
+        try await eventually { manager.job(batch.jobs[0].id)?.state == .awaitingTranslation }
+        let later = try manager.start(paths: [second.path], requestKey: "later")
+        try await eventually { manager.job(later.jobs[0].id)?.state == .awaitingTranslation }
+        XCTAssertEqual(try manager.pendingCues(jobID: batch.jobs[0].id).first?.text, "Hello")
+        await manager.stop()
+    }
 }
